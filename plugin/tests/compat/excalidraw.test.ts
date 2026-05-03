@@ -38,10 +38,16 @@ function cyclicBytes(length: number): Uint8Array {
   return out;
 }
 
-/** Deterministic pseudo-random byte sequence (xorshift32) for big-payload tests. */
+/**
+ * Deterministic pseudo-random byte sequence (xorshift32) for
+ * big-payload tests. xorshift breaks if the state ever becomes 0,
+ * so we replace a 0 seed with a non-zero default. (The `| 0` int32
+ * coercion is just to keep state as a 32-bit signed int across the
+ * shift operations — it doesn't filter anything out.)
+ */
 function pseudoRandomBytes(length: number, seed: number): Uint8Array {
   const out = new Uint8Array(length);
-  let state = seed | 0 || 0x12345678;
+  let state = (seed | 0) === 0 ? 0x12345678 : (seed | 0);
   for (let i = 0; i < length; i++) {
     state ^= state << 13;
     state ^= state >>> 17;
@@ -119,6 +125,26 @@ describe('Phase E F13 — Excalidraw binary attachment compat', () => {
       expect(back.slice(0, 8)).toEqual(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
       // Whole-buffer equality is what matters; deep-equal on Uint8Array.
       expect(back).toEqual(png);
+    });
+
+    it('createBinary copies the input ArrayBuffer (M1) — mutating the caller buffer does not affect the store', async () => {
+      // Build a Uint8Array that owns its underlying ArrayBuffer so the
+      // post-call mutation actually targets the same bytes the harness
+      // sees. (asArrayBuffer in this file uses `.slice()` which would
+      // mask the bug — we want the raw shared-buffer case here.)
+      const callerView = new Uint8Array(64);
+      for (let i = 0; i < 64; i++) callerView[i] = i;
+
+      const file = await vault.createBinary(
+        'attachments/input-defensive.png',
+        callerView.buffer as ArrayBuffer,
+      );
+
+      // Stomp the caller-side buffer with a distinct byte at offset 0.
+      callerView[0] = 0xff;
+
+      const back = new Uint8Array(await vault.readBinary(file));
+      expect(back[0]).toBe(0); // The store kept its own copy.
     });
 
     it('readBinary returns a defensive copy — mutating the result does not corrupt the store', async () => {

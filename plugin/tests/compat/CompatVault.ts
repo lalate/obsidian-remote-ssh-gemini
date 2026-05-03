@@ -264,7 +264,14 @@ export class CompatVault {
     if (this.files.has(path)) {
       throw new Error(`CompatVault.createBinary: file already exists: ${path}`);
     }
-    const file = new CompatTFile(path, new Uint8Array(data));
+    // Defensive copy of the caller's ArrayBuffer — `new Uint8Array(data)`
+    // shares the underlying buffer, so a caller that mutates `data`
+    // post-call would silently change our store. PR-227 review M1
+    // (mirrors the defensive copy `readBinary` already does on the way
+    // out).
+    const stored = new Uint8Array(data.byteLength);
+    stored.set(new Uint8Array(data));
+    const file = new CompatTFile(path, stored);
     this.files.set(path, file);
     this.metadataCache.invalidate(path);
     this.fire('create', file);
