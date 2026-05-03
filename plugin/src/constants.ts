@@ -32,3 +32,10 @@ export const RETRY_BASE_MS = 1000;
 export const RETRY_MAX_MS = 30000;
 
 export const TMP_SUFFIX = '.rsh_tmp';
+
+/**
+ * Fallback filename used by the F17 onboarding wizard when the user
+ * triggers ed25519 key generation without supplying a path. Lives
+ * next to the user's existing keys under `$HOME/.ssh/`.
+ */
+export const ONBOARDING_FALLBACK_KEY_FILENAME = 'id_ed25519_obsidian_remote';
