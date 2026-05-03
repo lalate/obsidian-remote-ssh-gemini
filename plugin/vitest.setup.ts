@@ -13,7 +13,12 @@
 // setInterval / clearInterval) and `activeDocument` to a stub document
 // (or `document` if jsdom is in play).
 
-import { afterAll } from 'vitest';
+import { beforeEach } from 'vitest';
+// Direct path (not the 'obsidian' alias) because this setup file is
+// shared with vitest.integration.config.ts and vitest.replay.config.ts,
+// which do NOT alias 'obsidian' — the integration suite runs against
+// a real sshd Docker container and never imports Obsidian UI.
+import { clearNotices } from './tests/__mocks__/obsidian';
 
 const g = globalThis as unknown as {
   activeWindow?: typeof globalThis;
@@ -29,7 +34,10 @@ if (typeof g.activeDocument === 'undefined') {
     typeof document !== 'undefined' ? document : ({} as object);
 }
 
-afterAll(() => {
-  // Keep the polyfills in place for the lifetime of the run; a no-op hook
-  // here just makes the intent explicit.
+// Reset the obsidian-mock Notice buffer before every test so test
+// files that touch the UI don't see stale notices from a previous
+// suite. Tests can still call clearNotices() mid-test if they need
+// to assert on a fresh window.
+beforeEach(() => {
+  clearNotices();
 });
