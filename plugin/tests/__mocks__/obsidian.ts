@@ -69,46 +69,77 @@ function applyDomOptions(el: HTMLElement, opts?: DomOptions): void {
   }
 }
 
+const PATCH_FLAG = Symbol.for('obsidian-mock.patched');
+
 function patchDom(): void {
   if (typeof HTMLElement === 'undefined') return;
-  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
-  if (proto._obsidianMockPatched) return;
+  const proto = HTMLElement.prototype as unknown as Record<string | symbol, unknown>;
+  if (proto[PATCH_FLAG]) return;
 
+  // Match the real Obsidian signatures exactly. The real createEl
+  // accepts an optional `callback?: (el) => void` third argument that
+  // many Obsidian patterns use for chained subtree setup; if we drop
+  // it the callback subtree silently never runs and tests pass green.
   proto.createEl = function <K extends keyof HTMLElementTagNameMap>(
     this: HTMLElement, tag: K, opts?: DomOptions,
+    callback?: (el: HTMLElementTagNameMap[K]) => void,
   ): HTMLElementTagNameMap[K] {
     const el = document.createElement(tag);
     applyDomOptions(el as HTMLElement, opts);
     this.appendChild(el);
+    if (callback) callback(el);
     return el;
   };
-  proto.createDiv = function (this: HTMLElement, opts?: DomOptions | string): HTMLDivElement {
+  proto.createDiv = function (
+    this: HTMLElement,
+    opts?: DomOptions | string,
+    callback?: (el: HTMLDivElement) => void,
+  ): HTMLDivElement {
     const o: DomOptions | undefined = typeof opts === 'string' ? { cls: opts } : opts;
-    return (this as unknown as { createEl: <K extends 'div'>(t: K, o?: DomOptions) => HTMLDivElement })
-      .createEl('div', o);
+    const el = (this as unknown as {
+      createEl: <K extends 'div'>(t: K, o?: DomOptions, cb?: (el: HTMLDivElement) => void) => HTMLDivElement
+    }).createEl('div', o, callback);
+    return el;
   };
-  proto.createSpan = function (this: HTMLElement, opts?: DomOptions | string): HTMLSpanElement {
+  proto.createSpan = function (
+    this: HTMLElement,
+    opts?: DomOptions | string,
+    callback?: (el: HTMLSpanElement) => void,
+  ): HTMLSpanElement {
     const o: DomOptions | undefined = typeof opts === 'string' ? { cls: opts } : opts;
-    return (this as unknown as { createEl: <K extends 'span'>(t: K, o?: DomOptions) => HTMLSpanElement })
-      .createEl('span', o);
+    const el = (this as unknown as {
+      createEl: <K extends 'span'>(t: K, o?: DomOptions, cb?: (el: HTMLSpanElement) => void) => HTMLSpanElement
+    }).createEl('span', o, callback);
+    return el;
   };
   proto.empty = function (this: HTMLElement): void {
     while (this.firstChild) this.removeChild(this.firstChild);
   };
-  proto.addClass = function (this: HTMLElement, c: string): void {
-    this.classList.add(c);
+  // Real Obsidian: addClass(...classes: string[]). Single-string callers
+  // still work because rest-spread on one arg is the same shape.
+  proto.addClass = function (this: HTMLElement, ...classes: string[]): void {
+    for (const c of classes) this.classList.add(c);
   };
-  proto.removeClass = function (this: HTMLElement, c: string): void {
-    this.classList.remove(c);
+  proto.removeClass = function (this: HTMLElement, ...classes: string[]): void {
+    for (const c of classes) this.classList.remove(c);
   };
-  proto.setText = function (this: HTMLElement, t: string): void {
-    this.textContent = t;
+  // Real Obsidian: setText(string | DocumentFragment). A fragment must
+  // be appended after clearing — coercing it to a string yields garbage.
+  proto.setText = function (this: HTMLElement, t: string | DocumentFragment): void {
+    if (typeof t === 'string') {
+      this.textContent = t;
+    } else {
+      while (this.firstChild) this.removeChild(this.firstChild);
+      this.appendChild(t);
+    }
   };
-  proto.toggleClass = function (this: HTMLElement, c: string, on: boolean): void {
-    this.classList.toggle(c, on);
+  // Real Obsidian: toggleClass(classes: string | string[], value: boolean).
+  proto.toggleClass = function (this: HTMLElement, c: string | string[], on: boolean): void {
+    const list = Array.isArray(c) ? c : [c];
+    for (const item of list) this.classList.toggle(item, on);
   };
 
-  proto._obsidianMockPatched = true;
+  proto[PATCH_FLAG] = true;
 }
 
 patchDom();
@@ -119,22 +150,25 @@ patchDom();
 // API). The component callbacks (text/toggle/etc.) receive a small
 // shim with the same chainable surface the production callers expect.
 
-interface TextComponent {
+export interface TextComponent {
+  readonly kind: 'text';
   setValue(v: string): TextComponent;
   setPlaceholder(p: string): TextComponent;
   onChange(cb: (v: string) => void | Promise<void>): TextComponent;
-  /** Test helper: simulate user typing. */
+  /** Test helper: simulate user typing. Throws if no `onChange` was registered. */
   simulateInput(v: string): Promise<void>;
 }
 
-interface ToggleComponent {
+export interface ToggleComponent {
+  readonly kind: 'toggle';
   setValue(v: boolean): ToggleComponent;
   onChange(cb: (v: boolean) => void | Promise<void>): ToggleComponent;
-  /** Test helper: simulate flipping the toggle. */
+  /** Test helper: simulate flipping the toggle. Throws if no `onChange` was registered. */
   simulateChange(v: boolean): Promise<void>;
 }
 
-interface ButtonComponent {
+export interface ButtonComponent {
+  readonly kind: 'button';
   setButtonText(t: string): ButtonComponent;
   setCta(): ButtonComponent;
   setWarning(): ButtonComponent;
@@ -142,28 +176,34 @@ interface ButtonComponent {
   setText(t: string): ButtonComponent;
   onClick(cb: () => void | Promise<void>): ButtonComponent;
   buttonEl: HTMLButtonElement;
-  /** Test helper: simulate the click. */
+  /** Test helper: simulate the click. Throws if no `onClick` was registered. */
   simulateClick(): Promise<void>;
 }
 
-interface DropdownComponent {
+export interface DropdownComponent {
+  readonly kind: 'dropdown';
   addOption(value: string, label: string): DropdownComponent;
   setValue(v: string): DropdownComponent;
   onChange(cb: (v: string) => void | Promise<void>): DropdownComponent;
-  /** Test helper: simulate selection change. */
+  /** Test helper: simulate selection change. Throws if no `onChange` was registered. */
   simulateChange(v: string): Promise<void>;
 }
 
+export type AnyComponent = TextComponent | ToggleComponent | ButtonComponent | DropdownComponent;
+
+// `simulate*` throws when no callback was registered. A green test is
+// only meaningful if it actually fired the SUT's wiring; a silent
+// no-op turns "test passes" into "we never asserted anything."
 function makeText(): TextComponent {
-  let value = '';
   let onChange: ((v: string) => void | Promise<void>) | null = null;
   const c: TextComponent = {
-    setValue(v) { value = v; return c; },
+    kind: 'text',
+    setValue() { return c; },
     setPlaceholder() { return c; },
     onChange(cb) { onChange = cb; return c; },
     async simulateInput(v) {
-      value = v;
-      if (onChange) await onChange(v);
+      if (!onChange) throw new Error('simulateInput called but no onChange was registered on this TextComponent');
+      await onChange(v);
     },
   };
   return c;
@@ -172,9 +212,13 @@ function makeText(): TextComponent {
 function makeToggle(): ToggleComponent {
   let onChange: ((v: boolean) => void | Promise<void>) | null = null;
   const c: ToggleComponent = {
+    kind: 'toggle',
     setValue() { return c; },
     onChange(cb) { onChange = cb; return c; },
-    async simulateChange(v) { if (onChange) await onChange(v); },
+    async simulateChange(v) {
+      if (!onChange) throw new Error('simulateChange called but no onChange was registered on this ToggleComponent');
+      await onChange(v);
+    },
   };
   return c;
 }
@@ -182,7 +226,16 @@ function makeToggle(): ToggleComponent {
 function makeButton(): ButtonComponent {
   let onClick: (() => void | Promise<void>) | null = null;
   const buttonEl = (typeof document !== 'undefined' ? document.createElement('button') : ({} as HTMLButtonElement));
+  // Wire the native click event so `containerEl.querySelector('button').click()`
+  // also fires the registered handler. Without this, query-and-click test
+  // patterns silently no-op against the mock.
+  if (typeof document !== 'undefined') {
+    buttonEl.addEventListener('click', () => {
+      if (onClick) void onClick();
+    });
+  }
   const c: ButtonComponent = {
+    kind: 'button',
     setButtonText(t) { (buttonEl as HTMLButtonElement).textContent = t; return c; },
     setCta() { return c; },
     setWarning() { return c; },
@@ -190,7 +243,10 @@ function makeButton(): ButtonComponent {
     setText(t) { (buttonEl as HTMLButtonElement).textContent = t; return c; },
     onClick(cb) { onClick = cb; return c; },
     buttonEl,
-    async simulateClick() { if (onClick) await onClick(); },
+    async simulateClick() {
+      if (!onClick) throw new Error('simulateClick called but no onClick was registered on this ButtonComponent');
+      await onClick();
+    },
   };
   return c;
 }
@@ -198,17 +254,41 @@ function makeButton(): ButtonComponent {
 function makeDropdown(): DropdownComponent {
   let onChange: ((v: string) => void | Promise<void>) | null = null;
   const c: DropdownComponent = {
+    kind: 'dropdown',
     addOption() { return c; },
     setValue() { return c; },
     onChange(cb) { onChange = cb; return c; },
-    async simulateChange(v) { if (onChange) await onChange(v); },
+    async simulateChange(v) {
+      if (!onChange) throw new Error('simulateChange called but no onChange was registered on this DropdownComponent');
+      await onChange(v);
+    },
   };
   return c;
 }
 
+// Registry keyed by `Setting.settingEl` so test helpers can look the
+// owning Setting up given a DOM node — avoids fragile prototype
+// patching from the test side.
+const settingByEl = new WeakMap<HTMLElement, Setting>();
+
+/** Look up the `Setting` instance owning a `.setting-item` element. */
+export function getSettingFor(el: HTMLElement): Setting | undefined {
+  return settingByEl.get(el);
+}
+
+/** Walk all `Setting`s rendered into `root`, in DOM order. */
+export function getSettingsIn(root: HTMLElement): Setting[] {
+  const out: Setting[] = [];
+  for (const el of Array.from(root.querySelectorAll('.setting-item'))) {
+    const s = settingByEl.get(el as HTMLElement);
+    if (s) out.push(s);
+  }
+  return out;
+}
+
 export class Setting {
   /** Last-attached components, in attach order. Test helper. */
-  readonly components: Array<TextComponent | ToggleComponent | ButtonComponent | DropdownComponent> = [];
+  readonly components: AnyComponent[] = [];
   /** The row this Setting renders into (a child of containerEl). */
   readonly settingEl: HTMLElement;
   private nameEl: HTMLElement;
@@ -231,6 +311,7 @@ export class Setting {
     this.settingEl.appendChild(this.descEl);
     this.settingEl.appendChild(this.controlEl);
     containerEl.appendChild(this.settingEl);
+    settingByEl.set(this.settingEl, this);
   }
 
   setName(n: string): this { this.nameEl.textContent = n; return this; }
@@ -367,14 +448,42 @@ export type PluginManifest = Plugin['manifest'];
 // production source code typechecks against this mock.
 declare global {
   interface HTMLElement {
-    createEl<K extends keyof HTMLElementTagNameMap>(tag: K, opts?: DomOptions): HTMLElementTagNameMap[K];
-    createDiv(opts?: DomOptions | string): HTMLDivElement;
-    createSpan(opts?: DomOptions | string): HTMLSpanElement;
+    createEl<K extends keyof HTMLElementTagNameMap>(
+      tag: K,
+      opts?: DomOptions,
+      callback?: (el: HTMLElementTagNameMap[K]) => void,
+    ): HTMLElementTagNameMap[K];
+    createDiv(opts?: DomOptions | string, callback?: (el: HTMLDivElement) => void): HTMLDivElement;
+    createSpan(opts?: DomOptions | string, callback?: (el: HTMLSpanElement) => void): HTMLSpanElement;
     empty(): void;
-    addClass(c: string): void;
-    removeClass(c: string): void;
-    setText(t: string): void;
-    toggleClass(c: string, on: boolean): void;
-    _obsidianMockPatched?: boolean;
+    addClass(...classes: string[]): void;
+    removeClass(...classes: string[]): void;
+    setText(t: string | DocumentFragment): void;
+    toggleClass(c: string | string[], on: boolean): void;
   }
+}
+
+// ─── Test helpers ────────────────────────────────────────────────────
+
+/**
+ * Find a button inside `root` by its visible text. Returns null if
+ * absent. Use over `querySelectorAll('button').find(...)` boilerplate.
+ */
+export function findButton(root: HTMLElement, label: string): HTMLButtonElement | null {
+  for (const b of Array.from(root.querySelectorAll('button'))) {
+    if ((b.textContent ?? '').trim() === label) return b;
+  }
+  return null;
+}
+
+/**
+ * Click a button by visible text. Throws if not found — silent
+ * no-op tests are the bug we're avoiding.
+ */
+export async function clickButton(root: HTMLElement, label: string): Promise<void> {
+  const b = findButton(root, label);
+  if (!b) throw new Error(`clickButton: no button with label "${label}" under root`);
+  b.click();
+  // Let the click handler's microtasks drain before we return.
+  await Promise.resolve();
 }

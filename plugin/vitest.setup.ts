@@ -13,7 +13,8 @@
 // setInterval / clearInterval) and `activeDocument` to a stub document
 // (or `document` if jsdom is in play).
 
-import { afterAll } from 'vitest';
+import { afterAll, beforeEach } from 'vitest';
+import { clearNotices } from './tests/__mocks__/obsidian';
 
 const g = globalThis as unknown as {
   activeWindow?: typeof globalThis;
@@ -28,6 +29,14 @@ if (typeof g.activeDocument === 'undefined') {
   g.activeDocument =
     typeof document !== 'undefined' ? document : ({} as object);
 }
+
+// Reset the obsidian-mock Notice buffer before every test so test
+// files that touch the UI don't see stale notices from a previous
+// suite. Tests can still call clearNotices() mid-test if they need
+// to assert on a fresh window.
+beforeEach(() => {
+  clearNotices();
+});
 
 afterAll(() => {
   // Keep the polyfills in place for the lifetime of the run; a no-op hook

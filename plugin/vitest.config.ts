@@ -28,12 +28,11 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      // src/ui/** + src/settings/** are now testable on the new
-      // tests/__mocks__/obsidian.ts runtime mock. OnboardingModal
-      // and SettingsTab have dedicated suites and contribute to
-      // coverage. The remaining UI/settings files are excluded
-      // until they grow their own tests — drop entries from this
-      // list as the suites land.
+      // src/ui/** + src/settings/** are testable on the
+      // tests/__mocks__/obsidian.ts runtime mock. Files below are
+      // excluded only until they have a dedicated test suite — drop
+      // entries from this list as the suites land, then bump the
+      // global thresholds back up.
       exclude: [
         'src/main.ts',
         'src/ui/ConnectModal.ts',
@@ -49,11 +48,8 @@ export default defineConfig({
         'src/ui/WriteConflictModal.ts',
         'src/settings/ProfileForm.ts',
       ],
-      // Thresholds calibrated for the broader measured scope (now
-      // includes OnboardingModal + SettingsTab — the previous 78/70/72
-      // numbers were based on `src/ui/**` + `src/settings/**` being
-      // entirely excluded). Bring back up as more UI suites land and
-      // their dedicated tests push the per-file coverage higher.
+      // Calibrated for the current measured scope. Bring back up as
+      // more UI/settings suites land and per-file coverage rises.
       thresholds: {
         lines: 65,
         branches: 60,
