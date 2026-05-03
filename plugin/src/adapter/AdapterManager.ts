@@ -389,8 +389,7 @@ export class AdapterManager {
     if (!conn) return null;
     if (!conn.info.capabilities.includes('fs.thumbnail')) return null;
     return async (vaultPath, maxDim) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await conn.rpc.call('fs.thumbnail', { path: vaultPath, maxDim }) as any;
+      const result = await conn.rpc.call('fs.thumbnail', { path: vaultPath, maxDim });
       const buf = Buffer.from(result.contentBase64, 'base64');
       return {
         bytes:  new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
@@ -418,13 +417,12 @@ export class AdapterManager {
       // PreconditionFailed (-32020) when the remote mtime no longer
       // matches; ResourceBridge catches that and re-issues with
       // `expectedMtime: undefined`. #171.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await conn.rpc.call('fs.readBinaryRange', {
         path: vaultPath,
         offset,
         length,
         ...(expectedMtime !== undefined ? { expectedMtime } : {}),
-      }) as any;
+      });
       const buf = Buffer.from(result.contentBase64, 'base64');
       return {
         bytes:     new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),

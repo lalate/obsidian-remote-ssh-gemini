@@ -13,7 +13,6 @@ import { RpcRemoteFsClient } from './adapter/RpcRemoteFsClient';
 import { AdapterManager } from './adapter/AdapterManager';
 import { establishRpcConnection } from './transport/RpcConnection';
 import { ServerDeployer } from './transport/ServerDeployer';
-import { ReconnectManager } from './transport/ReconnectManager';
 import type { ReconnectState } from './transport/ReconnectManager';
 import * as fs from 'fs';
 import { StatusBar } from './ui/StatusBar';
