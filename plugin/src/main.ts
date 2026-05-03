@@ -36,6 +36,7 @@ import { errorMessage } from "./util/errorMessage";
 import { ConnectionManager } from "./ConnectionManager";
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
+import { OnboardingModal } from "./ui/OnboardingModal";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -179,6 +180,12 @@ export default class RemoteSshPlugin extends Plugin {
       },
     });
 
+    this.addCommand({
+      id: 'show-onboarding',
+      name: 'Set up first remote vault',
+      callback: () => this.showOnboarding(),
+    });
+
     // Phase 4 + 6C-prep: if this vault was opened with an
     // autoConnectProfileId marker (= a shadow vault from
     // `ShadowVaultBootstrap`):
@@ -190,9 +197,33 @@ export default class RemoteSshPlugin extends Plugin {
     // vault initialization to finish before touching plugins or the
     // adapter.
     this.app.workspace.onLayoutReady(() => {
-      if (!this.settings.autoConnectProfileId) return;
-      void this.runShadowStartup();
+      if (this.settings.autoConnectProfileId) {
+        void this.runShadowStartup();
+        return;
+      }
+      // F17 — first-launch onboarding. Opens the wizard when the user
+      // has no profiles yet AND hasn't dismissed onboarding before.
+      // Skipped on shadow vaults (auto-connect path above).
+      if (this.settings.profiles.length === 0 && !this.settings.onboardingCompleted) {
+        this.showOnboarding();
+      }
     });
+  }
+
+  private showOnboarding() {
+    new OnboardingModal(
+      this.app,
+      this.getProfileFormDeps(),
+      async (profile) => {
+        this.settings.profiles.push(profile);
+        await this.saveSettings();
+      },
+      async () => {
+        if (this.settings.onboardingCompleted) return;
+        this.settings.onboardingCompleted = true;
+        await this.saveSettings();
+      },
+    ).open();
   }
 
   /**

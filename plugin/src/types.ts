@@ -90,6 +90,14 @@ export interface PluginSettings {
    */
   userName: string;
   /**
+   * F17 — first-launch onboarding completion flag. False/undefined by
+   * default so the OnboardingModal opens on first plugin load when no
+   * profiles exist. The user can also re-open it from the command
+   * palette; dismissing the modal flips this to true so it doesn't
+   * re-open on every layout-ready.
+   */
+  onboardingCompleted?: boolean;
+  /**
    * Shadow-vault marker (Phase 4). When set, the plugin's
    * `onLayoutReady` callback finds the matching profile and
    * automatically connects to it, then runs `VaultModelBuilder` to
