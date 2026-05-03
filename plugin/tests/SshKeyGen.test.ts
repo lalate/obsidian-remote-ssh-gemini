@@ -45,12 +45,15 @@ describe('SshKeyGen', () => {
     });
 
     it('throws when given a non-ed25519 SPKI key', () => {
-      const { publicKey } = crypto.generateKeyPairSync('rsa', {
-        modulusLength: 2048,
-        publicKeyEncoding:  { type: 'spki',  format: 'pem' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-      });
-      expect(() => pemPublicKeyToOpenSshEd25519(publicKey, 'x@y'))
+      // Hand-rolled non-44-byte body so we exercise the length guard
+      // without the ~100 ms cost of a real RSA-2048 generation. The
+      // exact bytes don't matter — only that the DER body length
+      // doesn't equal 44 (12-byte ed25519 SPKI prefix + 32-byte key).
+      const fakeRsaPem =
+        '-----BEGIN PUBLIC KEY-----\n' +
+        Buffer.alloc(64, 0).toString('base64') + '\n' +
+        '-----END PUBLIC KEY-----\n';
+      expect(() => pemPublicKeyToOpenSshEd25519(fakeRsaPem, 'x@y'))
         .toThrow(/unexpected SPKI ed25519 length/);
     });
   });
@@ -79,6 +82,16 @@ describe('SshKeyGen', () => {
       const keyPath = path.join(tmpDir, 'nested', 'subdir', 'id_test');
       await generateEd25519KeyPair(keyPath, 'me@host');
       expect(fs.existsSync(keyPath)).toBe(true);
+    });
+
+    it('refuses to overwrite an existing private key file (EEXIST)', async () => {
+      const keyPath = path.join(tmpDir, 'id_existing');
+      // Pre-create the path with arbitrary content so 'wx' rejects.
+      fs.writeFileSync(keyPath, 'pre-existing');
+      await expect(generateEd25519KeyPair(keyPath, 'x@y'))
+        .rejects.toMatchObject({ code: 'EEXIST' });
+      // Pre-existing content must survive — no truncation race.
+      expect(fs.readFileSync(keyPath, 'utf8')).toBe('pre-existing');
     });
 
     it('different invocations produce different keys', async () => {

@@ -10,7 +10,7 @@ import { SftpClient } from '../ssh/SftpClient';
 import { readSshConfig, type SshConfigEntry } from '../ssh/SshConfigReader';
 import { generateEd25519KeyPair } from '../ssh/SshKeyGen';
 import { RemotePathBrowserModal } from './RemotePathBrowserModal';
-import { DEFAULT_PROFILE } from '../constants';
+import { DEFAULT_PROFILE, ONBOARDING_FALLBACK_KEY_FILENAME } from '../constants';
 import { errorMessage } from '../util/errorMessage';
 import { logger } from '../util/logger';
 
@@ -18,6 +18,17 @@ export interface OnboardingDeps {
   authResolver: AuthResolver;
   hostKeyStore: HostKeyStore;
 }
+
+/**
+ * Callback fired when the user finishes the wizard. The plugin must
+ * persist `profile` (when present) and `dismissOnboarding` (when true)
+ * in a SINGLE saveSettings call to avoid the double-write race
+ * (M2 in the PR-222 review).
+ */
+export type OnboardingFinishCallback = (opts: {
+  profile?: SshProfile;
+  dismissOnboarding: boolean;
+}) => Promise<void>;
 
 /**
  * F17 — first-launch onboarding wizard. A single modal that walks
@@ -34,11 +45,13 @@ export class OnboardingModal extends Modal {
   private hasExistingKey = false;
   private existingKeyPath: string | null = null;
 
+  /** True once `onFinish({dismissOnboarding: true})` has run, to avoid double-dismiss in onClose. */
+  private alreadyDismissed = false;
+
   constructor(
     app: App,
     private readonly deps: OnboardingDeps,
-    private readonly onSave: (profile: SshProfile) => Promise<void>,
-    private readonly markCompleted: () => Promise<void>,
+    private readonly onFinish: OnboardingFinishCallback,
   ) {
     super(app);
     this.profile = {
@@ -57,7 +70,13 @@ export class OnboardingModal extends Modal {
     this.contentEl.empty();
     // Mark complete on any close so the modal doesn't reopen on the
     // next launch. The user can always re-run from the command palette.
-    void this.markCompleted();
+    // Save+test paths already passed dismissOnboarding=true and set
+    // `alreadyDismissed`, so this is a no-op for them.
+    if (this.alreadyDismissed) return;
+    this.alreadyDismissed = true;
+    this.onFinish({ dismissOnboarding: true }).catch(e => {
+      logger.error(`OnboardingModal: dismiss persist failed: ${errorMessage(e)}`);
+    });
   }
 
   private detectExistingKey(): void {
@@ -182,17 +201,15 @@ export class OnboardingModal extends Modal {
 
   private async generateKey(parent: HTMLElement) {
     const target = (this.profile.privateKeyPath?.trim() || '')
-      || path.join(os.homedir(), '.ssh', 'id_ed25519_obsidian_remote');
+      || path.join(os.homedir(), '.ssh', ONBOARDING_FALLBACK_KEY_FILENAME);
     if (!path.isAbsolute(target)) {
       new Notice('Private key path must be absolute');
       return;
     }
-    if (fs.existsSync(target)) {
-      new Notice(`Refusing to overwrite existing key at ${target}`);
-      return;
-    }
     try {
       const userLabel = this.profile.username || os.userInfo().username;
+      // generateEd25519KeyPair uses fs.open('wx') so an existing path
+      // surfaces as EEXIST here — atomic, no TOCTOU window.
       const { publicKey } = await generateEd25519KeyPair(
         target,
         `obsidian-remote@${userLabel}`,
@@ -203,7 +220,11 @@ export class OnboardingModal extends Modal {
       this.existingKeyPath = target;
       this.showPublicKeyHint(parent, publicKey, target);
     } catch (e) {
-      new Notice(`Key generation failed: ${errorMessage(e)}`);
+      const code = (e as NodeJS.ErrnoException).code;
+      const msg = code === 'EEXIST'
+        ? `Refusing to overwrite existing key at ${target}`
+        : `Key generation failed: ${errorMessage(e)}`;
+      new Notice(msg);
       logger.error(`OnboardingModal.generateKey failed: ${errorMessage(e)}`);
     }
   }
@@ -292,7 +313,8 @@ export class OnboardingModal extends Modal {
   private async saveOnly() {
     const err = this.validate();
     if (err) { new Notice(err); return; }
-    await this.onSave(this.profile);
+    this.alreadyDismissed = true;
+    await this.onFinish({ profile: this.profile, dismissOnboarding: true });
     new Notice('Profile saved');
     this.close();
   }
@@ -309,7 +331,8 @@ export class OnboardingModal extends Modal {
       await client.connect(this.profile);
       await client.list(this.profile.remotePath);
       await client.disconnect();
-      await this.onSave(this.profile);
+      this.alreadyDismissed = true;
+      await this.onFinish({ profile: this.profile, dismissOnboarding: true });
       new Notice(`Profile saved — connected to ${this.profile.host}`);
       this.close();
     } catch (e) {

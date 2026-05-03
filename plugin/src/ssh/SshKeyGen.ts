@@ -49,10 +49,23 @@ export async function generateEd25519KeyPair(
   // OpenSSH installed via the optional feature may not have it).
   await fs.mkdir(path.dirname(privateKeyPath), { recursive: true, mode: 0o700 });
 
-  // Private key first, with restrictive perms BEFORE the bytes land.
-  // ssh2 + OpenSSH both refuse keys whose mode is wider than 0600.
-  await fs.writeFile(privateKeyPath, privateKey, { mode: 0o600 });
-  await fs.writeFile(privateKeyPath + '.pub', opensshPublic + '\n', { mode: 0o644 });
+  // 'wx' = open for writing, exclusive create — fails atomically with
+  // EEXIST if the path is already taken, closing the TOCTOU window
+  // between an existsSync check and the actual write. Mode 0o600 is
+  // applied at create time so the bytes never land at a wider mode
+  // (ssh2 + OpenSSH both refuse keys with looser perms).
+  const privHandle = await fs.open(privateKeyPath, 'wx', 0o600);
+  try {
+    await privHandle.writeFile(privateKey);
+  } finally {
+    await privHandle.close();
+  }
+  const pubHandle = await fs.open(privateKeyPath + '.pub', 'wx', 0o644);
+  try {
+    await pubHandle.writeFile(opensshPublic + '\n');
+  } finally {
+    await pubHandle.close();
+  }
 
   return { publicKey: opensshPublic };
 }

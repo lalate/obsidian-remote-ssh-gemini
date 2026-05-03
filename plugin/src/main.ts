@@ -214,14 +214,20 @@ export default class RemoteSshPlugin extends Plugin {
     new OnboardingModal(
       this.app,
       this.getProfileFormDeps(),
-      async (profile) => {
-        this.settings.profiles.push(profile);
-        await this.saveSettings();
-      },
-      async () => {
-        if (this.settings.onboardingCompleted) return;
-        this.settings.onboardingCompleted = true;
-        await this.saveSettings();
+      async ({ profile, dismissOnboarding }) => {
+        // Single coalesced saveSettings — push profile + flip the
+        // dismiss flag in one disk write rather than two (M2 from
+        // PR #222 review).
+        let dirty = false;
+        if (profile) {
+          this.settings.profiles.push(profile);
+          dirty = true;
+        }
+        if (dismissOnboarding && !this.settings.onboardingCompleted) {
+          this.settings.onboardingCompleted = true;
+          dirty = true;
+        }
+        if (dirty) await this.saveSettings();
       },
     ).open();
   }
