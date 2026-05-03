@@ -49,6 +49,14 @@ export class CompatTFile implements Partial<TFile> {
   name: string;
   parent: TFolder | null = null;
   stat: { ctime: number; mtime: number; size: number };
+  /**
+   * Declared to satisfy `Partial<TFile>` shape; intentionally never
+   * assigned. Plugins that touch `file.vault` directly are out of
+   * harness scope — they should reach for the surrounding
+   * `CompatVault` instance instead. Reading this would crash; the
+   * `!` non-null assertion is "don't surface as a typing error in
+   * the harness", not "promise this is initialised".
+   */
   vault!: Vault;
 
   constructor(public path: string, public bytes: Uint8Array, mtime = Date.now()) {
@@ -65,6 +73,7 @@ export class CompatTFolder implements Partial<TFolder> {
   name: string;
   parent: TFolder | null = null;
   children: TAbstractFile[] = [];
+  /** See CompatTFile.vault — intentionally never assigned. */
   vault!: Vault;
 
   constructor(public path: string) {
@@ -80,8 +89,13 @@ const HEADING_RE = /^(#{1,6})\s+(.+)$/gm;
 const TASK_RE = /^(\s*)-\s+\[([ xX])\]\s+(.+)$/gm;
 
 function parseFrontmatter(body: string): { frontmatter?: FrontMatterCache; rest: string } {
-  const m = FRONTMATTER_RE.exec(body);
-  if (!m) return { rest: body };
+  // Normalise line endings so a Windows-authored fixture (CRLF) parses
+  // identically to a Unix-authored one. The fixtures in this PR are
+  // LF-only but a plugin scenario added later might import a CRLF
+  // file from a real vault. PR-224 review L3.
+  const normalised = body.replace(/\r\n/g, '\n');
+  const m = FRONTMATTER_RE.exec(normalised);
+  if (!m) return { rest: normalised };
   const fm: Record<string, unknown> = {};
   for (const line of m[1].split('\n')) {
     const colon = line.indexOf(':');
@@ -90,7 +104,7 @@ function parseFrontmatter(body: string): { frontmatter?: FrontMatterCache; rest:
     const raw = line.slice(colon + 1).trim();
     fm[key] = parseScalar(raw);
   }
-  return { frontmatter: fm as FrontMatterCache, rest: body.slice(m[0].length) };
+  return { frontmatter: fm as FrontMatterCache, rest: normalised.slice(m[0].length) };
 }
 
 function parseScalar(raw: string): unknown {
@@ -146,7 +160,11 @@ function zeroPos() {
 export class CompatMetadataCache {
   private readonly cache = new Map<string, CachedMetadata>();
 
-  /** Compute (and memoise) the CachedMetadata for `file`. */
+  /**
+   * Return the memoised CachedMetadata for `file`, or null if not
+   * cached. Computation happens in {@link rebuildFor} (called by
+   * CompatVault on create / modify); this method is a pure read.
+   */
   getFileCache(file: TFile): CachedMetadata | null {
     return this.cache.get(file.path) ?? null;
   }

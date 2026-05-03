@@ -1,6 +1,18 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import type { TAbstractFile, TFile } from 'obsidian';
 import { CompatVault } from './CompatVault';
 import { fixturesDir, loadFixtures } from './fixtures';
+
+/**
+ * Bridge `getAbstractFileByPath`'s `TAbstractFile | null` to the
+ * `TFile` shape the read/cache APIs accept. The harness only ever
+ * stores files (no folders), so the cast is safe — extracted to
+ * cut the `as never` noise that the PR-224 review (L2) flagged.
+ */
+function asFile(f: TAbstractFile | null): TFile {
+  if (!f) throw new Error('asFile: expected a file, got null');
+  return f as unknown as TFile;
+}
 
 /**
  * Phase E E-α — verifies the compat harness itself is correctly
@@ -12,9 +24,9 @@ import { fixturesDir, loadFixtures } from './fixtures';
 describe('Phase E compat harness', () => {
   let vault: CompatVault;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vault = new CompatVault();
-    const loaded = loadFixtures(vault, fixturesDir());
+    const loaded = await loadFixtures(vault, fixturesDir());
     // Fixture count is part of the contract — bumping the fixture set
     // is intentional, but a silent regression to the loader (e.g.
     // wrong glob) would also drop the count.
@@ -38,9 +50,9 @@ describe('Phase E compat harness', () => {
     });
 
     it('cachedRead and read return identical UTF-8 bodies', async () => {
-      const file = vault.getAbstractFileByPath('plain-note.md')!;
-      const a = await vault.read(file as never);
-      const b = await vault.cachedRead(file as never);
+      const file = asFile(vault.getAbstractFileByPath('plain-note.md'));
+      const a = await vault.read(file);
+      const b = await vault.cachedRead(file);
       expect(a).toBe(b);
       expect(a.startsWith('Just a plain note.')).toBe(true);
     });
@@ -70,15 +82,15 @@ describe('Phase E compat harness', () => {
         'attach.png',
         data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer,
       );
-      const back = await vault.readBinary(file as never);
+      const back = await vault.readBinary(file);
       expect(new Uint8Array(back)).toEqual(data);
     });
   });
 
   describe('metadata cache', () => {
     it('parses frontmatter scalars (string / number / boolean)', () => {
-      const file = vault.getAbstractFileByPath('note-with-frontmatter.md')!;
-      const cache = vault.metadataCache.getFileCache(file as never);
+      const file = asFile(vault.getAbstractFileByPath('note-with-frontmatter.md'));
+      const cache = vault.metadataCache.getFileCache(file);
       expect(cache).not.toBeNull();
       const fm = cache!.frontmatter as Record<string, unknown>;
       expect(fm.title).toBe('Frontmatter sample');
@@ -88,8 +100,8 @@ describe('Phase E compat harness', () => {
     });
 
     it('extracts headings with level + text', () => {
-      const file = vault.getAbstractFileByPath('note-with-headings.md')!;
-      const cache = vault.metadataCache.getFileCache(file as never);
+      const file = asFile(vault.getAbstractFileByPath('note-with-headings.md'));
+      const cache = vault.metadataCache.getFileCache(file);
       expect(cache).not.toBeNull();
       const headings = (cache!.headings ?? []).map(h => ({ heading: h.heading, level: h.level }));
       expect(headings).toEqual([
@@ -101,8 +113,8 @@ describe('Phase E compat harness', () => {
     });
 
     it('extracts checkbox tasks (open vs done) and ignores non-task lines', () => {
-      const file = vault.getAbstractFileByPath('note-with-tasks.md')!;
-      const cache = vault.metadataCache.getFileCache(file as never);
+      const file = asFile(vault.getAbstractFileByPath('note-with-tasks.md'));
+      const cache = vault.metadataCache.getFileCache(file);
       expect(cache).not.toBeNull();
       const tasks = (cache!.listItems ?? []).map(t => t.task);
       // 4 expected: 2 open (' '), 2 done ('x' — uppercase X collapses to 'x').
@@ -110,27 +122,38 @@ describe('Phase E compat harness', () => {
     });
 
     it('produces empty headings / listItems and no frontmatter for the plain note', () => {
-      const file = vault.getAbstractFileByPath('plain-note.md')!;
-      const cache = vault.metadataCache.getFileCache(file as never);
+      const file = asFile(vault.getAbstractFileByPath('plain-note.md'));
+      const cache = vault.metadataCache.getFileCache(file);
       expect(cache).not.toBeNull();
       expect(cache!.frontmatter).toBeUndefined();
       expect(cache!.headings).toEqual([]);
       expect(cache!.listItems).toEqual([]);
     });
 
+    it('parses frontmatter from a CRLF-encoded body identically to LF (L3)', async () => {
+      const body = '---\r\ntitle: CRLF\r\nflag: true\r\n---\r\n# Heading\r\n';
+      await vault.create('crlf.md', body);
+      const file = asFile(vault.getAbstractFileByPath('crlf.md'));
+      const cache = vault.metadataCache.getFileCache(file);
+      const fm = cache!.frontmatter as Record<string, unknown>;
+      expect(fm.title).toBe('CRLF');
+      expect(fm.flag).toBe(true);
+      expect(cache!.headings?.[0]?.heading).toBe('Heading');
+    });
+
     it('rebuilds the cache after modify so a body change is reflected', async () => {
-      const file = vault.getAbstractFileByPath('plain-note.md')!;
-      await vault.modify(file as never, '# Now I have a heading');
-      const cache = vault.metadataCache.getFileCache(file as never);
+      const file = asFile(vault.getAbstractFileByPath('plain-note.md'));
+      await vault.modify(file, '# Now I have a heading');
+      const cache = vault.metadataCache.getFileCache(file);
       expect(cache!.headings?.[0]?.heading).toBe('Now I have a heading');
     });
 
     it('invalidates the cache on delete', async () => {
-      const file = vault.getAbstractFileByPath('plain-note.md')!;
-      await vault.delete(file as never);
+      const file = asFile(vault.getAbstractFileByPath('plain-note.md'));
+      await vault.delete(file);
       // The TFile reference is now dangling but still has a path; the
       // cache lookup must return null so plugins don't see stale data.
-      expect(vault.metadataCache.getFileCache(file as never)).toBeNull();
+      expect(vault.metadataCache.getFileCache(file)).toBeNull();
     });
   });
 });
