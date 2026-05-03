@@ -57,6 +57,11 @@ export class Telemetry {
    * Toggle the gate. When enabled, opens the JSONL file (creates the
    * parent dir if missing) and starts the periodic flush timer.
    * When disabled, flushes any buffered counts then closes.
+   *
+   * **Idempotent**: calling `setEnabled(true, newPath)` while already
+   * enabled is a no-op — `newPath` is ignored. To re-point the log,
+   * disable first then re-enable. The plugin always re-uses
+   * {@link telemetryLogPath}, so this hasn't been an issue in practice.
    */
   async setEnabled(enabled: boolean, logPath?: string): Promise<void> {
     if (enabled === this.enabled) return;
@@ -97,7 +102,15 @@ export class Telemetry {
     this.bump(`reconnect\t${state}`);
   }
 
-  /** Snapshot for the settings "view counters" modal. */
+  /**
+   * Snapshot for the settings "view counters" modal.
+   *
+   * `at` on each returned record is set to the current wall-clock ms
+   * (snapshot time, not the original event time — counters are
+   * deltas and the per-event timestamps were never tracked). The UI
+   * uses the records for category × code aggregation only, so the
+   * `at` value is informational.
+   */
   snapshot(): TelemetryRecord[] {
     const out: TelemetryRecord[] = [];
     const now = Date.now();
@@ -112,7 +125,13 @@ export class Telemetry {
     this.counters.clear();
   }
 
-  /** Append the current counters to the JSONL log and clear them. */
+  /**
+   * Append the current counters to the JSONL log and clear them.
+   * Counters are cleared ONLY after the appendFile resolves — a
+   * write failure (disk full, permissions) leaves the in-memory
+   * deltas intact so the next flush retries them rather than
+   * silently dropping data.
+   */
   async flush(): Promise<void> {
     if (!this.enabled || !this.logPath || this.counters.size === 0) return;
     const now = Date.now();
@@ -120,9 +139,9 @@ export class Telemetry {
     for (const [key, count] of this.counters) {
       lines.push(JSON.stringify(this.parseKey(key, count, now)));
     }
-    this.counters.clear();
     try {
       await fs.appendFile(this.logPath, lines.join('\n') + '\n', 'utf8');
+      this.counters.clear();
     } catch (e) {
       logger.warn(`Telemetry: appendFile failed for ${this.logPath}: ${errorMessage(e)}`);
     }
@@ -146,3 +165,19 @@ export class Telemetry {
 
 /** Singleton — wired in main.ts onload, observed by ConnectionManager + errorTaxonomy. */
 export const telemetry = new Telemetry();
+
+/**
+ * Canonical on-disk location for the telemetry JSONL log. Single
+ * source of truth shared by `main.ts` (initial open on `onload`) and
+ * `SettingsTab.ts` (re-open when the user flips the toggle).
+ *
+ * Lives next to the rest of the plugin's state so users see all of
+ * it under one folder when they look in their vault's `.obsidian/`.
+ */
+export function telemetryLogPath(
+  basePath: string,
+  configDir: string,
+  manifestId: string,
+): string {
+  return path.join(basePath, configDir, 'plugins', manifestId, 'telemetry.jsonl');
+}

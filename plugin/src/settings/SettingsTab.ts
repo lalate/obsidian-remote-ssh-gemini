@@ -1,6 +1,5 @@
 import { App, FileSystemAdapter, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
-import * as path from 'path';
-import { telemetry, type TelemetryRecord } from '../util/Telemetry';
+import { telemetry, telemetryLogPath, type TelemetryRecord } from '../util/Telemetry';
 import type RemoteSshPlugin from '../main';
 import { ProfileForm } from './ProfileForm';
 import type { SshProfile } from '../types';
@@ -127,10 +126,10 @@ export class SettingsTab extends PluginSettingTab {
           const adapter = this.app.vault.adapter;
           const basePath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
           if (v && basePath) {
-            const p = path.join(
-              basePath, this.app.vault.configDir, 'plugins', this.plugin.manifest.id, 'telemetry.jsonl',
+            await telemetry.setEnabled(
+              true,
+              telemetryLogPath(basePath, this.app.vault.configDir, this.plugin.manifest.id),
             );
-            await telemetry.setEnabled(true, p);
           } else {
             await telemetry.setEnabled(false);
           }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Telemetry } from '../src/util/Telemetry';
+import { Telemetry, telemetryLogPath } from '../src/util/Telemetry';
 
 describe('Telemetry', () => {
   let tmpDir: string;
@@ -153,6 +153,34 @@ describe('Telemetry', () => {
     it('flush with no counters is a no-op (file not created)', async () => {
       await t.flush();
       expect(fs.existsSync(logPath)).toBe(false);
+    });
+
+    it('preserves counters when appendFile fails (M1: no data loss)', async () => {
+      // Force a write failure by pointing logPath at a directory.
+      // Node will reject appendFile with EISDIR — the catch in
+      // flush() should leave counters intact for the next attempt.
+      const dirAsPath = path.join(tmpDir, 'dir-not-file');
+      fs.mkdirSync(dirAsPath);
+      const t2 = new Telemetry();
+      await t2.setEnabled(true, dirAsPath);
+      t2.recordError('timeout', -32000);
+      t2.recordError('timeout', -32000);
+
+      await t2.flush();
+
+      // Counters should survive the failed write.
+      const snap = t2.snapshot();
+      expect(snap).toHaveLength(1);
+      expect(snap[0].count).toBe(2);
+      await t2.setEnabled(false);
+    });
+  });
+
+  describe('telemetryLogPath helper', () => {
+    it('joins basePath / configDir / plugins / manifestId / telemetry.jsonl', () => {
+      const p = telemetryLogPath('/vault', '.obsidian', 'remote-ssh');
+      // Use path.sep so the test is platform-independent.
+      expect(p).toBe(path.join('/vault', '.obsidian', 'plugins', 'remote-ssh', 'telemetry.jsonl'));
     });
   });
 

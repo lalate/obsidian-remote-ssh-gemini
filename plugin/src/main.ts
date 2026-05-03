@@ -37,7 +37,7 @@ import { ConnectionManager } from "./ConnectionManager";
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
-import { telemetry } from "./util/Telemetry";
+import { telemetry, telemetryLogPath } from "./util/Telemetry";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -79,10 +79,10 @@ export default class RemoteSshPlugin extends Plugin {
     // plugin state under the vault's configDir. Wires no-op when
     // basePath is null (mobile / unusual builds) or the toggle is off.
     if (this.settings.telemetryEnabled && basePath) {
-      const telemetryPath = path.join(
-        basePath, this.app.vault.configDir, 'plugins', this.manifest.id, 'telemetry.jsonl',
+      void telemetry.setEnabled(
+        true,
+        telemetryLogPath(basePath, this.app.vault.configDir, this.manifest.id),
       );
-      void telemetry.setEnabled(true, telemetryPath);
     }
 
     this.fsChangeListener = new FsChangeListener(this.app);
