@@ -223,29 +223,33 @@ export class CompatVault {
     return f ? (f as unknown as TAbstractFile) : null;
   }
 
-  read(file: TFile): Promise<string> {
+  // All CRUD methods are `async` so the not-found / already-exists
+  // throws become Promise rejections rather than escaping synchronously
+  // — `await vault.X(...).rejects.toThrow(...)` then catches them, which
+  // is the contract callers expect from a Promise-returning API.
+  async read(file: TFile): Promise<string> {
     const f = this.files.get(file.path);
     if (!f) throw new Error(`CompatVault.read: file not found: ${file.path}`);
-    return Promise.resolve(TEXT_DECODER.decode(f.bytes));
+    return TEXT_DECODER.decode(f.bytes);
   }
 
   /** Same as read; the harness has no separate cached path. */
-  cachedRead(file: TFile): Promise<string> {
+  async cachedRead(file: TFile): Promise<string> {
     return this.read(file);
   }
 
-  readBinary(file: TFile): Promise<ArrayBuffer> {
+  async readBinary(file: TFile): Promise<ArrayBuffer> {
     const f = this.files.get(file.path);
     if (!f) throw new Error(`CompatVault.readBinary: file not found: ${file.path}`);
     // Return a copy so callers can't mutate the stored bytes.
     const buf = new ArrayBuffer(f.bytes.byteLength);
     new Uint8Array(buf).set(f.bytes);
-    return Promise.resolve(buf);
+    return buf;
   }
 
   // ─── write APIs ─────────────────────────────────────────────────
 
-  create(path: string, data: string): Promise<TFile> {
+  async create(path: string, data: string): Promise<TFile> {
     if (this.files.has(path)) {
       throw new Error(`CompatVault.create: file already exists: ${path}`);
     }
@@ -253,37 +257,42 @@ export class CompatVault {
     this.files.set(path, file);
     this.metadataCache.rebuildFor(file as unknown as TFile, data);
     this.fire('create', file);
-    return Promise.resolve(file as unknown as TFile);
+    return file as unknown as TFile;
   }
 
-  createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
+  async createBinary(path: string, data: ArrayBuffer): Promise<TFile> {
     if (this.files.has(path)) {
       throw new Error(`CompatVault.createBinary: file already exists: ${path}`);
     }
-    const file = new CompatTFile(path, new Uint8Array(data));
+    // Defensive copy of the caller's ArrayBuffer — `new Uint8Array(data)`
+    // shares the underlying buffer, so a caller that mutates `data`
+    // post-call would silently change our store. PR-227 review M1
+    // (mirrors the defensive copy `readBinary` already does on the way
+    // out).
+    const stored = new Uint8Array(data.byteLength);
+    stored.set(new Uint8Array(data));
+    const file = new CompatTFile(path, stored);
     this.files.set(path, file);
     this.metadataCache.invalidate(path);
     this.fire('create', file);
-    return Promise.resolve(file as unknown as TFile);
+    return file as unknown as TFile;
   }
 
-  modify(file: TFile, data: string): Promise<void> {
+  async modify(file: TFile, data: string): Promise<void> {
     const f = this.files.get(file.path);
     if (!f) throw new Error(`CompatVault.modify: file not found: ${file.path}`);
     f.bytes = TEXT_ENCODER.encode(data);
     f.stat = { ...f.stat, mtime: Date.now(), size: f.bytes.byteLength };
     this.metadataCache.rebuildFor(f as unknown as TFile, data);
     this.fire('modify', f);
-    return Promise.resolve();
   }
 
-  delete(file: TFile): Promise<void> {
+  async delete(file: TFile): Promise<void> {
     if (!this.files.delete(file.path)) {
       throw new Error(`CompatVault.delete: file not found: ${file.path}`);
     }
     this.metadataCache.invalidate(file.path);
     this.fire('delete', file);
-    return Promise.resolve();
   }
 
   // ─── events ─────────────────────────────────────────────────────
