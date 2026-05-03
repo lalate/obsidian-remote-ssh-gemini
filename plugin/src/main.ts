@@ -37,6 +37,7 @@ import { ConnectionManager } from "./ConnectionManager";
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
+import { telemetry, telemetryLogPath } from "./util/Telemetry";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -73,6 +74,16 @@ export default class RemoteSshPlugin extends Plugin {
     const basePath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
     this.observability = new ObservabilityInstaller(this.manifest, basePath, this.app.vault.configDir);
     this.observability.install();
+
+    // F22 — opt-in anonymous telemetry. Counters live next to other
+    // plugin state under the vault's configDir. Wires no-op when
+    // basePath is null (mobile / unusual builds) or the toggle is off.
+    if (this.settings.telemetryEnabled && basePath) {
+      void telemetry.setEnabled(
+        true,
+        telemetryLogPath(basePath, this.app.vault.configDir, this.manifest.id),
+      );
+    }
 
     this.fsChangeListener = new FsChangeListener(this.app);
 
@@ -257,6 +268,8 @@ export default class RemoteSshPlugin extends Plugin {
     this.pendingEditsBar?.remove();
     this.largeTransferBar?.remove();
     this.observability?.uninstall();
+    // F22 — flush any in-memory counters before the process tears down.
+    void telemetry.setEnabled(false);
   }
 
   async loadSettings() {
@@ -496,6 +509,8 @@ export default class RemoteSshPlugin extends Plugin {
    * and, on terminal states, clean up.
    */
   private onReconnectStateChange(s: ReconnectState): void {
+    // F22 — opt-in telemetry. No-op when disabled.
+    telemetry.recordReconnect(s.kind);
     if (s.kind === 'waiting') {
       const seconds = Math.max(1, Math.round(s.delayMs / 1000));
       this.statusBar.update(
