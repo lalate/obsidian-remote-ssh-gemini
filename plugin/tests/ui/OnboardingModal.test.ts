@@ -1,9 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
-import { OnboardingModal, type OnboardingFinishCallback } from '../../src/ui/OnboardingModal';
-import { App, recordedNotices } from 'obsidian';
+import { App, clickButton, recordedNotices } from 'obsidian';
 import type { AuthResolver } from '../../src/ssh/AuthResolver';
 import type { HostKeyStore } from '../../src/ssh/HostKeyStore';
 import type { SshProfile } from '../../src/types';
+
+// Mock the keygen so the Generate-key tests don't touch ~/.ssh.
+// Per-test overrides re-stub the impl (vi.mocked(...).mockImplementation).
+vi.mock('../../src/ssh/SshKeyGen', () => ({
+  generateEd25519KeyPair: vi.fn().mockResolvedValue({ publicKey: 'ssh-ed25519 AAAA mock' }),
+}));
+
+import { OnboardingModal, type OnboardingFinishCallback } from '../../src/ui/OnboardingModal';
+import { generateEd25519KeyPair } from '../../src/ssh/SshKeyGen';
 
 // Stub auth deps — never connected, just exist for the modal.
 const authResolver = {} as AuthResolver;
@@ -146,16 +154,71 @@ describe('OnboardingModal', () => {
       m.profile.host = '';
       m.profile.username = '';
 
-      // Locate the Browse button under the "3. Remote vault path"
-      // section and click it. The empty-host guard short-circuits
-      // before RemotePathBrowserModal is constructed.
-      const browse = Array.from(modal.contentEl.querySelectorAll('button'))
-        .find(b => (b.textContent ?? '').trim() === 'Browse…');
-      expect(browse).toBeTruthy();
-      browse!.click();
-      await Promise.resolve();
+      // Empty-host guard short-circuits before RemotePathBrowserModal
+      // is constructed (which would otherwise pull in real SSH deps).
+      await clickButton(modal.contentEl, 'Browse…');
 
       expect(recordedNotices()).toContain('Fill in host and username first');
+    });
+  });
+
+  describe('Generate key button', () => {
+    it('happy path: writes keypair, swaps in pubkey hint block, sets profile fields', async () => {
+      vi.mocked(generateEd25519KeyPair).mockResolvedValueOnce({
+        publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 obsidian-remote@alice',
+      });
+
+      const { cb } = recordingFinish();
+      const modal = new OnboardingModal(new App(), deps, cb);
+      modal.open();
+      const m = internals(modal);
+      m.profile.username = 'alice';
+      m.profile.privateKeyPath = '/tmp/test-key';
+
+      await clickButton(modal.contentEl, 'Generate');
+
+      expect(generateEd25519KeyPair).toHaveBeenCalledWith(
+        '/tmp/test-key',
+        'obsidian-remote@alice',
+      );
+      expect(m.profile.privateKeyPath).toBe('/tmp/test-key');
+      expect(m.profile.authMethod).toBe('privateKey');
+      // The pubkey block is rendered into the auth section after success.
+      const text = modal.contentEl.textContent ?? '';
+      expect(text).toContain('Add this key to the remote host');
+      expect(text).toContain('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5');
+    });
+
+    it('EEXIST: surfaces "Refusing to overwrite" Notice and leaves profile untouched', async () => {
+      const err = new Error('file exists') as NodeJS.ErrnoException;
+      err.code = 'EEXIST';
+      vi.mocked(generateEd25519KeyPair).mockRejectedValueOnce(err);
+
+      const { cb } = recordingFinish();
+      const modal = new OnboardingModal(new App(), deps, cb);
+      modal.open();
+      const m = internals(modal);
+      m.profile.privateKeyPath = '/tmp/already-here';
+      m.profile.authMethod = 'password';  // shouldn't get flipped on failure
+
+      await clickButton(modal.contentEl, 'Generate');
+
+      expect(recordedNotices().some(n => n.includes('Refusing to overwrite'))).toBe(true);
+      expect(m.profile.authMethod).toBe('password');
+    });
+
+    it('rejects non-absolute path with a Notice without invoking keygen', async () => {
+      const { cb } = recordingFinish();
+      const modal = new OnboardingModal(new App(), deps, cb);
+      modal.open();
+      const m = internals(modal);
+      m.profile.privateKeyPath = 'relative/path';
+      vi.mocked(generateEd25519KeyPair).mockClear();
+
+      await clickButton(modal.contentEl, 'Generate');
+
+      expect(recordedNotices()).toContain('Private key path must be absolute');
+      expect(generateEd25519KeyPair).not.toHaveBeenCalled();
     });
   });
 

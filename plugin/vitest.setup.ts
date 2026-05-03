@@ -13,8 +13,8 @@
 // setInterval / clearInterval) and `activeDocument` to a stub document
 // (or `document` if jsdom is in play).
 
-import { afterAll, beforeEach } from 'vitest';
-import { clearNotices } from './tests/__mocks__/obsidian';
+import { beforeEach } from 'vitest';
+import { clearNotices } from 'obsidian';
 
 const g = globalThis as unknown as {
   activeWindow?: typeof globalThis;
@@ -36,9 +36,4 @@ if (typeof g.activeDocument === 'undefined') {
 // to assert on a fresh window.
 beforeEach(() => {
   clearNotices();
-});
-
-afterAll(() => {
-  // Keep the polyfills in place for the lifetime of the run; a no-op hook
-  // here just makes the intent explicit.
 });

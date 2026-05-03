@@ -225,15 +225,13 @@ function makeToggle(): ToggleComponent {
 
 function makeButton(): ButtonComponent {
   let onClick: (() => void | Promise<void>) | null = null;
-  const buttonEl = (typeof document !== 'undefined' ? document.createElement('button') : ({} as HTMLButtonElement));
+  const buttonEl = document.createElement('button');
   // Wire the native click event so `containerEl.querySelector('button').click()`
   // also fires the registered handler. Without this, query-and-click test
   // patterns silently no-op against the mock.
-  if (typeof document !== 'undefined') {
-    buttonEl.addEventListener('click', () => {
-      if (onClick) void onClick();
-    });
-  }
+  buttonEl.addEventListener('click', () => {
+    if (onClick) void onClick();
+  });
   const c: ButtonComponent = {
     kind: 'button',
     setButtonText(t) { (buttonEl as HTMLButtonElement).textContent = t; return c; },
@@ -479,11 +477,17 @@ export function findButton(root: HTMLElement, label: string): HTMLButtonElement 
 /**
  * Click a button by visible text. Throws if not found — silent
  * no-op tests are the bug we're avoiding.
+ *
+ * Drains a single microtask tick after the click. That is sufficient
+ * for any onClick whose body is `await x; await y; …` over already-
+ * resolved promises (V8 collapses the chained microtasks in one drain).
+ * Handlers that schedule on `setTimeout` / `setImmediate`, or that
+ * fire-and-forget a Promise without awaiting it, need a `vi.waitFor`
+ * after the call instead.
  */
 export async function clickButton(root: HTMLElement, label: string): Promise<void> {
   const b = findButton(root, label);
   if (!b) throw new Error(`clickButton: no button with label "${label}" under root`);
   b.click();
-  // Let the click handler's microtasks drain before we return.
   await Promise.resolve();
 }
