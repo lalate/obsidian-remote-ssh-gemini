@@ -351,3 +351,55 @@ image-handling or export plugins:
   results filtered to Obsidian plugin repos by path and context.
 - Matches in `obsidian.d.ts` type stubs, bundled `main.js` of other
   plugins committed to vault configs, and test fixtures were excluded.
+
+## Compat harness (#124 Phase E)
+
+The compat harness lives at `plugin/tests/compat/` and provides a
+duck-typed Vault + MetadataCache for plugin-driven scenario tests
+without a real Obsidian process. **Approach B** from #124 — fast,
+deterministic, vitest-native.
+
+### Files
+
+| File | Purpose |
+| --- | --- |
+| `CompatVault.ts` | `CompatVault`, `CompatTFile`, `CompatTFolder`, `CompatMetadataCache`. |
+| `fixtures.ts` | `loadFixtures(vault, dir)` walks `dir` for `.md` files and seeds the vault. |
+| `fixtures/*.md` | 4 hand-crafted markdown fixtures (frontmatter / headings / tasks / plain). |
+| `harness.test.ts` | 11 smoke tests verifying the harness itself. |
+
+### Hot duck-type surface (the contract this harness honours)
+
+```text
+vault.getMarkdownFiles()         → TFile[] of every '.md' file
+vault.getAbstractFileByPath(p)   → TFile | TFolder | null
+vault.read(file)                 → text contents (Promise<string>)
+vault.cachedRead(file)           → text contents (Promise<string>)
+vault.create(path, data)         → TFile (Templater)
+vault.modify(file, data)         → void  (Templater)
+vault.createBinary(path, data)   → TFile (Excalidraw)
+vault.readBinary(file)           → ArrayBuffer (Excalidraw)
+vault.delete(file)               → void
+vault.on / offref / trigger      → events ('create' | 'modify' | 'delete' | 'rename')
+metadataCache.getFileCache(file) → CachedMetadata (Dataview, Tasks)
+```
+
+`CachedMetadata` carries `frontmatter` (YAML scalars: string / number /
+boolean / null), `headings[]` (level 1-6 with text), and `listItems[]`
+(checkbox tasks with `task: ' '` for open or `'x'` for done). Other
+fields from `obsidian.d.ts` are intentionally omitted — they're added
+when a plugin scenario asks for them.
+
+### Adding a new scenario
+
+1. Drop a new `<plugin>.test.ts` next to `harness.test.ts`.
+2. Construct a fresh `CompatVault`, `loadFixtures(vault, fixturesDir())`.
+3. Drive the plugin-equivalent calls (e.g. for Dataview: iterate
+   `vault.getMarkdownFiles()` and read each `metadataCache.getFileCache(file)`).
+4. Assert the expected aggregated output.
+5. If the scenario hits a `vault.X` method that's not in the surface,
+   add it to `CompatVault.ts` first — keep the harness adds-as-needed
+   rather than mocking the entire `obsidian.d.ts`.
+
+The roadmap in #124 covers F11 (Dataview), F12 (Templater), F13
+(Excalidraw), F14 (Tasks). Each lands as a separate PR.
