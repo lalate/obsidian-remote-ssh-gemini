@@ -17,6 +17,7 @@ import { PendingEditsModal } from '../ui/PendingEditsModal';
 import type { ConnectionManager } from '../ConnectionManager';
 import { ConnectionManager as CM } from '../ConnectionManager';
 import type { FsChangeListener } from '../vault/FsChangeListener';
+import type { TransferTracker } from '../util/TransferTracker';
 import { PathMapper } from '../path/PathMapper';
 import { logger } from '../util/logger';
 import { errorMessage } from '../util/errorMessage';
@@ -73,6 +74,7 @@ export class AdapterManager {
     private readonly fsChangeListener: FsChangeListener,
     private readonly pendingEditsBar: PendingEditsBar,
     private readonly getSettings: () => PluginSettings,
+    private readonly transferTracker: TransferTracker | null = null,
   ) {}
 
   get dataAdapter(): SftpDataAdapter | null {
@@ -216,6 +218,7 @@ export class AdapterManager {
       this.ancestorTracker,
       this.offlineQueue,
       shadowBasePath,
+      this.transferTracker,
     );
     this.patcher = new AdapterPatcher(targetAdapter, this._dataAdapter);
     try {
@@ -270,6 +273,7 @@ export class AdapterManager {
     this.dirCache = null;
     this.ancestorTracker?.clear();
     this.ancestorTracker = null;
+    this.transferTracker?.clear();
     // Bridge tears down asynchronously; we don't await here because
     // restore() must remain sync for the connection-close hook.
     void this.stopResourceBridge();
@@ -385,8 +389,7 @@ export class AdapterManager {
     if (!conn) return null;
     if (!conn.info.capabilities.includes('fs.thumbnail')) return null;
     return async (vaultPath, maxDim) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = await conn.rpc.call('fs.thumbnail', { path: vaultPath, maxDim }) as any;
+      const result = await conn.rpc.call('fs.thumbnail', { path: vaultPath, maxDim });
       const buf = Buffer.from(result.contentBase64, 'base64');
       return {
         bytes:  new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),
@@ -414,13 +417,12 @@ export class AdapterManager {
       // PreconditionFailed (-32020) when the remote mtime no longer
       // matches; ResourceBridge catches that and re-issues with
       // `expectedMtime: undefined`. #171.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await conn.rpc.call('fs.readBinaryRange', {
         path: vaultPath,
         offset,
         length,
         ...(expectedMtime !== undefined ? { expectedMtime } : {}),
-      }) as any;
+      });
       const buf = Buffer.from(result.contentBase64, 'base64');
       return {
         bytes:     new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength),

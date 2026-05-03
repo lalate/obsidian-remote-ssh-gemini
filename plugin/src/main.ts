@@ -13,7 +13,6 @@ import { RpcRemoteFsClient } from './adapter/RpcRemoteFsClient';
 import { AdapterManager } from './adapter/AdapterManager';
 import { establishRpcConnection } from './transport/RpcConnection';
 import { ServerDeployer } from './transport/ServerDeployer';
-import { ReconnectManager } from './transport/ReconnectManager';
 import type { ReconnectState } from './transport/ReconnectManager';
 import * as fs from 'fs';
 import { StatusBar } from './ui/StatusBar';
@@ -35,6 +34,8 @@ import { normalizeRemotePath } from './util/pathUtils';
 import * as path from 'path';
 import { errorMessage } from "./util/errorMessage";
 import { ConnectionManager } from "./ConnectionManager";
+import { TransferTracker } from "./util/TransferTracker";
+import { LargeTransferBar } from "./ui/LargeTransferBar";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -51,6 +52,13 @@ export default class RemoteSshPlugin extends Plugin {
    * when the queue is empty; click opens `PendingEditsModal`.
    */
   private pendingEditsBar!: PendingEditsBar;
+  /**
+   * Tracks in-flight large (>1 MB) file transfers so the StatusBar
+   * can show the user something is happening (#127). Pure in-memory.
+   */
+  private transferTracker: TransferTracker = new TransferTracker();
+  /** Status-bar indicator wired to the transferTracker. */
+  private largeTransferBar: LargeTransferBar | null = null;
   /** Owns the daemon fs.watch subscription + notification dispatch. */
   private fsChangeListener!: FsChangeListener;
   private observability: ObservabilityInstaller | null = null;
@@ -96,6 +104,10 @@ export default class RemoteSshPlugin extends Plugin {
     // this bar's refresh helper.
     this.pendingEditsBar = new PendingEditsBar(this, () => void this.adapterMgr.showPendingEditsModal());
 
+    // Large transfer indicator (#127) — shown only when >1 MB
+    // file transfers are in flight. Subscribes to transferTracker.
+    this.largeTransferBar = new LargeTransferBar(this, this.transferTracker);
+
     this.adapterMgr = new AdapterManager(
       this.app,
       this.manifest,
@@ -103,6 +115,7 @@ export default class RemoteSshPlugin extends Plugin {
       this.fsChangeListener,
       this.pendingEditsBar,
       () => this.settings,
+      this.transferTracker,
     );
 
     this.addCommand({
@@ -205,6 +218,7 @@ export default class RemoteSshPlugin extends Plugin {
     void this.disconnect().catch(() => { /* ignore */ });
     this.statusBar?.remove();
     this.pendingEditsBar?.remove();
+    this.largeTransferBar?.remove();
     this.observability?.uninstall();
   }
 
