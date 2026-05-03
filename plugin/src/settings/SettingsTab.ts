@@ -1,4 +1,6 @@
-import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { App, FileSystemAdapter, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
+import * as path from 'path';
+import { telemetry, type TelemetryRecord } from '../util/Telemetry';
 import type RemoteSshPlugin from '../main';
 import { ProfileForm } from './ProfileForm';
 import type { SshProfile } from '../types';
@@ -79,6 +81,8 @@ export class SettingsTab extends PluginSettingTab {
 
     this.renderDaemonPanel(containerEl);
 
+    this.renderTelemetryPanel(containerEl);
+
     new Setting(containerEl).setName("Advanced").setHeading();
 
     new Setting(containerEl)
@@ -104,6 +108,61 @@ export class SettingsTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }
         }));
+  }
+
+  private renderTelemetryPanel(containerEl: HTMLElement) {
+    new Setting(containerEl).setName('Telemetry').setHeading();
+
+    new Setting(containerEl)
+      .setName('Enable anonymous telemetry')
+      .setDesc(
+        'Locally count error categories and reconnect-state outcomes. ' +
+        'Stays on disk under the plugin folder; nothing is sent over the network. ' +
+        'Useful for pasting a counter snapshot into a bug report.',
+      )
+      .addToggle(t => t.setValue(this.plugin.settings.telemetryEnabled ?? false)
+        .onChange(async v => {
+          this.plugin.settings.telemetryEnabled = v;
+          await this.plugin.saveSettings();
+          const adapter = this.app.vault.adapter;
+          const basePath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
+          if (v && basePath) {
+            const p = path.join(
+              basePath, this.app.vault.configDir, 'plugins', this.plugin.manifest.id, 'telemetry.jsonl',
+            );
+            await telemetry.setEnabled(true, p);
+          } else {
+            await telemetry.setEnabled(false);
+          }
+          this.display();
+        }));
+
+    if (!telemetry.isEnabled()) return;
+
+    new Setting(containerEl)
+      .setName('Counters')
+      .setDesc('In-memory deltas since the last flush.')
+      .addButton(btn => btn
+        .setButtonText('View')
+        .onClick(() => this.showTelemetryCounters()))
+      .addButton(btn => btn
+        .setButtonText('Flush now')
+        .onClick(async () => {
+          await telemetry.flush();
+          new Notice('Remote SSH: telemetry flushed');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Reset')
+        .setWarning()
+        .onClick(() => {
+          telemetry.reset();
+          new Notice('Remote SSH: in-memory telemetry counters cleared');
+        }));
+  }
+
+  private showTelemetryCounters() {
+    const records = telemetry.snapshot();
+    new TelemetryViewModal(this.app, records).open();
   }
 
   private renderDaemonPanel(containerEl: HTMLElement) {
@@ -194,5 +253,55 @@ export class SettingsTab extends PluginSettingTab {
         await this.plugin.saveSettings();
         this.display();
       }));
+  }
+}
+
+/**
+ * Read-only modal that shows the in-memory telemetry counters as a
+ * single text block (one line per counter). The "Copy" button hands
+ * the same block to the clipboard so a BRAT tester can paste it
+ * straight into a bug report — that's the entire point of the F22
+ * surface.
+ */
+class TelemetryViewModal extends Modal {
+  constructor(app: App, private readonly records: TelemetryRecord[]) {
+    super(app);
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h2', { text: 'Telemetry counters' });
+    contentEl.createEl('p', {
+      text: 'In-memory deltas since the last flush. Safe to paste into a bug report.',
+      cls: 'setting-item-description',
+    });
+
+    const text = this.formatRecords();
+    const pre = contentEl.createEl('pre', { cls: 'remote-ssh-log-pre' });
+    pre.textContent = text || '(no counters yet)';
+
+    new Setting(contentEl)
+      .addButton(btn => btn
+        .setButtonText('Copy to clipboard')
+        .setCta()
+        .onClick(() => {
+          void navigator.clipboard.writeText(text);
+          new Notice('Copied to clipboard');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Close')
+        .onClick(() => this.close()));
+  }
+
+  onClose() { this.contentEl.empty(); }
+
+  private formatRecords(): string {
+    return this.records
+      .map(r => r.kind === 'error'
+        ? `error  ${r.category ?? '?'}${r.code !== undefined ? ` code=${r.code}` : ''}  ×${r.count}`
+        : `recon  ${r.state ?? '?'}  ×${r.count}`)
+      .sort()
+      .join('\n');
   }
 }

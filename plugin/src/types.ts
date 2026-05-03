@@ -98,6 +98,15 @@ export interface PluginSettings {
    */
   onboardingCompleted?: boolean;
   /**
+   * F22 — opt-in anonymous telemetry. Default false. When enabled,
+   * the Telemetry singleton increments local-only counters keyed by
+   * error category and reconnect-state-machine kind. Persisted as a
+   * JSONL append-log under the plugin's directory; never transmitted
+   * over the network. The user can view, reset, or copy-export the
+   * counters from the settings tab.
+   */
+  telemetryEnabled?: boolean;
+  /**
    * Shadow-vault marker (Phase 4). When set, the plugin's
    * `onLayoutReady` callback finds the matching profile and
    * automatically connects to it, then runs `VaultModelBuilder` to

@@ -1,4 +1,5 @@
 import { asError } from '../util/errorMessage';
+import { telemetry } from '../util/Telemetry';
 
 // Phase D-γ — error taxonomy (F18).
 //
@@ -322,6 +323,10 @@ function readMaybeString(o: unknown, key: string): string | undefined {
  */
 export function classifyToNotice(err: unknown): { notice: string; classified: ClassifiedError } {
   const classified = classifyError(err);
+  // F22 — opt-in telemetry. Records the category + code histogram so
+  // the user (and BRAT testers) can paste a counter snapshot into a
+  // bug report. No-op when telemetry is disabled.
+  telemetry.recordError(classified.category, classified.code);
   const notice = `Remote SSH: ${classified.title} — ${classified.hint}`;
   return { notice, classified };
 }
