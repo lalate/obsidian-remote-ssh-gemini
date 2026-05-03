@@ -30,6 +30,7 @@ import type { RemoteEntry } from '../types';
 import type { AncestorTracker } from '../conflict/AncestorTracker';
 import type { ConflictResolver } from '../conflict/ConflictResolver';
 import type { OfflineQueue, QueuedOp } from '../offline/OfflineQueue';
+import type { TransferTracker } from '../util/TransferTracker';
 import { logger } from '../util/logger';
 import { perfTracer } from '../util/PerfTracer';
 import { isPreconditionFailed } from '../proto/rpcError';
@@ -129,6 +130,13 @@ export class SftpDataAdapter {
      * survey". Implementation: #170.
      */
     private shadowBasePath: string = '',
+    /**
+     * Optional in-flight transfer tracker. When supplied, large
+     * (>1 MB) write/read payloads are registered with the tracker
+     * so the StatusBar can display a "transfer in progress" indicator
+     * (#127). When omitted (e.g. unit tests), no UI signaling occurs.
+     */
+    private transferTracker: TransferTracker | null = null,
   ) {}
 
   /**
@@ -708,9 +716,16 @@ export class SftpDataAdapter {
         this.readCache.get(remote); // bump LRU on hit
         return cached.data;
       }
-      const data = await this.client.readBinary(remote);
-      this.readCache.put(remote, data, s.mtime);
-      return data;
+      // Stat tells us the size so we can register a tracked download
+      // before paying the bandwidth.
+      const txId = this.transferTracker?.begin('down', normalizedPath, s.size ?? 0) ?? null;
+      try {
+        const data = await this.client.readBinary(remote);
+        this.readCache.put(remote, data, s.mtime);
+        return data;
+      } finally {
+        this.transferTracker?.end(txId);
+      }
     }
 
     const data = await this.client.readBinary(remote);
@@ -767,15 +782,20 @@ export class SftpDataAdapter {
     const cached = this.readCache.peek(remote);
     const expectedMtime = expectedMtimeOverride ?? cached?.mtime;
     let writtenData = data;
+    const txId = this.transferTracker?.begin('up', normalizedPath, data.length) ?? null;
     try {
-      await this.client.writeBinary(remote, writtenData, expectedMtime);
-    } catch (e) {
-      if (expectedMtime === undefined || !isPreconditionFailed(e) || !this.conflictResolver) {
-        throw e;
+      try {
+        await this.client.writeBinary(remote, writtenData, expectedMtime);
+      } catch (e) {
+        if (expectedMtime === undefined || !isPreconditionFailed(e) || !this.conflictResolver) {
+          throw e;
+        }
+        writtenData = await this.conflictResolver.resolve(
+          normalizedPath, remote, writtenData, isText, e,
+        );
       }
-      writtenData = await this.conflictResolver.resolve(
-        normalizedPath, remote, writtenData, isText, e,
-      );
+    } finally {
+      this.transferTracker?.end(txId);
     }
 
     let mtime = 0;

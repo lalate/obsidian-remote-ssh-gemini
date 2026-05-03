@@ -21,6 +21,16 @@
   display: none;
 }
 
+/* ─── Large transfer indicator (#127) ────────────────────────────────── */
+
+.remote-ssh-transfer {
+  font-variant-numeric: tabular-nums;
+}
+
+.remote-ssh-transfer.is-hidden {
+  display: none;
+}
+
 /* ─── Connect modal ──────────────────────────────────────────────────── */
 
 .remote-ssh-connect-secret {
