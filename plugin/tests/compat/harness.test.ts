@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import * as path from 'path';
 import type { TAbstractFile, TFile } from 'obsidian';
 import { CompatVault } from './CompatVault';
 import { fixturesDir, loadFixtures } from './fixtures';
@@ -26,7 +27,10 @@ describe('Phase E compat harness', () => {
 
   beforeEach(async () => {
     vault = new CompatVault();
-    const loaded = await loadFixtures(vault, fixturesDir());
+    // Each scenario lives in its own subdirectory under fixtures/ so
+    // tests stay decoupled (e.g. F11 dataview-pages doesn't show up
+    // in the harness suite's getMarkdownFiles assertions).
+    const loaded = await loadFixtures(vault, path.join(fixturesDir(), 'harness'));
     // Fixture count is part of the contract — bumping the fixture set
     // is intentional, but a silent regression to the loader (e.g.
     // wrong glob) would also drop the count.
