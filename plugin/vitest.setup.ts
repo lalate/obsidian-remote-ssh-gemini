@@ -14,7 +14,11 @@
 // (or `document` if jsdom is in play).
 
 import { beforeEach } from 'vitest';
-import { clearNotices } from 'obsidian';
+// Direct path (not the 'obsidian' alias) because this setup file is
+// shared with vitest.integration.config.ts and vitest.replay.config.ts,
+// which do NOT alias 'obsidian' — the integration suite runs against
+// a real sshd Docker container and never imports Obsidian UI.
+import { clearNotices } from './tests/__mocks__/obsidian';
 
 const g = globalThis as unknown as {
   activeWindow?: typeof globalThis;
