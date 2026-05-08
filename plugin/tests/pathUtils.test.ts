@@ -1,5 +1,14 @@
+import * as path from 'path';
 import { describe, it, expect } from 'vitest';
-import { normalizeRemotePath } from '../src/util/pathUtils';
+import {
+  ensureTrailingSlash,
+  expandHome,
+  normalizeRemotePath,
+  posixJoin,
+  relativeTo,
+  toLocalPath,
+  toRemotePath,
+} from '../src/util/pathUtils';
 
 describe('normalizeRemotePath', () => {
   it('strips a leading "~/" so the path becomes home-relative for SFTP', () => {
@@ -27,5 +36,68 @@ describe('normalizeRemotePath', () => {
 
   it('trims surrounding whitespace from user input', () => {
     expect(normalizeRemotePath('  ~/work/VaultDev  ')).toBe('work/VaultDev');
+  });
+});
+
+describe('path utility helpers', () => {
+  it('posixJoin joins with a single slash', () => {
+    expect(posixJoin('a', 'b', 'c')).toBe('a/b/c');
+    expect(posixJoin('/a/', '/b//', 'c')).toBe('/a/b/c');
+  });
+
+  it('relativeTo returns full path when base does not match', () => {
+    expect(relativeTo('/base', '/other/file.md')).toBe('/other/file.md');
+  });
+
+  it('relativeTo strips base with or without trailing slash', () => {
+    expect(relativeTo('/base', '/base/file.md')).toBe('file.md');
+    expect(relativeTo('/base/', '/base/file.md')).toBe('file.md');
+  });
+
+  it('ensureTrailingSlash appends only once', () => {
+    expect(ensureTrailingSlash('/tmp/work')).toBe('/tmp/work/');
+    expect(ensureTrailingSlash('/tmp/work/')).toBe('/tmp/work/');
+  });
+
+  it('toLocalPath uses platform-aware path join', () => {
+    const result = toLocalPath('/tmp/work', 'docs/a.md');
+    expect(result).toContain('docs');
+    expect(result.endsWith('docs/a.md') || result.endsWith('docs\\a.md')).toBe(true);
+  });
+
+  it('toRemotePath uses posix separator', () => {
+    expect(toRemotePath('/srv/vault', 'docs/a.md')).toBe('/srv/vault/docs/a.md');
+  });
+
+  it('expandHome expands "~/" using HOME', () => {
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    try {
+      process.env.HOME = '/home/alice';
+      delete process.env.USERPROFILE;
+      // Use path.join for platform-agnostic comparison (Windows uses backslashes)
+      expect(expandHome('~/vault')).toBe(path.join('/home/alice', 'vault'));
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = originalUserProfile;
+    }
+  });
+
+  it('expandHome falls back to cwd-relative when neither HOME nor USERPROFILE is set', () => {
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+    try {
+      delete process.env.HOME;
+      delete process.env.USERPROFILE;
+      // home = '' → path.join('', 'vault') = 'vault'
+      expect(expandHome('~/vault')).toBe(path.join('', 'vault'));
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME; else process.env.HOME = originalHome;
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = originalUserProfile;
+    }
+  });
+
+  it('expandHome leaves non-tilde paths unchanged', () => {
+    expect(expandHome('/srv/vault')).toBe('/srv/vault');
   });
 });
