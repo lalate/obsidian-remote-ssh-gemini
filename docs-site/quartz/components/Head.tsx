@@ -28,10 +28,6 @@ export default (() => {
     const baseDir = fileData.slug === "404" ? path : pathToRoot(fileData.slug!)
     const iconPath = joinSegments(baseDir, "static/icon.png")
 
-    // Url of current page
-    const socialUrl =
-      fileData.slug === "404" ? url.toString() : joinSegments(url.toString(), fileData.slug!)
-
     // Canonical + dev-noindex handling.
     //
     // Two builds publish from the same source: the stable site (root of
@@ -55,6 +51,14 @@ export default (() => {
         ? `https://${canonicalBaseUrl}/`
         : `https://${joinSegments(canonicalBaseUrl, fileData.slug!)}`
 
+    // og:url / twitter:url / twitter:domain mirror canonical so social
+    // shares of dev pages don't carry dev URLs into the wider web. (The
+    // robots noindex on dev keeps Google away, but social platforms
+    // don't honour noindex; without aligning here, a Twitter or Discord
+    // share of a /dev/ page would link followers back to staging.)
+    const socialUrl = canonicalUrl
+    const socialDomain = canonicalBaseUrl
+
     // JSON-LD structured data (schema.org).
     //
     // Selected via `schema:` frontmatter field. Currently supported:
@@ -74,6 +78,18 @@ export default (() => {
     const schemaType = fileData.frontmatter?.schema as string | undefined
     let jsonLdBlob: Record<string, unknown> | null = null
 
+    // Project author + publisher used across schema blobs. Matches
+    // plugin/manifest.json's author + authorUrl so the docs site,
+    // the Obsidian Community Plugins listing, and BRAT all attribute
+    // the project to the same Person identity. Critical for E-E-A-T
+    // signalling on Article + TechArticle (Google's 2024 update made
+    // author the load-bearing field for topical authority).
+    const projectAuthor = {
+      "@type": "Person",
+      name: "souta shimozono",
+      url: "https://codes.sota-shimozono.com/",
+    }
+
     if (schemaType === "SoftwareApplication") {
       jsonLdBlob = {
         "@context": "https://schema.org",
@@ -90,6 +106,7 @@ export default (() => {
         },
         downloadUrl:
           "https://github.com/sotashimozono/obsidian-remote-ssh/releases/latest",
+        author: projectAuthor,
       }
     } else if (schemaType === "Article" || schemaType === "TechArticle") {
       // Article + TechArticle share most of the same shape. We auto-fill
@@ -115,6 +132,8 @@ export default (() => {
           name: cfg.pageTitle ?? "obsidian-remote-ssh",
           url: `https://${canonicalBaseUrl}/`,
         },
+        author: projectAuthor,
+        publisher: projectAuthor,
       }
       if (dates.published) {
         articleBlob.datePublished = dates.published.toISOString()
@@ -141,6 +160,7 @@ export default (() => {
               text: a,
             },
           })),
+          author: projectAuthor,
         }
       }
     }
@@ -209,6 +229,8 @@ export default (() => {
         <meta property="og:title" content={title} />
         <meta property="og:type" content="website" />
         <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:site" content="@sotashimozono" />
+        <meta name="twitter:creator" content="@sotashimozono" />
         <meta name="twitter:title" content={title} />
         <meta name="twitter:description" content={description} />
         <meta property="og:description" content={description} />
@@ -228,7 +250,7 @@ export default (() => {
 
         {cfg.baseUrl && (
           <>
-            <meta property="twitter:domain" content={cfg.baseUrl}></meta>
+            <meta property="twitter:domain" content={socialDomain}></meta>
             <meta property="og:url" content={socialUrl}></meta>
             <meta property="twitter:url" content={socialUrl}></meta>
           </>
@@ -244,7 +266,13 @@ export default (() => {
         {jsonLdBlob && (
           <script
             type="application/ld+json"
-            dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLdBlob) }}
+            dangerouslySetInnerHTML={{
+              // Escape `<` to its JSON unicode form so a stray
+              // "</script>" sequence inside any string field (description,
+              // FAQ answer, etc.) cannot break out of the surrounding
+              // <script> element. JSON.stringify itself does not do this.
+              __html: JSON.stringify(jsonLdBlob).replace(/</g, "\\u003c"),
+            }}
           />
         )}
         <meta name="generator" content="Quartz" />
