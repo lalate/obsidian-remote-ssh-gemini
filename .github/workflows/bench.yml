@@ -35,7 +35,7 @@ on:
         required: false
         type: string
   push:
-    branches: [main, next]
+    branches: [main]
 
 concurrency:
   # One bench run at a time per ref — concurrent runs would race on
