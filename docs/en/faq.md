@@ -20,6 +20,8 @@ Recurring questions, with the shortest useful answer.
 
 The right pick depends on your trust model + ops appetite. If you already have a server you trust and do not want a third-party cloud in the loop, this plugin is for you.
 
+For an expanded breakdown that also covers Obsidian Git, Nextcloud, and the [Remotely Save](https://github.com/remotely-save/remotely-save) plugin, see [[en/comparison|the full comparison page]].
+
 ## Does it work on mobile?
 
 Not yet. Tracked under [the mobile-relay milestone](https://github.com/sotashimozono/obsidian-remote-ssh/issues?q=label%3Amobile). The current architecture spawns a daemon binary on the remote, which works fine on a desktop where Obsidian is Electron. Mobile (iOS / Android Obsidian) needs a relay component because the OS does not allow Obsidian to spawn arbitrary subprocesses.

@@ -57,4 +57,6 @@ Click **Add jump host** under a profile. Each entry has its own Host / Port / Us
 
 If you sync your `.obsidian` directory across machines, your profile list syncs too — be aware that `Private key path` is a path that may not exist on every device.
 
+For the on-disk schema (every field, every default, hand-editing rules), see [[en/reference/data-json|data.json schema reference]].
+
 Next: [[en/configuration/this-device|This device]].

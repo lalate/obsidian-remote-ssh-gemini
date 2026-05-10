@@ -17,6 +17,10 @@ tags: [home]
 | Cookbook: do task X | [[en/cookbook/index\|Cookbook]] (RPi vault, SSH key, Tailscale, systemd) |
 | Look up a specific setting | [[en/configuration/profiles\|Configuration reference]] |
 | Run your own server | [[en/server/overview\|Server / deploy guide]] |
+| Run the daemon by hand (systemd, containers, debugging) | [[en/reference/daemon-cli\|Daemon CLI reference]] |
+| Hand-edit `data.json` or build it from a script | [[en/reference/data-json\|data.json schema reference]] |
+| Speed it up — "things feel slow" | [[en/operations/performance-tuning\|Performance tuning]] |
+| Decide if this plugin is the right tool vs Sync / Syncthing / Git | [[en/comparison\|Comparison vs other Obsidian sync tools]] |
 | Verify the daemon binary you downloaded | [[en/security/cosign-verify\|Cosign verification]] |
 | Build something against the protocol | [[en/api/overview\|API & protocol reference]] (and [[en/api/examples\|copy-pasteable JSON-RPC examples]]) |
 | Look up a term | [[en/glossary\|Glossary]] |
@@ -39,6 +43,7 @@ tags: [home]
 - **[[en/changelog|Changelog & releases]]** — major-milestone overview + how to find per-release notes
 - **[[en/privacy|Privacy & data handling]]** — what data this plugin handles, where it lives, what does (or does not) leave your machines
 - **[[en/migration/from-obsidian-sync|Migrating from Obsidian Sync]]** — switchover guide for users coming from Obsidian's official paid sync service
+- **[[en/comparison|Comparison]]** — full breakdown vs Obsidian Sync, Syncthing, Dropbox/iCloud, Git-based, Nextcloud, and the Remotely Save plugin
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels
