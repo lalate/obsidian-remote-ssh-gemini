@@ -41,7 +41,7 @@ For air-gapped Obsidian instances or to inspect the bundle before loading.
    - `styles.css`
 2. Copy the three files into:
    ```
-   <vault>/.obsidian/plugins/obsidian-remote-ssh/
+   <vault>/.obsidian/plugins/remote-ssh/
    ```
 3. Restart Obsidian → **Settings** → **Community plugins** → enable **obsidian-remote-ssh**.
 

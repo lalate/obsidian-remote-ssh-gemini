@@ -47,8 +47,25 @@ Trust-once is NOT mismatch-tolerant — if the host key changes mid-session, the
 
 ## Manual edits
 
-`<vault>/.obsidian/plugins/obsidian-remote-ssh/known_hosts.json` is plain JSON; edit it directly to remove or rotate entries outside the plugin. The plugin re-reads it on every connect.
+Host-key trust is persisted under the `hostKeyStore` key in the plugin's `data.json`:
 
-For full ground-up resync (lost the file, suspect tampering): delete the file. Every host will re-prompt on next connect.
+```
+<vault>/.obsidian/plugins/remote-ssh/data.json
+```
+
+The shape is `{ "<host>:<port>": "<sha256-hex-fingerprint>" }`:
+
+```json
+{
+  "hostKeyStore": {
+    "192.168.1.50:22":      "8d6f0aab...sha256...e1c3",
+    "bastion.example.com:22": "abc123de...sha256...4567"
+  }
+}
+```
+
+Edit the file directly to remove or rotate entries outside the plugin (Obsidian must be closed, or it will overwrite on next save).
+
+For full ground-up resync (lost the file, suspect tampering): delete the `hostKeyStore` key. Every host will re-prompt on next connect.
 
 Next: [[en/operations/troubleshooting|Operations — Troubleshooting]].

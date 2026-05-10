@@ -11,12 +11,7 @@ obsidian-remote-ssh maintains its **own known-host store**, independent of `~/.s
 
 OpenSSH's `known_hosts` is shared across every `ssh` invocation on your machine. The plugin's separate store keeps trust scoped to the plugin — adding the plugin does not suddenly trust hosts your shell SSH already knew, and removing the plugin does not leave orphan trust elsewhere.
 
-The store lives at:
-```
-<vault>/.obsidian/plugins/obsidian-remote-ssh/known_hosts.json
-```
-
-It's a JSON document keyed by `host:port`, holding the algorithm and base64 fingerprint per entry.
+The store lives in the plugin's `data.json` under the `hostKeyStore` key. See [[en/security/host-keys#manual-edits|Security → Host-key trust → Manual edits]] for the on-disk format.
 
 ## First-connect (TOFU) flow
 
@@ -63,22 +58,7 @@ In the trust dialog, hold Alt while clicking "Trust" to use the trust-once mode.
 
 ## Manual store editing
 
-Edit `known_hosts.json` directly to remove or rotate trust outside the plugin. Format:
-
-```json
-{
-  "192.168.1.50:22": {
-    "algorithm": "ssh-ed25519",
-    "fingerprint": "SHA256:8d6F..."
-  },
-  "bastion.example.com:22": {
-    "algorithm": "ssh-rsa",
-    "fingerprint": "SHA256:Abc..."
-  }
-}
-```
-
-The plugin re-reads the file on every connect.
+The on-disk format and edit instructions are in [[en/security/host-keys#manual-edits|Security → Host-key trust → Manual edits]] (the same `hostKeyStore` key in the plugin's `data.json`).
 
 ## Algorithms supported
 

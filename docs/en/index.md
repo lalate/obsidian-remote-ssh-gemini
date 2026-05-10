@@ -27,7 +27,7 @@ tags: [home]
 - **[[en/api/overview|API & protocol]]** — RPC methods, error codes, payload shapes
 - **[[en/security/model|Security]]** — threat model, signing, token handling, host-key trust
 - **[[en/operations/troubleshooting|Operations]]** — logs, daemon panel, reconnect, common failures
-- **[[en/architecture/shadow-vault|Architecture]]** — shadow vault design, sync internals, performance
+- **[[en/architecture/index|Architecture]]** — shadow vault design, sync internals, performance
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels
@@ -37,7 +37,7 @@ tags: [home]
 | **Stable** | `manifest.json` (root) | Obsidian Community Plugins | When `next` is promoted to `main` (manual) |
 | **Beta** | `manifest-beta.json` (root) | [BRAT](https://github.com/TfTHacker/obsidian42-brat) (`obsidian42-brat`, slug `sotashimozono/obsidian-remote-ssh`, **--beta**) | Every merge to `next` (continuous) |
 
-The version shape is the truth: `1.0.43` is stable, `1.0.44-beta.N` is a prerelease. See [[en/contributing/release-flow|the release flow]] for how that's enforced.
+The version shape is the truth: `1.0.43` is stable, `1.0.44-beta.N` is a prerelease. See [`CONTRIBUTING.md` → Branching model](https://github.com/sotashimozono/obsidian-remote-ssh/blob/next/CONTRIBUTING.md#branching-model--next-beta--main-stable) for how that's enforced.
 
 ## Project status
 

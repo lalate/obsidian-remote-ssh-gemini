@@ -5,7 +5,7 @@ tags: [server, deploy, raspberry-pi]
 
 # Raspberry Pi notes
 
-obsidian-remote-ssh runs comfortably on Raspberry Pi 4 / 5 / Zero 2 W. The daemon is statically linked Go — no runtime deps beyond the Linux kernel.
+obsidian-remote-ssh runs comfortably on Raspberry Pi 4 / 5 / Zero 2 W. The daemon is a single Go binary — no runtime deps beyond the Linux kernel + glibc.
 
 ## Recommended setup
 

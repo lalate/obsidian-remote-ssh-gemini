@@ -17,19 +17,22 @@ obsidian-remote-ssh does not edit your remote files directly through Obsidian's 
 
 Result: Obsidian thinks it's editing a local vault. All Obsidian features (Dataview, Templater, Excalidraw, …) work because they ARE working against a local vault. The "remote-ness" lives in the sync layer, invisible to most plugins.
 
-See [[en/architecture/shadow-vault|Shadow vault architecture]] for the full design.
+See [[architecture-shadow-vault|Shadow vault architecture]] for the full design.
 
 ## What gets installed where
 
 ### On your local machine
 ```
-<vault>/.obsidian/plugins/obsidian-remote-ssh/    # plugin bundle (main.js, manifest.json, styles.css)
-<vault>/.obsidian/plugins/obsidian-remote-ssh/
-    shadow-vaults/<profile-id>/                   # shadow vault (real Obsidian vault on disk)
+<vault>/.obsidian/plugins/remote-ssh/
+    main.js                                       # plugin bundle
+    manifest.json
+    styles.css
     server-bin/obsidian-remote-server-<os>-<arch> # bundled daemon binary, uploaded on connect
-    settings.json                                 # plugin settings (profiles, keys, etc.)
-    logs/                                         # JSONL operational logs
-    telemetry/                                    # local-only counters (opt-in)
+    data.json                                     # plugin settings (profiles, host keys, etc.)
+    console.log                                   # operational log (rotated by size: 5 MB × 3 generations)
+    telemetry.jsonl                               # local-only counters (opt-in)
+
+~/.obsidian-remote/vaults/<profile-id>/           # shadow vault for each profile (a real Obsidian vault on disk)
 ```
 
 ### On the remote host (under your remote user's `$HOME`)

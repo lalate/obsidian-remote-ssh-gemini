@@ -25,10 +25,8 @@ Currently:
 
 - The key file you point at (`~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, etc.) — supports `ed25519`, `rsa`, `ecdsa`.
 - `ssh-agent` socket via `SSH_AUTH_SOCK` (Linux/macOS) or the OpenSSH agent service on Windows.
-- NOT honoured: `~/.ssh/config` aliases. Use the actual hostname, not a `Host` alias.
+- `~/.ssh/config` — the profile form has an **Import from SSH config** dropdown that lists `Host` blocks and pre-fills the profile fields (host, port, user, identity file).
 - NOT used: `~/.ssh/known_hosts`. The plugin manages its own — see [[en/security/host-keys|Host keys]].
-
-> Tracked: [#180 honour ~/.ssh/config Host aliases](https://github.com/sotashimozono/obsidian-remote-ssh/issues?q=ssh+config).
 
 ## Known-host trust (TOFU)
 
@@ -60,7 +58,7 @@ Anything `ssh-agent` can sign with works. Set up your hardware key with your nor
 |---|---|
 | `Permission denied (publickey)` | Wrong path / key not authorized on remote / agent does not have the key |
 | `Connection timeout` | Network unreachable, or remote sshd is on a non-22 port — set Port explicitly |
-| `Bad host key` | Remote host key changed; see [[en/security/host-keys|mismatch flow]] |
+| `Bad host key` | Remote host key changed; see [[en/security/host-keys\|mismatch flow]] |
 | Plugin asks for password every connect, even with `SSH agent` | Agent is not running or `SSH_AUTH_SOCK` is not set in Obsidian's environment |
 
 For deeper diagnostics: **Settings** → **Advanced** → **Debug logging** on, then re-connect and check the Obsidian developer console.

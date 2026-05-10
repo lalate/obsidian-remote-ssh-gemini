@@ -79,11 +79,10 @@ In the plugin profile, set:
 
 | Field | Value |
 |---|---|
-| Daemon binary path | `/usr/local/bin/obsidian-remote-server` |
-| Daemon socket path | `~/.obsidian-remote/server.sock` |
-| Daemon token path | `~/.obsidian-remote/token` |
+| Daemon socket path | `.obsidian-remote/server.sock` (home-relative) |
+| Daemon token path | `.obsidian-remote/token` (home-relative) |
 
-The plugin's auto-redeploy will still run by default (kill prior + reupload). To disable that and let the systemd-managed daemon live, see the planned `Reuse existing daemon` flag in [[en/server/auto-deploy|auto-deploy]].
+> The remote daemon binary path is currently fixed at `~/.obsidian-remote/server` in the plugin (no UI override yet). For a true "systemd-managed daemon living elsewhere" setup, you'd need the planned `Reuse existing daemon` flag — until then, the plugin's auto-redeploy will overwrite your systemd-managed binary on every connect. Run systemd as a "warm spare" only, not as the primary lifecycle owner.
 
 ## Logs
 

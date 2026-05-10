@@ -47,6 +47,6 @@ If you would rather pre-install the daemon (Docker, systemd) and have the plugin
 2. Start it with the same flags shown in `~/.obsidian-remote/server.log` after one auto-deploy.
 3. The plugin's "kill prior + redeploy" logic still runs by default. To disable: set the (planned) `Reuse existing daemon` profile flag.
 
-> Tracked: [#181 reuse-existing-daemon profile flag](https://github.com/sotashimozono/obsidian-remote-ssh/issues?q=reuse).
+> Roadmap: a "reuse existing daemon" profile flag — until then, the kill-and-redeploy step always runs.
 
 Next: [[en/server/docker|Docker]] for sandbox / shared hosts.

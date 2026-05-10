@@ -33,7 +33,7 @@ The plugin auto-deploys for 99% of single-user setups. Docker/systemd are for sh
 | `daemon-manifest.json` | `{filename: sha256}` map for all binaries |
 | `*.bundle` | Cosign signature for each binary + manifest |
 
-Statically linked (CGO_ENABLED=0). No runtime deps beyond a Linux/macOS kernel.
+Compiled with the standard Go toolchain. No runtime deps beyond a Linux/macOS kernel + the system libc.
 
 See [[en/security/cosign-verify|Cosign verify]] to check a binary you downloaded.
 

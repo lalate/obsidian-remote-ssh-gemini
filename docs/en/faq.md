@@ -54,13 +54,13 @@ Trust scoping. See [[en/security/host-keys|Host-key trust]] for the long answer.
 
 Default behaviour, easy to override (planned profile flag). Re-deploy is ~5 seconds and guarantees you are running the version the plugin was built against. Reusing skips that latency but means you can drift between plugin and daemon versions.
 
-If your remote daemon is managed by [[en/server/systemd|systemd]] and you do not want the plugin touching it, watch [#181](https://github.com/sotashimozono/obsidian-remote-ssh/issues?q=reuse) for the upcoming flag.
+If your remote daemon is managed by [[en/server/systemd|systemd]] and you do not want the plugin touching it, a "reuse existing daemon" profile flag is on the roadmap; until then, the plugin will redeploy on connect.
 
 ## How do I uninstall cleanly?
 
 Local:
 - Disable the plugin in Obsidian → Community Plugins.
-- Delete `<vault>/.obsidian/plugins/obsidian-remote-ssh/`.
+- Delete `<vault>/.obsidian/plugins/remote-ssh/`.
 
 Remote (each host you connected to):
 ```bash

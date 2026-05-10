@@ -28,9 +28,12 @@ The `daemon-manifest.json` is a `{filename: sha256}` map for all binaries; it's 
 Each cosign signature includes a Fulcio certificate naming the GitHub Actions workflow that produced it:
 
 ```
-identity:    https://github.com/sotashimozono/obsidian-remote-ssh/.github/workflows/release.yml@refs/tags/vX.Y.Z
+identity:    https://github.com/sotashimozono/obsidian-remote-ssh/.github/workflows/release.yml@refs/heads/main
+                                                                                              # ^ or refs/heads/next for prereleases
 issuer:      https://token.actions.githubusercontent.com
 ```
+
+`release.yml` triggers on **push** to `main` (stable) or `next` (beta), not on tag-creation, so the identity carries the branch ref the run was triggered from. The `--certificate-identity-regexp` shown in [[en/security/cosign-verify|Cosign verify]] uses `@.*` so both branches match.
 
 This is what you check on verify: "this binary was produced by THIS repo's release workflow on THIS specific commit". Anyone forking the repo and republishing under their own GitHub Actions can sign too — but their identity will be `<their-fork>/.github/workflows/release.yml`, not `sotashimozono/...`. The pinning rejects forks.
 
@@ -45,7 +48,7 @@ It does NOT catch a hostile remote that returns the right `sha256sum` for a mali
 
 ## Reproducible builds
 
-The release pipeline runs `make -C server cross` with `CGO_ENABLED=0` and pinned `go-version` (see `.github/workflows/release.yml`). Two consecutive runs of the same commit produce byte-identical binaries — the SHA256 in `daemon-manifest.json` should match what you'd get rebuilding locally with the same Go version and the same commit checked out.
+The release pipeline runs `make -C server cross` with a pinned `go-version` (see `.github/workflows/release.yml`). Two consecutive runs of the same commit on the same Go toolchain produce byte-identical binaries — the SHA256 in `daemon-manifest.json` should match what you'd get rebuilding locally with the same Go version and the same commit checked out.
 
 This is a property worth verifying as a contributor before promotion: `make -C server cross && sha256sum dist/* | diff - <(jq -r 'to_entries[] | "\(.value)  \(.key)"' release/daemon-manifest.json)`.
 

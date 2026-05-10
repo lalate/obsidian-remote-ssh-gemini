@@ -39,11 +39,12 @@ Server-pushed; no response. Sent when a watched path's tree changes.
 params: {
   subscriptionId: string;
   path: string;            // vault-relative path of the affected entry
-  event: 'created' | 'modified' | 'deleted' | 'renamed';
-  mtime?: number;          // present on created / modified / renamed
-  newPath?: string;        // present only on event === 'renamed'
+  event: 'created' | 'modified' | 'deleted';
+  mtime?: number;          // present on created / modified
 }
 ```
+
+> The proto reserves a `renamed` event tag for future use, but the current daemon emits only `created` / `modified` / `deleted`. Renames surface as a `deleted` + `created` pair on the affected paths; clients that need rename detection match those pairs heuristically.
 
 JSON-RPC notifications have NO `id` field, per spec:
 
@@ -60,16 +61,11 @@ JSON-RPC notifications have NO `id` field, per spec:
 }
 ```
 
-## Debouncing & coalescing
+## Coalescing
 
-The daemon coalesces events within a short window (~150–300 ms) before notifying:
+The current daemon does NOT debounce or coalesce events server-side — every inotify event maps directly to one `fs.changed` notification. Clients that want UI-friendly throttling should debounce on their own side (the plugin does this for the "remote modified" toast).
 
-- A burst of `modified` events on the same path collapses to one.
-- A `created` immediately followed by `modified` collapses to `created` (with the final mtime).
-- A `created` then `deleted` within the window cancels both.
-- A `deleted` then `created` (e.g., `vim`'s atomic save) collapses to `modified`.
-
-This makes the notification stream usable for UI updates without flooding the wire.
+A burst of writes on the same file therefore produces one notification per write. Editors that do atomic-saves (vim, emacs auto-save) will produce a `deleted` + `created` pair the client must collapse if it wants to render the operation as a single "modified".
 
 ## Recursive caveats
 

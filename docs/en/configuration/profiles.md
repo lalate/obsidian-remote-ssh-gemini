@@ -35,12 +35,13 @@ See [[en/user-guide/ssh-config|SSH config & keys]] for what each method means.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| Mode | enum | `rpc` | `rpc` (auto-deploys daemon) or `sftp` (legacy direct SFTP) |
-| Daemon socket path | string | `~/.obsidian-remote/server.sock` | Unix socket the daemon listens on (`rpc` mode) |
-| Daemon token path | string | `~/.obsidian-remote/token` | Auth token file location (`rpc` mode) |
-| Daemon binary path | string | `~/.obsidian-remote/server` | Where to upload the daemon binary (`rpc` mode) |
+| Mode | enum | `sftp` | `sftp` (direct SFTP — current default) or `rpc` (auto-deploys daemon, lower latency) |
+| Daemon socket path | string | `.obsidian-remote/server.sock` (home-relative) | Unix socket the daemon listens on (`rpc` mode) |
+| Daemon token path | string | `.obsidian-remote/token` (home-relative) | Auth token file location (`rpc` mode) |
 
-`rpc` is recommended — ~10x lower per-op latency than SFTP and supports server-push notifications via [[en/api/watch|fs.watch]]. `sftp` exists as a fallback when you cannot deploy a daemon.
+The remote daemon binary path is fixed at `~/.obsidian-remote/server` (not user-configurable in the current UI).
+
+`rpc` mode is faster (~10x lower per-op latency than SFTP) and supports server-push notifications via [[en/api/watch|fs.watch]]. `sftp` is the safer fallback when you cannot deploy a binary on the remote.
 
 ## Jump hosts
 
@@ -49,7 +50,7 @@ Click **Add jump host** under a profile. Each entry has its own Host / Port / Us
 ## Where settings live
 
 ```
-<vault>/.obsidian/plugins/obsidian-remote-ssh/settings.json
+<vault>/.obsidian/plugins/remote-ssh/data.json
 ```
 
 **Passwords are never persisted**. Private key paths are stored; the keys themselves are NOT copied into the plugin (read fresh each connect).

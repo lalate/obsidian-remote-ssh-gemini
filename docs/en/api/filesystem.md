@@ -177,6 +177,6 @@ params: { path: string }
 result: {}
 ```
 
-A future `fs.trashSystem` will route to the OS trash via `gio trash` / `osascript`. Tracked: [#190](https://github.com/sotashimozono/obsidian-remote-ssh/issues?q=trashSystem).
+A future `fs.trashSystem` is on the roadmap to route to the OS trash via `gio trash` / `osascript`; until then, only the in-vault `.trash/` form exists.
 
 Next: [[en/api/watch|Watch & notifications]].

@@ -60,16 +60,8 @@ JSON-RPC errors return:
 
 ## Error data field
 
-Most errors include `data` with at least `path` (the path involved) and `errno` (the underlying OS errno when relevant):
+The current daemon always sends `data: null`. Path / OS-level context is embedded in the error's `message` string instead. Treat `data` as reserved for future use; do not parse it.
 
-```json
-{
-  "code": -32014,
-  "message": "permission denied",
-  "data": { "path": "secrets/key", "errno": 13, "syscall": "open" }
-}
-```
-
-This is meant for debugging, not user-facing messages — clients should map error codes to localized strings, not parse `data`.
+Clients should map error `code` to localized strings, not match on the message text.
 
 Next: [[en/security/model|Security — threat model]].

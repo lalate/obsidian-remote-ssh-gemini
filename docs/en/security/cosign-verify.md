@@ -48,7 +48,7 @@ Error: failed to verify signature ... certificate identity does not match
 
 The cosign signature carries a Fulcio-issued certificate that asserts:
 
-- **Identity**: the GitHub Actions workflow that ran (`.github/workflows/release.yml@refs/tags/vX.Y.Z`).
+- **Identity**: the GitHub Actions workflow that ran (`.github/workflows/release.yml@refs/heads/main` for stable releases, `@refs/heads/next` for prereleases — the workflow triggers on push to a branch, not tag-creation).
 - **Issuer**: GitHub Actions' OIDC provider (`token.actions.githubusercontent.com`).
 
 The `--certificate-identity-regexp` you pass anchors the verification to **this** repo. Anyone forking and re-signing under their own GitHub Actions can sign too — but their identity will be `<their-fork>/.github/workflows/release.yml`, not `sotashimozono/...`. The regex pin rejects forks.

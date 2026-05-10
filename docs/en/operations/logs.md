@@ -9,21 +9,21 @@ Three independent log streams. Knowing which one to look at is half the battle.
 
 ## 1. Plugin (client) logs
 
-`<vault>/.obsidian/plugins/obsidian-remote-ssh/logs/`
+`<vault>/.obsidian/plugins/remote-ssh/console.log`
 
-- Format: JSONL, one event per line
-- Rotated: by date, kept 14 days
+- Format: free-form lines (matches what Obsidian's developer console shows)
+- Rotated: by size — 5 MB per file × 3 generations (`console.log`, `console.log.1`, `console.log.2`)
 - Enable verbose: **Settings** → **Advanced** → **Debug logging** = on
-
-Useful fields per event: `ts`, `level`, `event`, `profileId`, `op`, `latencyMs`, plus event-specific data.
 
 Quick filters:
 ```bash
-# All errors today
-grep '"level":"error"' "<vault>/.obsidian/plugins/obsidian-remote-ssh/logs/$(date +%F).jsonl"
+LOG="<vault>/.obsidian/plugins/remote-ssh/console.log"
 
-# All ops slower than 500 ms
-jq -c 'select(.latencyMs > 500)' "<vault>/.obsidian/plugins/obsidian-remote-ssh/logs/$(date +%F).jsonl"
+# Errors
+grep -i 'error\|fail' "$LOG"
+
+# Recent connect attempts
+grep -i 'connect' "$LOG" | tail -20
 ```
 
 ## 2. Daemon (server) logs
@@ -49,36 +49,20 @@ The daemon panel in plugin settings shows the last 50 lines as a one-click view.
 
 Enable in **Settings** → **Telemetry** → "Enable anonymous telemetry".
 
-Counters tracked:
+Two event kinds are recorded:
 
-| Counter | Meaning |
-|---|---|
-| `connect.success` | successful connects per profile |
-| `connect.fail.{reason}` | failed connects, bucketed by reason |
-| `reconnect.attempts` | exponential-backoff retries triggered |
-| `rpc.{method}.success` | per-method success count |
-| `rpc.{method}.fail.{code}` | per-method failure, bucketed by error code |
-| `conflict.detected` | `fs.write` rejected with `PreconditionFailed` |
-| `conflict.resolved.{keep-local|keep-remote|merged}` | how user resolved |
+| Event kind | Fields | When |
+|---|---|---|
+| `error` | `category`, optional `code` | An error surfaces (auth failure, RPC failure, conflict, etc.); the category bucket lets you spot regressions per area |
+| `reconnect` | `state` (`started` / `succeeded` / `failed`) | The reconnect manager fires after a transport drop |
 
-Persisted as JSONL under `<plugin>/telemetry/`. Rotated daily, kept 90 days. Nothing leaves your machine — there is no "send" button. The data is for your own diagnosis.
+Persisted to a single file `<plugin>/telemetry.jsonl`. Nothing leaves your machine — there is no "send" button.
 
 View / reset / flush from the telemetry panel.
 
 ## Correlating across streams
 
-Each connect generates a `connectionId` (UUID). Both the plugin log and the daemon log include this. To trace one session end-to-end:
-
-```bash
-ID=$(grep '"event":"connect.start"' "<plugin>/logs/$(date +%F).jsonl" | tail -1 | jq -r '.connectionId')
-echo "connectionId=$ID"
-
-# plugin side
-grep -c "$ID" "<plugin>/logs/$(date +%F).jsonl"
-
-# daemon side (the daemon emits `[<ID>] ...` prefix)
-ssh user@host "grep -c '$ID' ~/.obsidian-remote/server.log"
-```
+The plugin and daemon both emit a 16-char hex `cid` on file-change events (`fs.changed` notifications) so you can match an in-Obsidian "remote modified" notice with the daemon-side watcher event that produced it. For broader session correlation, use timestamps + the per-profile name printed at connect — there is no shared session UUID across the two log streams.
 
 Useful when debugging an intermittent issue; gives you both halves of the conversation aligned.
 
