@@ -38,6 +38,7 @@ tags: [home]
 - **[[en/roadmap|Roadmap]]** — what's left before v1.0 + v2 mobile plan
 - **[[en/changelog|Changelog & releases]]** — major-milestone overview + how to find per-release notes
 - **[[en/privacy|Privacy & data handling]]** — what data this plugin handles, where it lives, what does (or does not) leave your machines
+- **[[en/migration/from-obsidian-sync|Migrating from Obsidian Sync]]** — switchover guide for users coming from Obsidian's official paid sync service
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels
