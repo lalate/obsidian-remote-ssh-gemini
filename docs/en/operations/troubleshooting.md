@@ -51,6 +51,8 @@ Likely culprits, in order of frequency:
 
 For deep perf debug: enable [[en/configuration/advanced|Debug logging]] and check `<plugin>/console.log` (rotated `console.log` + `.1` + `.2` + `.3`) for per-op timings.
 
+The full perf-tuning playbook (network / disk / inotify / daemon-side cache, with measurement commands) lives at [[en/operations/performance-tuning|Performance tuning]].
+
 ## How to ask for help
 
 When opening an issue, paste:
