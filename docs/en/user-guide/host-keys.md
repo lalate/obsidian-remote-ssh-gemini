@@ -18,43 +18,57 @@ The store lives in the plugin's `data.json` under the `hostKeyStore` key. See [[
 When you first connect to a host (or a jump host) that is not in the store:
 
 ```
-Connect to <host>:<port>?
-  Algorithm: ssh-ed25519 (or rsa-sha2-512 / ecdsa-…)
-  Fingerprint: SHA256:8d6F…
-[ Trust this fingerprint ]   [ Cancel ]
+Trust new host?
+  <host>:<port>
+  Key type: ssh-ed25519
+  Fingerprint (sha256): aa:bb:cc:dd:ee:ff:01:02:…
+
+[ Reject ]   [ Trust this session only ]   [ Trust & remember ]
 ```
 
-Trusting writes the entry. A mismatch on a known host opens a different dialog (next section).
+The fingerprint is the colon-separated SHA-256 of the host key (no `SHA256:` prefix; that's OpenSSH's display style, not this dialog's). Pick:
+
+- **Reject** — abort the connect; nothing persisted.
+- **Trust this session only** — trust held in RAM, dropped on disconnect.
+- **Trust & remember** — write to `data.json`'s `hostKeyStore` for silent future use.
+
+A mismatch on a known host opens a different dialog (next section).
 
 ## Mismatch flow
 
 If the host key changes after you've trusted it:
 
 ```
-WARNING: Host key MISMATCH for <host>:<port>
-  Stored:    ssh-ed25519 SHA256:OldFP…
-  Received:  ssh-ed25519 SHA256:NewFP…
+Host key MISMATCH for <host>:<port>
+
+Pinned fingerprint (sha256):
+  aa:bb:cc:…  (the one you previously trusted)
+
+Presented fingerprint (sha256):
+  ef:01:23:…  (the one the host is offering now)
 
 This usually means the remote OS was reinstalled, the SSH server
 was rebuilt, or you are being intercepted (man-in-the-middle).
 
-[ Cancel ]   [ Replace stored fingerprint ]
+[ Reject ]   [ Trust this session only ]   [ Replace pinned fingerprint ]
 ```
 
-**Default to Cancel** unless you have an out-of-band reason to believe the change is legitimate. If it IS legit (e.g., you reinstalled your Pi):
+**Default to Reject** unless you have an out-of-band reason to believe the change is legitimate. If it IS legit (e.g., you reinstalled your Pi):
 
 1. Verify the new fingerprint via a different channel — log in via console / serial / Tailscale exec / your provider's web console and run:
    ```bash
-   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}'
+   # → SHA256:base64-blob (note: ssh-keygen formats as base64;
+   #   the plugin shows the same hash as colon-separated bytes)
    ```
-2. Compare with the dialog's "Received" line.
-3. Click "Replace stored fingerprint" only if they match.
+2. Compare both representations against the "Presented fingerprint" line.
+3. Click "Replace pinned fingerprint" only if they match.
 
 ## Trust-once override
 
 For experimental / one-off connections (testing a new server, debugging a colleague's box) you can trust **for the current session only**. The fingerprint is held in memory and discarded on disconnect — nothing written to disk.
 
-In the trust dialog, hold Alt while clicking "Trust" to use the trust-once mode.
+Use the **Trust this session only** button in the trust dialog. The fingerprint is dropped on disconnect.
 
 ## Manual store editing
 

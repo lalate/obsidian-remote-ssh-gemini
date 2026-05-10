@@ -54,7 +54,7 @@ Two event kinds are recorded:
 | Event kind | Fields | When |
 |---|---|---|
 | `error` | `category`, optional `code` | An error surfaces (auth failure, RPC failure, conflict, etc.); the category bucket lets you spot regressions per area |
-| `reconnect` | `state` (`started` / `succeeded` / `failed`) | The reconnect manager fires after a transport drop |
+| `reconnect` | `state` (one of: `idle`, `waiting`, `attempting`, `recovered`, `failed`, `cancelled`) | The reconnect manager transitions through the lifecycle after a transport drop |
 
 Persisted to a single file `<plugin>/telemetry.jsonl`. Nothing leaves your machine — there is no "send" button.
 

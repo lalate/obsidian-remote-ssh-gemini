@@ -11,7 +11,7 @@ This page covers the publisher side (what the release pipeline does). For verify
 
 ## What gets signed
 
-For each release tag (`vX.Y.Z` or `vX.Y.Z-beta.N`):
+For each release tag (bare semver: `X.Y.Z` or `X.Y.Z-beta.N` — no `v` prefix, since the tag is taken straight from `manifest.json.version`):
 
 | Artefact | Signature bundle |
 |---|---|

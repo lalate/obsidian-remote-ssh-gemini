@@ -60,7 +60,7 @@ JSON-RPC errors return:
 
 ## Error data field
 
-The current daemon always sends `data: null`. Path / OS-level context is embedded in the error's `message` string instead. Treat `data` as reserved for future use; do not parse it.
+The JSON-RPC `error` envelope reserves a `data` field, but the current daemon always sets it to nil — and the Go encoder uses `omitempty`, so the field is **omitted from the wire entirely**. Path / OS-level context is embedded in the error's `message` string instead. Treat `data` as reserved for future use; do not parse it.
 
 Clients should map error `code` to localized strings, not match on the message text.
 

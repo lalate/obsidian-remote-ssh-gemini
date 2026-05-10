@@ -11,7 +11,7 @@ When the SSH connection drops mid-session (network blip, sleep/wake, Wi-Fi roam)
 
 - **Trigger**: any RPC call that fails with a transport-layer error (broken pipe, EOF, connection reset).
 - **Retries**: 5 (configurable: **Settings** → **Advanced** → **Reconnect attempts**).
-- **Backoff**: exponential — 1s, 2s, 4s, 8s, 16s. Capped at 30s per attempt.
+- **Backoff**: starts at 1 s, multiplier ×1.5, ±20% jitter, capped at 30 s per attempt — so nominal: 1 s, 1.5 s, 2.25 s, 3.4 s, 5.1 s, …
 - **What's reused**: the daemon. The plugin re-opens the SSH session and the local TCP forward, then re-`auth`s and re-subscribes to any active watchers.
 
 ## What you'll see

@@ -13,7 +13,7 @@ You can install via the **Obsidian Community Plugins store** (stable) or **BRAT*
 
 1. Open Obsidian → **Settings** → **Community plugins**.
 2. Disable **Restricted mode** if it's on.
-3. Click **Browse**, search for `obsidian-remote-ssh`.
+3. Click **Browse**, search for **Remote SSH**.
 4. Install → Enable.
 
 ## Option 2 — BRAT (beta channel)
@@ -27,7 +27,7 @@ You can install via the **Obsidian Community Plugins store** (stable) or **BRAT*
    sotashimozono/obsidian-remote-ssh
    ```
 4. Pick **--beta** so BRAT follows `manifest-beta.json` instead of the stable `manifest.json`.
-5. Wait a few seconds for download, then enable **obsidian-remote-ssh** in Community Plugins.
+5. Wait a few seconds for download, then enable **Remote SSH** in Community Plugins.
 
 BRAT auto-updates on Obsidian launch. To pin a specific version, set BRAT's "Auto-update at startup" to off.
 
@@ -43,7 +43,7 @@ For air-gapped Obsidian instances or to inspect the bundle before loading.
    ```
    <vault>/.obsidian/plugins/remote-ssh/
    ```
-3. Restart Obsidian → **Settings** → **Community plugins** → enable **obsidian-remote-ssh**.
+3. Restart Obsidian → **Settings** → **Community plugins** → enable **Remote SSH**.
 
 ## Server side
 

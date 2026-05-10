@@ -23,7 +23,7 @@ The daemon is the only thing that touches the actual vault files. The plugin nev
 
 - Centralises the path-safety check (`PathOutsideVault`).
 - Lets the daemon enforce per-write `expectedMtime` preconditions (the conflict mechanism).
-- Lets the daemon coalesce watcher events server-side rather than the plugin re-implementing inotify-style debouncing.
+- Funnels the inotify watch firehose through one RPC channel so the plugin doesn't have to re-establish OS-level watches on every reconnect (event coalescing/debouncing for UI sanity is the plugin's job — see [[en/api/watch|api/watch]]).
 
 ### "Shadow vault is a real local vault"
 
