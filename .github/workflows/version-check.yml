@@ -38,21 +38,40 @@ jobs:
     # Branch protection lists this as a required check, and a
     # job-level `if:` would cause GitHub to omit the check entirely
     # ("expected but missing" → merge blocked). We instead skip at
-    # the STEP level for sync PRs (head_ref=main): no real work
-    # happens, but the empty job still reports green.
+    # the STEP level for sync-shape PRs: no real work happens, but
+    # the empty job still reports green.
+    #
+    # Two PR shapes count as "sync" for the skip:
+    #   1. head_ref == 'main' — the auto-opened main → next sync PR
+    #      from sync-main-to-next.yml.
+    #   2. head_ref starts with 'chore/sync-main-to-next' — a manual
+    #      conflict-resolution PR opened when (1) hits conflicts that
+    #      can't be resolved on the main head ref. Same purpose, same
+    #      semantics; the version-check rules don't apply because the
+    #      whole point is to pull main's version state into next.
     steps:
-      - name: Skip note (sync PRs only)
-        if: github.head_ref == 'main'
-        run: echo "Sync PR (main → next) — version-check is a no-op (both branches carry the same version by design)."
+      - name: Detect sync-shape PR
+        id: sync_check
+        run: |
+          if [[ "${{ github.head_ref }}" == "main" ]] \
+            || [[ "${{ github.head_ref }}" == chore/sync-main-to-next* ]]; then
+            echo "is_sync=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_sync=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - if: github.head_ref != 'main'
+      - name: Skip note (sync PRs only)
+        if: steps.sync_check.outputs.is_sync == 'true'
+        run: echo "Sync-shape PR (head=${{ github.head_ref }}) — version-check is a no-op."
+
+      - if: steps.sync_check.outputs.is_sync != 'true'
         uses: actions/checkout@v6
         with:
           fetch-depth: 0  # need both branches for `git show`
 
       - name: Resolve versions
         id: versions
-        if: github.head_ref != 'main'
+        if: steps.sync_check.outputs.is_sync != 'true'
         run: |
           set -euo pipefail
           base_ref="${{ github.base_ref }}"
@@ -85,7 +104,7 @@ jobs:
           echo "PR base branch:                  $base_ref"
 
       - name: plugin/manifest.json and plugin/package.json must agree
-        if: github.head_ref != 'main'
+        if: steps.sync_check.outputs.is_sync != 'true'
         run: |
           if [ "${{ steps.versions.outputs.head_manifest }}" \
             != "${{ steps.versions.outputs.head_package }}" ]; then
@@ -99,7 +118,7 @@ jobs:
         # The bundled manifest is what we ship; manifest-beta.json (root) is
         # what BRAT --beta consumers fetch. They must always match — both
         # carry the latest version, whether beta or stable.
-        if: github.head_ref != 'main'
+        if: steps.sync_check.outputs.is_sync != 'true'
         run: |
           if ! diff -q plugin/manifest.json manifest-beta.json > /dev/null; then
             echo "::error::manifest-beta.json content differs from plugin/manifest.json."\
@@ -113,9 +132,9 @@ jobs:
       - name: BETA channel (PR → next) — root manifest.json must stay pinned
         # On a beta PR the Obsidian Community Plugins store manifest must NOT
         # move; only manifest-beta.json + plugin/manifest.json may advance.
-        # Also exclude sync PRs (head_ref=main) since those carry no version
-        # change at all.
-        if: github.base_ref == 'next' && github.head_ref != 'main'
+        # Also exclude sync-shape PRs since those legitimately carry main's
+        # stable version state into next.
+        if: github.base_ref == 'next' && steps.sync_check.outputs.is_sync != 'true'
         run: |
           if [ "${{ steps.versions.outputs.head_root }}" != "${{ steps.versions.outputs.base_root }}" ]; then
             echo "::error::Beta PRs must not modify root manifest.json."\
@@ -154,7 +173,7 @@ jobs:
           fi
 
       - name: PR version must be strictly greater than base (semver-aware)
-        if: github.head_ref != 'main'
+        if: steps.sync_check.outputs.is_sync != 'true'
         env:
           BASE_V: ${{ steps.versions.outputs.base_manifest }}
           HEAD_V: ${{ steps.versions.outputs.head_manifest }}
