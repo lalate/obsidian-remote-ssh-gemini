@@ -6,6 +6,13 @@ on:
     paths:
       - "docs/**"
       - "docs-site/**"
+      - "scripts/check-docs-links.mjs"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "docs-site/**"
+      - "scripts/check-docs-links.mjs"
       - ".github/workflows/docs.yml"
 
 # gh-pages deploy requires write access to contents
@@ -34,6 +41,10 @@ jobs:
       - name: Install Quartz dependencies
         working-directory: docs-site
         run: npm ci
+
+      # ── Lint: wikilinks + anchor refs (runs on PRs and pushes) ───────────
+      - name: Check docs wikilinks + anchors
+        run: node scripts/check-docs-links.mjs
 
       # ── Stable build (main → root of gh-pages) ───────────────────────────
       - name: Build docs — stable
