@@ -28,21 +28,23 @@ tags: [home]
 
 ## Sections
 
-- **[[en/getting-started/install|Getting started]]** — install, first connect, what to expect
+- **[[en/getting-started/index|Getting started]]** — install, first connect, what to expect
 - **[[en/tutorial|Tutorial]]** — long-form walkthrough from zero to verified setup
 - **[[en/cookbook/index|Cookbook]]** — task-oriented how-tos (RPi vault, SSH keygen, Tailscale, systemd)
-- **[[en/user-guide/ssh-config|User guide]]** — SSH config import, jump hosts, host keys, conflict handling, terminal pane, plugin compatibility
-- **[[en/configuration/profiles|Configuration reference]]** — every plugin setting documented
-- **[[en/server/overview|Server / deploy]]** — Docker, systemd, Raspberry Pi, auto-deploy
-- **[[en/api/overview|API & protocol]]** — RPC methods, error codes, payload shapes, copy-pasteable [[en/api/examples|examples]]
-- **[[en/security/model|Security]]** — threat model, signing, token handling, host-key trust
-- **[[en/operations/troubleshooting|Operations]]** — logs, daemon panel, reconnect, upgrading, uninstalling, common failures
+- **[[en/user-guide/index|User guide]]** — SSH config import, jump hosts, host keys, conflict handling, terminal pane, plugin compatibility
+- **[[en/configuration/index|Configuration reference]]** — every plugin setting documented
+- **[[en/server/index|Server / deploy]]** — Docker, systemd, Raspberry Pi, auto-deploy
+- **[[en/api/index|API & protocol]]** — RPC methods, error codes, payload shapes, copy-pasteable [[en/api/examples|examples]]
+- **[[en/security/index|Security]]** — threat model, signing, token handling, host-key trust
+- **[[en/operations/index|Operations]]** — logs, daemon panel, reconnect, upgrading, uninstalling, common failures
+- **[[en/reference/index|Reference]]** — daemon CLI flags, `data.json` schema
 - **[[en/architecture/index|Architecture]]** — shadow vault design, sync internals, performance
+- **[[en/contributing/index|Contributing]]** — dev setup, testing, release flow, docs guide
 - **[[en/glossary|Glossary]]** — terms used across the docs, defined once
 - **[[en/roadmap|Roadmap]]** — what's left before v1.0 + v2 mobile plan
 - **[[en/changelog|Changelog & releases]]** — major-milestone overview + how to find per-release notes
 - **[[en/privacy|Privacy & data handling]]** — what data this plugin handles, where it lives, what does (or does not) leave your machines
-- **[[en/migration/from-obsidian-sync|Migrating from Obsidian Sync]]** — switchover guide for users coming from Obsidian's official paid sync service
+- **[[en/migration/index|Migration]]** — switchover guides (currently from Obsidian Sync; more planned)
 - **[[en/comparison|Comparison]]** — full breakdown vs Obsidian Sync, Syncthing, Dropbox/iCloud, Git-based, Nextcloud, and the Remotely Save plugin
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
