@@ -1,6 +1,7 @@
 ---
 title: Tutorial — zero to a working vault
 tags: [tutorial, getting-started]
+description: "Long-form walkthrough from a fresh laptop and a Pi to a working remote vault. Setup, SSH key, profile, first connect, verification, what to do when things break."
 ---
 
 # Tutorial — zero to a working vault

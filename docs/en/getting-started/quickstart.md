@@ -1,6 +1,7 @@
 ---
 title: Quickstart
 tags: [getting-started, quickstart]
+description: "Five-minute walkthrough: connect to a remote vault over SSH from Obsidian, see your notes appear, edit them, and verify the round-trip works end to end."
 ---
 
 # 5-minute quickstart
