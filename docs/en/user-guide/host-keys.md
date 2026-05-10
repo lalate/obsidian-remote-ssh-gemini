@@ -39,21 +39,22 @@ A mismatch on a known host opens a different dialog (next section).
 If the host key changes after you've trusted it:
 
 ```
-Host key MISMATCH for <host>:<port>
+Remote host key changed
+  <host>:<port>
 
 Pinned fingerprint (sha256):
-  aa:bb:cc:…  (the one you previously trusted)
+  aa:bb:cc:…   (the one you previously trusted)
 
 Presented fingerprint (sha256):
-  ef:01:23:…  (the one the host is offering now)
+  ef:01:23:…   (the one the host is offering now)
 
 This usually means the remote OS was reinstalled, the SSH server
 was rebuilt, or you are being intercepted (man-in-the-middle).
 
-[ Reject ]   [ Trust this session only ]   [ Replace pinned fingerprint ]
+[ Abort ]   [ Trust new key & reconnect ]
 ```
 
-**Default to Reject** unless you have an out-of-band reason to believe the change is legitimate. If it IS legit (e.g., you reinstalled your Pi):
+**Default to Abort** unless you have an out-of-band reason to believe the change is legitimate. If it IS legit (e.g., you reinstalled your Pi):
 
 1. Verify the new fingerprint via a different channel — log in via console / serial / Tailscale exec / your provider's web console and run:
    ```bash
@@ -62,7 +63,7 @@ was rebuilt, or you are being intercepted (man-in-the-middle).
    #   the plugin shows the same hash as colon-separated bytes)
    ```
 2. Compare both representations against the "Presented fingerprint" line.
-3. Click "Replace pinned fingerprint" only if they match.
+3. Click "Trust new key & reconnect" only if they match.
 
 ## Trust-once override
 

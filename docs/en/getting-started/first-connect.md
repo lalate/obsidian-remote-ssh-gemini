@@ -29,7 +29,7 @@ See [[architecture-shadow-vault|Shadow vault architecture]] for the full design.
     styles.css
     server-bin/obsidian-remote-server-<os>-<arch> # bundled daemon binary, uploaded on connect
     data.json                                     # plugin settings (profiles, host keys, etc.)
-    console.log                                   # operational log (rotated by size: 5 MB × 3 generations)
+    console.log                                   # operational log (5 MB × 4 files: console.log + .1 + .2 + .3)
     telemetry.jsonl                               # local-only counters (opt-in)
 
 ~/.obsidian-remote/vaults/<profile-id>/           # shadow vault for each profile (a real Obsidian vault on disk)

@@ -13,11 +13,12 @@ JSON-RPC errors return:
   "id": <request id>,
   "error": {
     "code": -32601,
-    "message": "Method not found",
-    "data": { ... }   // optional, type depends on error
+    "message": "method not found: fs.banana"
   }
 }
 ```
+
+(The spec reserves an optional `data` field too, but the current daemon never populates it — see [Error data field](#error-data-field) below.)
 
 ## Standard JSON-RPC errors (-32700 to -32600)
 

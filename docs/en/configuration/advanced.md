@@ -11,7 +11,7 @@ Lower-level toggles, mostly for debugging or unusual deployment topologies.
 
 | Field | Type | Default | Range | Description |
 |---|---|---|---|---|
-| Debug logging | boolean | `false` | — | Writes verbose lines to `<plugin>/console.log` (single file, rotated by size: 5 MB × 3 generations). Adds developer-console output. Useful for [[en/operations/troubleshooting\|troubleshooting]]. |
+| Debug logging | boolean | `false` | — | Writes verbose lines to `<plugin>/console.log` (rotated by size: 5 MB per file, keeps current + 3 backups). Adds developer-console output. Useful for [[en/operations/troubleshooting\|troubleshooting]]. |
 | Reconnect attempts after unexpected disconnect | number | `5` | 0–100 | Auto-retry budget after a dropped connection. 0 disables auto-reconnect. Exponential backoff: starts at 1 s, multiplier ×1.5, ±20% jitter, capped at 30 s per attempt (so nominal: 1 s, 1.5 s, 2.25 s, 3.4 s, 5.1 s, …). |
 
 ## Telemetry (separate panel)

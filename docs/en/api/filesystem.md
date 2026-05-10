@@ -53,7 +53,7 @@ Recursive tree walk with optional cap.
 ```typescript
 params: {
   path: string;
-  recursive?: boolean;       // default true
+  recursive?: boolean;       // default false; pass true to descend
   maxEntries?: number;       // budget; truncates beyond
 }
 result: {

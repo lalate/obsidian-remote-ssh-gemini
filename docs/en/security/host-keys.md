@@ -35,15 +35,15 @@ The plugin does not currently consult SSHFP records (DNS-published host keys). A
 
 ## Mismatch handling
 
-The mismatch dialog forces an explicit decision (no "remember this" silent path). The default button is "Cancel". The "Replace stored fingerprint" button only flips in-memory state; it writes to disk only after you confirm.
+The mismatch dialog forces an explicit two-button decision: **Abort** (default — close the connection) or **Trust new key & reconnect** (overwrite the pinned fingerprint and continue). There is no silent "remember this" path; trusting a new key is always one explicit click after seeing both fingerprints side by side.
 
-This is deliberate: a hostile network can race the dialog (typing fast, simulating user clicks via accessibility APIs). The two-step confirm protects against attacks that need a single click.
+The dialog deliberately drops the trust-once option that's available on first-trust (TOFU). A mismatch is more security-sensitive than a first connection; we want either a permanent decision or none.
 
 ## Trust-once
 
-Hold Alt + click "Trust" to use the trust-once mode. The fingerprint is held in RAM for the session and never persisted. Useful for probing an unfamiliar host before you commit, diagnostic / debugging sessions, or demos where you do not want trust artifacts left behind.
+Trust-once is offered only on the **first-connect (TOFU) dialog**, as the dedicated **Trust this session only** button. The fingerprint is held in RAM for the session and never persisted. Useful for probing an unfamiliar host before you commit, diagnostic / debugging sessions, or demos where you do not want trust artifacts left behind.
 
-Trust-once is NOT mismatch-tolerant — if the host key changes mid-session, the next connection still triggers the mismatch flow.
+Trust-once is NOT available on the mismatch dialog (see above) — if the key changes mid-session, the next connection forces the full Abort / Trust-new-key choice.
 
 ## Manual edits
 

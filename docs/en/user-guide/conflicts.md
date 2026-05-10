@@ -30,28 +30,9 @@ Conflict in note.md — remote was modified after you opened it
 - **Keep remote** — discard your edits and load the remote version.
 - **View diff** — open a side-by-side diff in a temporary buffer; choose per-line which side wins.
 
-## The "save a copy" backstop
-
-Whichever path you take, the conflicting version is preserved in:
-
-```
-<remote vault>/.obsidian-remote/conflicts/<file>.<timestamp>.bak
-```
-
-So you can never lose the rejected edit by accident. These backups accumulate; the operations panel includes a **Clear conflict backups older than 30 days** action.
-
-## Three-way merges (advanced)
-
-When both sides have a known **common ancestor** (the version the local shadow last synced), the diff view offers an automatic three-way merge:
-
-```
-Common ancestor:  "The cat sat on the mat"
-Local edit:       "The cat sat on the rug"
-Remote edit:      "The black cat sat on the mat"
-Auto-merge:       "The black cat sat on the rug"
-```
-
-Non-conflicting line edits are merged automatically; only truly overlapping changes prompt for a per-hunk decision. This works best on plain markdown — heavily metadata-laden frontmatter usually needs a manual review.
+> **There is no automatic backup of the rejected side.** "Keep remote" overwrites your in-Obsidian edits with the remote content; "Keep local" overwrites the remote with your in-Obsidian content. If you might want both versions, copy the one you'd lose into a separate file before clicking — there is no `.bak` to recover from.
+>
+> An automatic conflict-backup mechanism is on the roadmap.
 
 ## Reducing conflicts
 

@@ -12,7 +12,7 @@ Three independent log streams. Knowing which one to look at is half the battle.
 `<vault>/.obsidian/plugins/remote-ssh/console.log`
 
 - Format: free-form lines (matches what Obsidian's developer console shows)
-- Rotated: by size — 5 MB per file × 3 generations (`console.log`, `console.log.1`, `console.log.2`)
+- Rotated: by size — 5 MB per file, keeping `console.log` + 3 backups (`console.log.1`, `console.log.2`, `console.log.3`)
 - Enable verbose: **Settings** → **Advanced** → **Debug logging** = on
 
 Quick filters:
