@@ -2,8 +2,8 @@
 
 This doc is the design record for the performance epic that lands in
 v0.4.23 onwards. It complements
-[architecture-shadow-vault.md](./architecture-shadow-vault.md) (the
-overall architecture) and [testing-strategy.md](./testing-strategy.md)
+[shadow-vault.md](./shadow-vault.md) (the
+overall architecture) and [testing-strategy.md](../contributing/testing-strategy.md)
 (how the epic gets verified).
 
 ## Goals
@@ -116,7 +116,7 @@ sequenceDiagram
   cross-compilable from any host. Plain Go: `image/jpeg`, `image/png`,
   `golang.org/x/image/draw`. HEIC needs cgo; defer.
 - **N-β2** Daemon binary size grows by ~1.5 MB after pulling in the
-  image libs. Plugin bundle (<600 KB guard) is unaffected.
+  image libs. Plugin bundle (<800 KB guard) is unaffected.
 - **N-β3** Backwards compat as in α: an older daemon without
   `fs.thumbnail` makes ResourceBridge transparently fall back to
   `fs.readBinary`.

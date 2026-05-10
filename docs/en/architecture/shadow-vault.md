@@ -1,6 +1,6 @@
 # Architecture: Shadow Vault Approach
 
-**Status:** Phases 0–6A shipped end-to-end (v0.4.14). Phase 6B (this docs polish) in flight; Phase 6C (plugin compatibility re-verification) pending.
+**Status:** Shipped. The shadow-vault model has been the production architecture since v0.4.14 (Phases 0–6A) and is the basis for the v1.0 release line.
 **Decided:** 2026-04-27
 **Supersedes:** the monkey-patch-and-reconcile approach used through v0.4.3
 
@@ -373,13 +373,13 @@ post-pivot reality.
 ### Phase 6C deliverable (pending)
 
 Manual smoke through the 11 plugins in
-[plugin-compatibility.md](plugin-compatibility.md). Each row
+[plugin-compatibility.md](../user-guide/plugin-compatibility.md). Each row
 moves from 🟡 → ✅ verified or ❌ broken (with category — fs-direct
 reader, etc.). User-driven; ~30–60 min.
 
 ## 6. Backwards compatibility
 
-Pre-1.0, so we don't promise stability across this pivot.
+The pre-1.0 cut-overs below were one-time migrations completed before v1.0 shipped; v1.x preserves the shadow-vault shape and `data.json` schema described elsewhere on this page.
 
 - **Removed (PR #69)**: `data.json:autoPatchAdapter` setting
   (Tier 1-A). The shadow vault always-on model replaces it. On
@@ -438,7 +438,7 @@ for every file in the model.
 - Plugins that hit `fs` directly (Omnisearch, possibly some media
   indexers) cannot be made to work without mirroring the file content
   to a real local path. Mark these `❌ broken (fs-direct)` in
-  [docs/plugin-compatibility.md](plugin-compatibility.md), with a
+  [docs/en/user-guide/plugin-compatibility.md](../user-guide/plugin-compatibility.md), with a
   one-line note pointing here.
 - A future enhancement (out of scope for the initial pivot) could
   shadow-write actual file content to the local basePath as a

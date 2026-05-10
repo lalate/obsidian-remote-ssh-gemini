@@ -645,7 +645,7 @@ export default class RemoteSshPlugin extends Plugin {
 
   /**
    * POC for the shadow-vault architecture (see
-   * docs/architecture-shadow-vault.md, Phase 1): walk the patched
+   * docs/en/architecture/shadow-vault.md, Phase 1): walk the patched
    * adapter, then hand the resulting entry list to `VaultModelBuilder`
    * which materialises TFile/TFolder objects in `app.vault.fileMap`
    * and fires `vault.trigger('create', file)` for each new file. File

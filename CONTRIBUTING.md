@@ -75,23 +75,38 @@ The E2E suite also runs nightly via `.github/workflows/e2e.yml`
 
 One branch = one PR = one logical change. We squash-merge, so the branch's commits don't need to be pristine — but the PR title and body **do**.
 
-### Branching model — `next` (integration) + `main` (stable)
+### Branching model — `next` (beta) + `main` (stable)
 
-This repo runs on a two-axis branching model. Pick the right base for your PR:
+This repo runs a two-channel release model. Pick the right base for your PR:
 
-| You're doing… | Base your PR on |
-|---|---|
-| New feature / refactor / bug fix / docs / chore | **`next`** ← almost everything |
-| Emergency hotfix for a shipped stable release | **`main`** (then back-port to `next`) |
-| Promotion of accumulated work to stable (release cut) | **`main`** ← `next` (fast-forward) |
+| You're doing… | Base your PR on | Version shape |
+|---|---|---|
+| New feature / refactor / bug fix / docs / chore | **`next`** ← almost everything | `X.Y.Z-beta.N` |
+| Emergency hotfix for a shipped stable release | **`main`** (then back-port to `next`) | `X.Y.Z` |
+| Promotion of accumulated betas to stable (release cut) | **`main`** ← `next` | `X.Y.Z` (suffix dropped) |
 
 Why this exists:
 
-- **`next`** is the integration branch where day-to-day work lands. BRAT users (`obsidian42-brat` with this repo's slug + `--beta`) follow this branch via `manifest-beta.json`, so every merge here is automatically in front of beta testers.
-- **`main`** is the stable channel; the `release.yml` workflow only fires on pushes to `main`. Releases are cut by opening a promotion PR (`next` → `main`) and merging it once `next` has settled. This batches multiple PRs into a single user-visible release and gives a chance to revert risky commits before they ship.
-- Pre-1.0 the two branches carry the same builds in practice (every merge to `next` still bumps `manifest.json` *and* `manifest-beta.json` in lockstep). The model becomes load-bearing once `next` starts holding changes that should not auto-ship to stable users.
+- **`next`** is the **beta channel**. BRAT users (`obsidian42-brat` with this repo's slug + `--beta`) follow this branch via `manifest-beta.json` — every merge to `next` publishes a `vX.Y.Z-beta.N` GitHub Release marked as prerelease, and BRAT auto-updates them on the next launch.
+- **`main`** is the **stable channel**. Each merge publishes a clean `vX.Y.Z` GitHub Release marked as the latest, which is what the Obsidian Community Plugins store + the README install link resolve to. A `sync: main → next` PR is opened and auto-merged automatically by `.github/workflows/sync-main-to-next.yml`, so the histories rejoin without manual intervention.
+- The version shape is the **single source of truth** for the channel: `release.yml` reads `plugin/manifest.json` and chooses prerelease vs stable based on whether the version contains `-beta.`. `version-check.yml` enforces that the right shape lives on the right branch.
 
-A promotion PR is just `git checkout main && git merge --ff-only origin/next && git push`; we keep history linear so `next` stays a strict superset of `main` until the next experimental change lands.
+#### Cutting a promotion (next → main)
+
+When `next` has accumulated enough verified work to ship:
+
+```bash
+cd plugin
+npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops -beta suffix)
+git commit -am "release: prepare 1.0.44 promotion"
+git push origin next         # release.yml SKIPS this push (gate: stable-on-next)
+gh pr create --base main --head next --title "release: promote next → main (1.0.44)"
+```
+
+After CI green and merge:
+- `release.yml` fires on the main push → publishes **v1.0.44** stable.
+- `sync-main-to-next.yml` fires on the main push → opens + auto-merges `sync: main → next` so `next` gets the merge commit.
+- Your next beta cycle starts with `npm run bump:beta:start` (`1.0.44 → 1.0.45-beta.0`).
 
 ### Commit messages — Conventional Commits, enforced
 
@@ -114,17 +129,31 @@ The `commitlint.yml` workflow checks every commit in the PR. A typo in commit #3
 
 ### Version bumps
 
-`plugin/manifest.json`, `plugin/package.json`, and `plugin/versions.json` move together. Use the project's npm `version` script to bump all three at once:
+The version shape selects the channel: `X.Y.Z-beta.N` lives on `next`, plain `X.Y.Z` lives on `main`. Three npm scripts cover the lifecycle:
 
 ```bash
 cd plugin
-npm version patch --no-git-tag-version   # 0.4.57 → 0.4.58
-# (or `minor` / `major` / a literal `0.5.0`)
+# Day-to-day work on next (most PRs):
+npm run bump:beta            # 1.0.44-beta.3 → 1.0.44-beta.4
+
+# First commit of a new beta cycle (after main has just absorbed
+# a stable release and next == main):
+npm run bump:beta:start      # 1.0.44 → 1.0.45-beta.0
+
+# Promotion (drop the suffix; only run when ready to cut stable):
+npm run bump:stable          # 1.0.44-beta.5 → 1.0.44
 ```
 
-Then commit the four files alongside your code change in a single commit.
+Each script:
+- updates `plugin/package.json` + `plugin/manifest.json`
+- updates the **right** root manifest:
+  - **beta** bump → only `manifest-beta.json` (BRAT --beta consumers)
+  - **stable** bump → both `manifest.json` (Obsidian Community Plugins) and `manifest-beta.json`, plus the `versions.json` compatibility map
+- stages every changed file via the npm `version` lifecycle hook
 
-`version-check.yml` rejects any PR whose `manifest.json` version isn't strictly greater than the base branch's. If your PR sits open while another lands on the same base (typically `next`), rebase + bump again.
+Commit the staged files alongside your code change.
+
+`version-check.yml` is **branch-aware**: PRs into `next` must keep `manifest.json` (root) pinned to the last stable, and PRs into `main` must carry a plain `X.Y.Z` (no beta suffix) with all manifests in agreement. If your PR sits open while another lands on the same base, rebase + run the same `bump:` script again.
 
 ## Pull request etiquette
 
@@ -136,8 +165,8 @@ Then commit the four files alongside your code change in a single commit.
 
 ## Where things live
 
-- **Architecture decisions** → `docs/architecture-*.md`. The shadow-vault rationale (and why the prior `reconcileFile` route was abandoned) is in `docs/architecture-shadow-vault.md`.
-- **Test strategy** → `docs/testing-strategy.md`. Phase A (multi-client convergence), B (multi-OS), C (sync-latency + UI reflect) are codified there.
+- **Architecture decisions** → `docs/en/architecture/*.md`. The shadow-vault rationale (and why the prior `reconcileFile` route was abandoned) is in `docs/en/architecture/shadow-vault.md`.
+- **Test strategy** → `docs/en/contributing/testing-strategy.md`. Phase A (multi-client convergence), B (multi-OS), C (sync-latency + UI reflect) are codified there.
 - **Performance numbers** → the `perf-baseline` orphan branch's `baseline.ndjson`, refreshed nightly by `bench.yml`.
 - **Issue tracker** → for bug reports, feature requests, design questions.
 - **Security issues** → see [SECURITY.md](SECURITY.md), **not** the public issue tracker.
@@ -159,6 +188,6 @@ Tagged releases (`X.Y.Z` format) trigger `.github/workflows/release.yml`:
 4. Grouped changelog generated by `git-cliff` (`cliff.toml`)
 5. GitHub Release created with all artefacts attached
 
-You don't usually create releases by hand; `release.yml` watches `main` for `manifest.json` version changes and auto-tags. Day-to-day work merges to `next` (the integration branch); a release happens when someone opens a fast-forward promotion PR `next` → `main` (see [Branching model](#branching-model--next-integration--main-stable)).
+You don't usually create releases by hand; `release.yml` watches both branches and selects channel by version shape — every merge to `next` publishes a `vX.Y.Z-beta.N` prerelease, every merge to `main` publishes a `vX.Y.Z` stable. See [Branching model](#branching-model--next-beta--main-stable) for the promotion flow.
 
 Thanks again — and welcome.

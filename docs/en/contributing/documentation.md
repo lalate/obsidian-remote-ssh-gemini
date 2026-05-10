@@ -58,7 +58,7 @@ status: accepted
 | Security reviewer / auditor | Threat model, crypto choices, TOFU & host-key flow, audit log | **P0** |
 | Protocol implementer (alternate daemon) | RPC method spec, wire format, capability negotiation, version compatibility | **P0** |
 | Plugin extension developer | Public API, event hooks, extension points | **P1** |
-| Contributor (engineer) | Architecture, build, test strategy, release process | **P1** (existing assets in `docs/architecture-*.md`) |
+| Contributor (engineer) | Architecture, build, test strategy, release process | **P1** (existing assets in `docs/en/architecture/*.md`) |
 | LLM / agent consumer | Pre-flattened doc dumps optimised for context windows | **P2** |
 
 ---
@@ -150,7 +150,7 @@ The root `index.md` should be a thin landing page with a language picker plus an
 | Hosting | GitHub Pages | Same repo, no separate deploy account |
 | Build CI | GitHub Actions | Reuses repo's existing workflow infra |
 | Search | flexsearch (Quartz built-in) | Client-side, no service to host |
-| Diagrams | Mermaid (Quartz built-in) | Already used heavily in existing `docs/architecture-*.md` |
+| Diagrams | Mermaid (Quartz built-in) | Already used heavily in existing `docs/en/architecture/*.md` |
 | Maths | KaTeX (Quartz built-in) | Reserved for protocol notation if needed |
 | Spell-check | `crate-ci/typos` (CI-only) | Project name allowlist in `_typos.toml` |
 | Link-check | `lycheeverse/lychee` (CI-only) | Both internal `[[wikilinks]]` and external HTTP |
@@ -350,11 +350,11 @@ Each generator script is a standalone `node scripts/gen-*.mjs` runnable locally.
 
 ### Phase 1 — Migrate existing assets
 
-- [ ] Move `docs/architecture-shadow-vault.md` → `docs/en/architecture/shadow-vault.md`
-- [ ] Move `docs/architecture-perf.md` → `docs/en/architecture/perf.md`
-- [ ] Move `docs/architecture-collab.md` → `docs/en/architecture/collab.md`
-- [ ] Move `docs/testing-strategy.md` → `docs/en/contributing/testing-strategy.md`
-- [ ] Move `docs/plugin-compatibility.md` → `docs/en/contributing/plugin-compatibility.md`
+- [x] Move `docs/architecture-shadow-vault.md` → `docs/en/architecture/shadow-vault.md`
+- [x] Move `docs/architecture-perf.md` → `docs/en/architecture/perf.md`
+- [x] Move `docs/architecture-collab.md` → `docs/en/architecture/collab.md`
+- [x] Move `docs/testing-strategy.md` → `docs/en/contributing/testing-strategy.md`
+- [x] Move `docs/plugin-compatibility.md` → `docs/en/user-guide/plugin-compatibility.md` *(landed under `user-guide/` rather than `contributing/`)*
 - [ ] Rewrite root `README.md` and `CONTRIBUTING.md` so they cross-link into the new site
 - [ ] Replace ad-hoc Markdown links with `[[wikilinks]]`
 

@@ -24,8 +24,10 @@
 > attachments, search, and live updates — all served from the remote,
 > transparently.
 >
-> _Status: pre-1.0. End-to-end against Linux + macOS remotes with the bundled
-> Go daemon. Install only into a dev vault for now; production use after v1.0._
+> _Status: 1.0 released — daemon binaries cosign-signed, end-to-end tested
+> against Linux + macOS remotes. Community-store listing pending review
+> ([obsidianmd/obsidian-releases#12390](https://github.com/obsidianmd/obsidian-releases/pull/12390));
+> install via BRAT or manual release until it lands._
 
 > 📦 **Installing?** Grab the latest from the
 > [**Releases page**](https://github.com/sotashimozono/obsidian-remote-ssh/releases)
@@ -48,7 +50,7 @@
 - **Use the plugins you already love.** Dataview, Templater, Excalidraw,
   Tasks, and most plugins that go through Obsidian's vault API work
   unchanged. (Compatibility matrix:
-  [docs/plugin-compatibility.md](docs/plugin-compatibility.md).)
+  [docs/en/user-guide/plugin-compatibility.md](docs/en/user-guide/plugin-compatibility.md).)
 - **Edit from multiple machines.** Live updates push between connected
   clients via `fs.watch`; conflicting saves trigger a 3-way merge UI
   with ancestor / mine / theirs panes.
@@ -149,10 +151,9 @@ BRAT only handles the plugin itself.
 > manifests in lockstep, so BRAT's `--beta` mode (which fetches
 > `manifest-beta.json` from the repo's default branch) gives testers
 > early access to in-flight changes. Stable releases happen via
-> periodic promotion PRs that fast-forward `main` to `next`. Pre-1.0
-> the two channels carry the same builds in practice; once `next`
-> starts landing experimental work that should not auto-ship to stable
-> users, the channels will diverge.
+> periodic promotion PRs that fast-forward `main` to `next`. The
+> stable channel currently leads on `1.0.x`; the `next` channel runs
+> a small lead of patch / pre-release versions ahead of stable.
 
 ### Option B — Manual install
 
@@ -264,7 +265,7 @@ intercept — read or write the local empty shadow directory instead and
 effectively don't see your remote vault.
 
 The full matrix is in
-[docs/plugin-compatibility.md](docs/plugin-compatibility.md). Short summary:
+[docs/en/user-guide/plugin-compatibility.md](docs/en/user-guide/plugin-compatibility.md). Short summary:
 
 - ✅ **Most read-side plugins** — Dataview, Tasks, Calendar, Outliner, …
 - ✅ **Most write-side plugins** — Templater, Daily Notes, Quick Switcher++, …
@@ -397,13 +398,13 @@ the vault model from a different adapter mid-session." The shadow window's
 vault is constructed from the remote tree at startup, so every plugin in
 that window sees a normal-looking vault from frame zero. The full design
 and the smoke evidence behind it are in
-[docs/architecture-shadow-vault.md](docs/architecture-shadow-vault.md).
+[docs/en/architecture/shadow-vault.md](docs/en/architecture/shadow-vault.md).
 
 The performance machinery (`BulkWalker`, `fs.thumbnail` cache) is
-documented in [docs/architecture-perf.md](docs/architecture-perf.md);
+documented in [docs/en/architecture/perf.md](docs/en/architecture/perf.md);
 the conflict + offline-queue design is in
-[docs/architecture-collab.md](docs/architecture-collab.md); the test
-strategy is in [docs/testing-strategy.md](docs/testing-strategy.md).
+[docs/en/architecture/collab.md](docs/en/architecture/collab.md); the test
+strategy is in [docs/en/contributing/testing-strategy.md](docs/en/contributing/testing-strategy.md).
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-remote-ssh",
-  "version": "1.0.43",
+  "version": "1.0.44",
   "description": "VS Code Remote SSH-like experience for Obsidian",
   "main": "main.js",
   "scripts": {
@@ -21,6 +21,9 @@
     "sshd:start": "node scripts/start-test-sshd.mjs",
     "sshd:stop": "node scripts/stop-test-sshd.mjs",
     "lint": "eslint \"src/**/*.ts\"",
+    "bump:beta:start": "npm version prepatch --preid=beta --no-git-tag-version",
+    "bump:beta": "npm version prerelease --preid=beta --no-git-tag-version",
+    "bump:stable": "node scripts/bump-stable.mjs",
     "version": "node scripts/bump-version.mjs && git add package.json package-lock.json manifest.json versions.json ../manifest.json ../manifest-beta.json ../versions.json"
   },
   "keywords": [

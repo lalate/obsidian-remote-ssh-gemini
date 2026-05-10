@@ -16,7 +16,7 @@ import type {
  * Excalidraw / Tasks) can drive without a real Obsidian process.
  *
  * Scope: the **hot read/write APIs** identified in the
- * `docs/plugin-compatibility.md` survey for the top-20 plugins,
+ * `docs/en/user-guide/plugin-compatibility.md` survey for the top-20 plugins,
  * narrowed to what plugins actually call (not the full obsidian.d.ts
  * surface). Adds-as-needed when a new plugin scenario hits an unmocked
  * method.

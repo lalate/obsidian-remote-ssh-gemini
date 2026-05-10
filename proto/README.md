@@ -137,16 +137,18 @@ The server pushes notifications on subscribed paths:
   "params": {
     "subscriptionId": "…",
     "path": "note.md",
-    "event": "created" | "modified" | "deleted" | "renamed",
-    "mtime"?: number,
-    "newPath"?: string   // set when event === "renamed"
+    "event": "created" | "modified" | "deleted",
+    "mtime"?: number
   }
 }
 ```
 
-- Events are debounced on the server (coalesced if the same path is
-  touched within a few hundred ms) so a single editor save doesn't
-  flood the wire.
+- The proto reserves a `renamed` event tag for future use, but the current
+  daemon emits only `created` / `modified` / `deleted`. Renames surface as
+  a `deleted` + `created` pair on the affected paths.
+- The current daemon does NOT debounce or coalesce events server-side;
+  every inotify event maps to one `fs.changed` notification. Clients should
+  debounce on their side if they want UI-friendly throttling.
 - An `fs.watch` subscription with `recursive: true` emits events for
   every descendant.
 
