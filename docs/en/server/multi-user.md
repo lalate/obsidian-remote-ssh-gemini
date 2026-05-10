@@ -80,8 +80,8 @@ Sometimes asked: "can I have alice + bob + dad share one `obsidian` user account
 
 You can, but **it's an anti-pattern** because:
 
-- The token in `~obsidian/.obsidian-remote/token` is **single** — once one user's plugin authenticates, the daemon's session is pinned to that connection. A second concurrent connect kicks the first.
-- Daemons restart on plugin reconnect (the `tryReuseExistingDaemon` probe + deploy fallback). When the daemon restarts, the token regenerates, and the OTHER user's plugin discovers their cached token is invalid on next call → also has to redeploy. Cascading thrash.
+- The token in `~obsidian/.obsidian-remote/token` is **single** — every client that can read the file authenticates as the same identity. The daemon does allow multiple concurrent sessions (`server.go:60` — *"Multiple concurrent connections are allowed; each gets its own Session"*), so connections don't kick each other, but the daemon can't tell alice's session from bob's. Inside the daemon's logs and inside the vault filesystem, every action is "user obsidian" with no per-human attribution.
+- Daemons restart on plugin reconnect when the `tryReuseExistingDaemon` probe fails (typically a version mismatch with the bundled binary). When that restart happens, the token regenerates, and the OTHER user's plugin discovers their cached token is invalid on next call → also has to redeploy. Cascading thrash that wouldn't happen with one-daemon-per-OS-user.
 - Vault file ownership ends up shared (`obsidian:obsidian`) so any audit-trail of "who changed what" relies on Obsidian-level metadata, not OS-level uid info.
 
 The Docker setup (`deploy/docker/`) ships exactly this single-user pattern by design — fine for a single human or a "one container per human" deployment. For multiple humans on one host, give them separate OS accounts.

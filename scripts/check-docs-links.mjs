@@ -43,10 +43,16 @@ function stripCode(src) {
 }
 
 function slugify(s) {
+  // Quartz/Obsidian-style: keep Unicode letters + digits so JA / CJK
+  // / accented headings produce distinct slugs instead of all
+  // collapsing to '' (which would silently match any anchor against
+  // any heading on the page). NFC-normalise so visually identical
+  // strings with different Unicode encodings hash to the same slug.
   return s
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9\s\-]/g, '')
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}\s\-]/gu, '')
     .replace(/\s+/g, '-');
 }
 
