@@ -1,6 +1,11 @@
 name: Release
 
-# One workflow, one trigger: every merge to main produces a release.
+# One workflow, two triggers: every merge to main publishes a STABLE
+# release; every merge to next publishes a BETA prerelease. The version
+# shape in plugin/manifest.json (`X.Y.Z` vs `X.Y.Z-beta.N`) drives the
+# release type — version-check.yml has already enforced that the
+# right shape lives on the right branch, so this workflow can trust
+# the manifest blindly.
 #
 # Why not tag-trigger?
 #   GitHub Actions deliberately suppresses workflow runs from events
@@ -11,17 +16,19 @@ name: Release
 #
 # softprops/action-gh-release creates the tag *and* the release in a
 # single API call when given `tag_name` + `target_commitish`, so we
-# can drive the whole pipeline directly off `push: branches: [main]`.
+# can drive the whole pipeline directly off `push: branches: [main, next]`.
 # A `precheck` job reads `plugin/manifest.json` and short-circuits if
 # the tag/release already exists, making re-runs idempotent.
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   workflow_dispatch:
 
 concurrency:
-  group: release-main
+  # Per-ref group: a beta release on next must not cancel an in-flight
+  # stable release on main (or vice versa).
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -43,6 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}
+      is_beta: ${{ steps.ver.outputs.is_beta }}
       should_release: ${{ steps.gate.outputs.should_release }}
     steps:
       - uses: actions/checkout@v6
@@ -54,14 +62,43 @@ jobs:
         run: |
           v=$(jq -r '.version' plugin/manifest.json)
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "Manifest version: $v"
+          # Channel is decided by the version shape, not the branch:
+          # this avoids a class of bug where someone hand-merges or
+          # the workflow fires on a future ref we forget about. The
+          # version-check workflow has already gated branch ↔ shape.
+          if [[ "$v" == *-beta.* ]]; then
+            echo "is_beta=true"  >> "$GITHUB_OUTPUT"
+            echo "Manifest version: $v (BETA prerelease)"
+          else
+            echo "is_beta=false" >> "$GITHUB_OUTPUT"
+            echo "Manifest version: $v (STABLE release)"
+          fi
 
-      - name: Skip if release already exists
+      - name: Gate — branch ↔ channel must match, and not already released
         id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           v="${{ steps.ver.outputs.version }}"
+          is_beta="${{ steps.ver.outputs.is_beta }}"
+          ref="${{ github.ref }}"
+
+          # Channel ↔ branch gate. The promotion flow temporarily
+          # parks a plain stable version on next (the "drop beta
+          # suffix" commit before opening the next → main PR). Without
+          # this gate, that push would publish a stable release from
+          # next — wrong source of truth. We skip and let the eventual
+          # main push do the stable release.
+          if [ "$ref" = "refs/heads/next" ] && [ "$is_beta" != "true" ]; then
+            echo "Skip: stable version $v on next is a promotion-staging commit; main push will release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$ref" = "refs/heads/main" ] && [ "$is_beta" = "true" ]; then
+            echo "::error::Beta version $v landed on main — version-check.yml should have prevented this."
+            exit 1
+          fi
+
           if gh release view "$v" >/dev/null 2>&1; then
             echo "Release $v already exists — nothing to do."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
@@ -288,9 +325,9 @@ jobs:
             server/dist/daemon-manifest.json
             server/dist/daemon-manifest.json.bundle
           draft: false
-          # Pre-1.0 we publish everything as pre-release for visibility,
-          # matching the prior release-on-merge.yml IS_PRERELEASE='true'
-          # behavior. Flip this to `contains(needs.precheck.outputs.version, '-')`
-          # once the plugin reaches 1.0.
-          prerelease: true
-          make_latest: true
+          # Beta releases land as prereleases (BRAT --beta picks them up
+          # via the pre-release flag). Stable releases land as the
+          # canonical "Latest" release so the Obsidian Community Plugins
+          # store and the README install link both resolve here.
+          prerelease: ${{ needs.precheck.outputs.is_beta == 'true' }}
+          make_latest: ${{ needs.precheck.outputs.is_beta != 'true' }}
