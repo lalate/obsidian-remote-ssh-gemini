@@ -17,7 +17,9 @@ tags: [home]
 | インストール先と挙動を把握したい | [[ja/getting-started/install\|インストール]] → [[ja/getting-started/first-connect\|初回接続]] |
 | よくある質問を見たい | [[ja/faq\|FAQ]] |
 | 他の同期ツールと比較して選びたい | [[ja/comparison\|比較]] |
-| Obsidian Sync から乗り換えたい | [[en/migration/from-obsidian-sync\|Migration guide]] (英語) |
+| Obsidian Sync から乗り換えたい | [[ja/migration/from-obsidian-sync\|Obsidian Sync からの移行]] |
+| セキュリティモデルを把握したい | [[ja/security/model\|脅威モデル]] |
+| Pi で自宅サーバを立てたい | [[ja/cookbook/raspberry-pi-vault\|Raspberry Pi vault from scratch]] |
 | 動かないときの対処を調べたい | [[ja/operations/troubleshooting\|トラブルシューティング]] |
 
 ## このドキュメントの言語について
@@ -27,7 +29,10 @@ tags: [home]
 ## セクション一覧
 
 - **[[ja/getting-started/index|はじめに]]** — インストール、初回接続、何が起こるか
+- **[[ja/cookbook/index|Cookbook]]** — 目的指向のレシピ集（Pi 立て上げ、SSH 鍵生成、Tailscale、systemd など）
 - **[[ja/operations/index|運用]]** — トラブルシューティング、性能チューニング、ログ、アップグレード（症状別ディスパッチャ含む）
+- **[[ja/security/index|セキュリティ]]** — 脅威モデル、ホスト鍵信頼、トークン管理、cosign 検証
+- **[[ja/migration/index|移行]]** — 既存サービスからの乗り換えガイド
 - **[[ja/comparison|比較]]** — Obsidian Sync / Syncthing / Dropbox / Git ベース / Nextcloud / Remotely Save との違い
 - **[[ja/faq|FAQ]]** — よくある質問
 

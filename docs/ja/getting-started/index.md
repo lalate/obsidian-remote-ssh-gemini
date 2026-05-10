@@ -31,8 +31,8 @@ tags: [getting-started]
 
 先にリモート機をセットアップしてから戻ってきてください（以下は英語のみ）:
 
-- **[[en/cookbook/raspberry-pi-vault|Cookbook: Raspberry Pi vault from scratch]]** — Pi 用の即動レシピ
-- **[[en/cookbook/share-via-tailscale|Cookbook: Share a vault via Tailscale]]** — どこからでも到達可能な VPS / 自宅機の構成
+- **[[ja/cookbook/raspberry-pi-vault|Cookbook: Raspberry Pi vault from scratch]]** — Pi 用の即動レシピ
+- **[[en/cookbook/share-via-tailscale|Cookbook: Share a vault via Tailscale]]**（英語） — どこからでも到達可能な VPS / 自宅機の構成
 
 ## 初回接続後の次のステップ
 
