@@ -165,6 +165,90 @@ export default (() => {
       }
     }
 
+    // BreadcrumbList — emit for any page two or more segments deep so
+    // Google can render the breadcrumb trail in SERPs (Home › cookbook
+    // › Raspberry Pi vault). Higher CTR vs the bare URL.
+    //
+    // Segments come from the slug; intermediate folder URLs work because
+    // Quartz emits an index.html for each section landing (en/cookbook/,
+    // en/architecture/, etc.). Slug-to-readable conversion uses a small
+    // table of common abbreviations + title-case fallback.
+    const SEGMENT_NAMES: Record<string, string> = {
+      en: "English",
+      ja: "Japanese",
+      api: "API",
+      faq: "FAQ",
+      ssh: "SSH",
+      sftp: "SFTP",
+      cli: "CLI",
+    }
+    const segmentName = (s: string): string =>
+      SEGMENT_NAMES[s] ??
+      s
+        .split("-")
+        .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : ""))
+        .join(" ")
+
+    const slugSegments = slug.split("/").filter(Boolean)
+    let breadcrumbBlob: Record<string, unknown> | null = null
+    if (slugSegments.length >= 2 && slug !== "404") {
+      const items: Array<Record<string, unknown>> = [
+        {
+          "@type": "ListItem",
+          position: 1,
+          name: "Home",
+          item: `https://${canonicalBaseUrl}/`,
+        },
+      ]
+      let cumulative = ""
+      for (let i = 0; i < slugSegments.length - 1; i++) {
+        cumulative += "/" + slugSegments[i]
+        items.push({
+          "@type": "ListItem",
+          position: i + 2,
+          name: segmentName(slugSegments[i]),
+          item: `https://${canonicalBaseUrl}${cumulative}/`,
+        })
+      }
+      // Final segment: use the frontmatter title (richer than slug) for
+      // the page name; the URL is the page's canonical.
+      items.push({
+        "@type": "ListItem",
+        position: slugSegments.length + 1,
+        name:
+          (fileData.frontmatter?.title as string | undefined) ??
+          segmentName(slugSegments[slugSegments.length - 1]),
+        item: canonicalUrl,
+      })
+      breadcrumbBlob = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        itemListElement: items,
+      }
+    }
+
+    // WebSite — emit on the root landing pages (en/index, ja/index, and
+    // the top-level docs/index). Tells Google the canonical name + URL
+    // of the site as a whole; pairs with the SoftwareApplication on the
+    // same pages without duplication (different @types).
+    //
+    // SearchAction deliberately omitted: Quartz's built-in search is
+    // keyboard-driven, not URL-driven, so we have no urlTemplate Google
+    // would actually be able to follow. Adding a fake one is worse than
+    // omitting — Google's validator can reject it as broken.
+    let websiteBlob: Record<string, unknown> | null = null
+    if (slug === "en/index" || slug === "ja/index" || slug === "index") {
+      websiteBlob = {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        url: `https://${canonicalBaseUrl}/`,
+        name: cfg.pageTitle ?? "obsidian-remote-ssh",
+        description,
+        inLanguage: (fileData.frontmatter?.lang as string | undefined) ?? "en",
+        publisher: projectAuthor,
+      }
+    }
+
     // Hreflang alternates for EN/JA twins.
     //
     // Convention: pages under `docs/<lang>/<rest>` slug to `<lang>/<rest>`
@@ -272,6 +356,22 @@ export default (() => {
               // FAQ answer, etc.) cannot break out of the surrounding
               // <script> element. JSON.stringify itself does not do this.
               __html: JSON.stringify(jsonLdBlob).replace(/</g, "\\u003c"),
+            }}
+          />
+        )}
+        {breadcrumbBlob && (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{
+              __html: JSON.stringify(breadcrumbBlob).replace(/</g, "\\u003c"),
+            }}
+          />
+        )}
+        {websiteBlob && (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{
+              __html: JSON.stringify(websiteBlob).replace(/</g, "\\u003c"),
             }}
           />
         )}
