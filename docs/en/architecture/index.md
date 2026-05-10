@@ -5,7 +5,7 @@ tags: [architecture]
 
 # Architecture
 
-Design specs for the major subsystems. These document **why** decisions were made, not just **what** the code does.
+Design specs for the major subsystems — the **why** behind decisions, not just the **what** of the code. Read [[shadow-vault|Shadow vault]] first; it's the foundation the others build on.
 
 ## Documents
 
