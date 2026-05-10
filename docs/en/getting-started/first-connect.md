@@ -1,6 +1,7 @@
 ---
 title: First connect
 tags: [getting-started]
+description: "What happens when you click Connect: SSH handshake, daemon auto-deploy with cosign-signed binary, vault fetch, shadow vault opens. Step-by-step explanation."
 ---
 
 # First connect — what's actually happening

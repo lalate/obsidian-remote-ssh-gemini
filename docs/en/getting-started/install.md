@@ -1,6 +1,7 @@
 ---
 title: Install
 tags: [getting-started, install]
+description: "Install obsidian-remote-ssh from the Obsidian Community Plugins store, BRAT (beta channel), or manually from a release tag. Desktop only; Obsidian 1.5+."
 ---
 
 # Install obsidian-remote-ssh

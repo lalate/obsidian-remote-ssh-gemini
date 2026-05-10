@@ -1,6 +1,7 @@
 ---
 title: Share a vault via Tailscale
 tags: [cookbook, how-to, tailscale]
+description: "Run obsidian-remote-ssh over Tailscale: zero router config, encrypted in-transit traffic, works across NAT, reachable from your laptop and (later) your phone."
 ---
 
 # Share a vault via Tailscale

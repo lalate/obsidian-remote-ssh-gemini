@@ -1,6 +1,7 @@
 ---
 title: Threat model
 tags: [security]
+description: "obsidian-remote-ssh security model: SSH transport, daemon-side token auth, host-key TOFU store, cosign-signed binaries, vault-root path-escape enforcement, threat model."
 ---
 
 # Security — threat model

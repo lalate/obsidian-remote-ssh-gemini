@@ -1,6 +1,7 @@
 ---
 title: FAQ
 tags: [faq]
+description: "Common questions about obsidian-remote-ssh: works offline?, mobile support, conflict handling, daemon safety, comparison vs Sync, troubleshooting first steps."
 ---
 
 # FAQ
