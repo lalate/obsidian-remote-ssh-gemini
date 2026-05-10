@@ -31,6 +31,29 @@ export default (() => {
     const socialUrl =
       fileData.slug === "404" ? url.toString() : joinSegments(url.toString(), fileData.slug!)
 
+    // Canonical + dev-noindex handling.
+    //
+    // Two builds publish from the same source: the stable site (root of
+    // gh-pages) and the dev preview (gh-pages/dev/). The dev preview
+    // must not compete with stable in SERPs — it's a staging surface,
+    // not authoritative content. Two-step defence:
+    //
+    //   1. <link rel="canonical"> always points at the stable URL, with
+    //      any "/dev" suffix stripped from baseUrl. So even if a dev
+    //      page gets crawled, the search engine is told the real
+    //      authority lives at the stable URL.
+    //   2. On dev builds we additionally emit <meta robots noindex,
+    //      follow> so crawlers skip indexing dev pages entirely while
+    //      still propagating internal-link equity to anything we link.
+    const isDev = (cfg.baseUrl ?? "").includes("/dev")
+    const canonicalBaseUrl = isDev
+      ? (cfg.baseUrl ?? "").replace(/\/dev\/?$/, "")
+      : (cfg.baseUrl ?? "")
+    const canonicalUrl =
+      fileData.slug === "404"
+        ? `https://${canonicalBaseUrl}/`
+        : `https://${joinSegments(canonicalBaseUrl, fileData.slug!)}`
+
     const usesCustomOgImage = ctx.cfg.plugins.emitters.some(
       (e) => e.name === CustomOgImagesEmitterName,
     )
@@ -84,6 +107,8 @@ export default (() => {
 
         <link rel="icon" href={iconPath} />
         <meta name="description" content={description} />
+        <link rel="canonical" href={canonicalUrl} />
+        {isDev && <meta name="robots" content="noindex, follow" />}
         <meta name="generator" content="Quartz" />
 
         {css.map((resource) => CSSResourceToStyleElement(resource, true))}
