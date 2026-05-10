@@ -11,6 +11,7 @@ export default (() => {
     fileData,
     externalResources,
     ctx,
+    allFiles,
   }: QuartzComponentProps) => {
     const titleSuffix = cfg.pageTitleSuffix ?? ""
     const title =
@@ -53,6 +54,44 @@ export default (() => {
       fileData.slug === "404"
         ? `https://${canonicalBaseUrl}/`
         : `https://${joinSegments(canonicalBaseUrl, fileData.slug!)}`
+
+    // Hreflang alternates for EN/JA twins.
+    //
+    // Convention: pages under `docs/<lang>/<rest>` slug to `<lang>/<rest>`
+    // (e.g. `en/migration/from-obsidian-sync` and `ja/migration/from-obsidian-sync`).
+    // When both twins exist, Google needs reciprocal `rel="alternate"
+    // hreflang="..."` links on each so the right language version is
+    // surfaced for each user's locale. Without these, both twins compete
+    // as duplicates and Google may pick whichever it first crawled.
+    //
+    // Detection is convention-based: parse the slug for an `en/` or
+    // `ja/` prefix, build the twin slug by swapping the prefix, and
+    // check the in-memory `allFiles` list for the twin. If found, emit
+    // self-hreflang + twin-hreflang + x-default (pointing at EN).
+    //
+    // Pages outside the per-language subtree (e.g. `index`, `tags/*`,
+    // `404`) get no hreflang — correct, since they have no language
+    // siblings to disambiguate against.
+    const slug = fileData.slug ?? ""
+    const langTwinMatch = slug.match(/^(en|ja)\/(.+)$/)
+    const hreflangAlternates: Array<{ hrefLang: string; href: string }> = []
+    if (langTwinMatch) {
+      const [, currentLang, restPath] = langTwinMatch
+      const otherLang = currentLang === "en" ? "ja" : "en"
+      const twinSlug = `${otherLang}/${restPath}`
+      const twinExists = allFiles.some((f) => f.slug === twinSlug)
+      if (twinExists) {
+        const selfHref = canonicalUrl
+        const twinHref = `https://${joinSegments(canonicalBaseUrl, twinSlug)}`
+        const enHref = currentLang === "en" ? selfHref : twinHref
+        hreflangAlternates.push(
+          { hrefLang: currentLang, href: selfHref },
+          { hrefLang: otherLang, href: twinHref },
+          // x-default points at the EN copy by convention.
+          { hrefLang: "x-default", href: enHref },
+        )
+      }
+    }
 
     const usesCustomOgImage = ctx.cfg.plugins.emitters.some(
       (e) => e.name === CustomOgImagesEmitterName,
@@ -109,6 +148,9 @@ export default (() => {
         <meta name="description" content={description} />
         <link rel="canonical" href={canonicalUrl} />
         {isDev && <meta name="robots" content="noindex, follow" />}
+        {hreflangAlternates.map(({ hrefLang, href }) => (
+          <link rel="alternate" hrefLang={hrefLang} href={href} key={hrefLang} />
+        ))}
         <meta name="generator" content="Quartz" />
 
         {css.map((resource) => CSSResourceToStyleElement(resource, true))}
