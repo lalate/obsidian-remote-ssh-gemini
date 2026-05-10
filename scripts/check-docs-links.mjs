@@ -22,7 +22,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = 'docs';
-const SCAN_ROOT = path.join(ROOT, 'en');
+// Scan the whole docs/ tree so per-language subtrees (en/, ja/, …) are all checked.
+const SCAN_ROOT = ROOT;
 
 function walk(dir, files = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -130,9 +131,14 @@ for (const file of walk(SCAN_ROOT)) {
 }
 
 const orphans = [];
+// Skip per-language root landings (docs/<lang>/index.md) — they are reached via
+// the folder URL / language switcher, not via wikilink, so a 0 inbound count
+// is expected and not a bug.
+const isLangRoot = (p) => /^docs\/[a-z]{2}(?:-[A-Z]{2})?\/index$/.test(p);
 for (const [p, count] of inbound.entries()) {
-  if (!p.startsWith('docs/en/')) continue;
-  if (p === 'docs/en/index') continue;
+  if (!p.startsWith('docs/')) continue;
+  if (p === 'docs/index') continue; // top-level redirect page
+  if (isLangRoot(p)) continue;
   if (count === 0) orphans.push(p + '.md');
 }
 orphans.sort();
