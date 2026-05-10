@@ -32,11 +32,12 @@ tags: [home]
 - **[[en/server/overview|Server / deploy]]** — Docker, systemd, Raspberry Pi, auto-deploy
 - **[[en/api/overview|API & protocol]]** — RPC methods, error codes, payload shapes, copy-pasteable [[en/api/examples|examples]]
 - **[[en/security/model|Security]]** — threat model, signing, token handling, host-key trust
-- **[[en/operations/troubleshooting|Operations]]** — logs, daemon panel, reconnect, common failures
+- **[[en/operations/troubleshooting|Operations]]** — logs, daemon panel, reconnect, upgrading, uninstalling, common failures
 - **[[en/architecture/index|Architecture]]** — shadow vault design, sync internals, performance
 - **[[en/glossary|Glossary]]** — terms used across the docs, defined once
 - **[[en/roadmap|Roadmap]]** — what's left before v1.0 + v2 mobile plan
 - **[[en/changelog|Changelog & releases]]** — major-milestone overview + how to find per-release notes
+- **[[en/privacy|Privacy & data handling]]** — what data this plugin handles, where it lives, what does (or does not) leave your machines
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels
