@@ -14,6 +14,7 @@ Design specs for the major subsystems. These document **why** decisions were mad
 | [[shadow-vault\|Shadow vault]] | The "local Obsidian vault that mirrors remote" model — shadow lifecycle, file routing, sync events |
 | [[perf\|Performance]] | Sync latency budget, perf bench, the per-merge baseline tracking on `perf-baseline` branch |
 | [[collab\|Collaboration]] | Multi-client editing, conflict handling, the per-client `.obsidian/user/<id>/` workspace partition |
+| [[release-pipeline\|Release & deploy pipeline]] | Two-channel release model, `release.yml` signing flow, sync workflow, branch-aware lint/version-check, plugin-side deploy lifecycle |
 
 ## Common threads across all three
 
