@@ -55,6 +55,62 @@ export default (() => {
         ? `https://${canonicalBaseUrl}/`
         : `https://${joinSegments(canonicalBaseUrl, fileData.slug!)}`
 
+    // JSON-LD structured data (schema.org).
+    //
+    // Selected via `schema:` frontmatter field. Currently supported:
+    //
+    //   - "SoftwareApplication" — for the project's home/landing pages.
+    //     Auto-fills name, description, url from page metadata; the
+    //     remaining fields (category, OS, offer, download URL) are
+    //     static project facts.
+    //
+    //   - "FAQPage" — requires a `faq:` array of {q, a} objects in
+    //     frontmatter. Each becomes a Question/Answer pair in the
+    //     mainEntity. Google uses this to render People-Also-Ask
+    //     boxes in SERPs.
+    //
+    // Other types (HowTo for cookbooks, TechArticle for architecture
+    // pages) can be added here as we extend coverage.
+    const schemaType = fileData.frontmatter?.schema as string | undefined
+    let jsonLdBlob: Record<string, unknown> | null = null
+
+    if (schemaType === "SoftwareApplication") {
+      jsonLdBlob = {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        name: cfg.pageTitle ?? "obsidian-remote-ssh",
+        description,
+        url: canonicalUrl,
+        applicationCategory: "ProductivityApplication",
+        operatingSystem: "Linux, macOS, Windows",
+        offers: {
+          "@type": "Offer",
+          price: "0",
+          priceCurrency: "USD",
+        },
+        downloadUrl:
+          "https://github.com/sotashimozono/obsidian-remote-ssh/releases/latest",
+      }
+    } else if (schemaType === "FAQPage") {
+      const faqItems = fileData.frontmatter?.faq as
+        | Array<{ q: string; a: string }>
+        | undefined
+      if (faqItems && faqItems.length > 0) {
+        jsonLdBlob = {
+          "@context": "https://schema.org",
+          "@type": "FAQPage",
+          mainEntity: faqItems.map(({ q, a }) => ({
+            "@type": "Question",
+            name: q,
+            acceptedAnswer: {
+              "@type": "Answer",
+              text: a,
+            },
+          })),
+        }
+      }
+    }
+
     // Hreflang alternates for EN/JA twins.
     //
     // Convention: pages under `docs/<lang>/<rest>` slug to `<lang>/<rest>`
@@ -151,6 +207,12 @@ export default (() => {
         {hreflangAlternates.map(({ hrefLang, href }) => (
           <link rel="alternate" hrefLang={hrefLang} href={href} key={hrefLang} />
         ))}
+        {jsonLdBlob && (
+          <script
+            type="application/ld+json"
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLdBlob) }}
+          />
+        )}
         <meta name="generator" content="Quartz" />
 
         {css.map((resource) => CSSResourceToStyleElement(resource, true))}
