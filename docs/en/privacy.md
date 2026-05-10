@@ -1,6 +1,7 @@
 ---
 title: Privacy & data handling
 tags: [privacy, security]
+description: "obsidian-remote-ssh privacy and data-handling: where files live (only your remote), what's logged, opt-in telemetry, no third-party network calls, full data inventory."
 ---
 
 # Privacy & data handling

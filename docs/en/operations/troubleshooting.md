@@ -1,6 +1,7 @@
 ---
 title: Troubleshooting
 tags: [operations]
+description: "Diagnosing common obsidian-remote-ssh issues: connection failures, host-key mismatches, daemon-deploy errors, conflict surfaces, slow sync — symptoms and fixes."
 ---
 
 # Troubleshooting

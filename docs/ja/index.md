@@ -2,6 +2,8 @@
 title: obsidian-remote-ssh
 lang: ja
 tags: [home]
+description: "Obsidian の vault を SSH/SFTP 経由でリモート編集できるプラグインの日本語ガイドです。Raspberry Pi や NAS、VPS の vault に Obsidian から直接アクセス。"
+schema: SoftwareApplication
 ---
 
 > **Obsidian の vault を SSH/SFTP 経由でリモート編集できるプラグインです** — VS Code Remote-SSH の Obsidian 版だと思ってください。

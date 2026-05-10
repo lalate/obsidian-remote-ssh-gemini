@@ -2,6 +2,7 @@
 title: 他の Obsidian 同期ツールとの比較
 lang: ja
 tags: [comparison, overview]
+description: "obsidian-remote-ssh と Obsidian Sync / Syncthing / Dropbox / iCloud / Obsidian Git / Nextcloud / Remotely Save の比較。トポロジーとトレードオフから最適な vault 同期ツールを選ぶ。"
 ---
 
 # 他の Obsidian 同期ツールとの比較

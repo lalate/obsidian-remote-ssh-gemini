@@ -1,6 +1,8 @@
 ---
 title: Generating an SSH key
 tags: [cookbook, how-to, ssh]
+description: "Generate an SSH key the obsidian-remote-ssh plugin can use: ed25519 vs ed25519-sk vs RSA, passphrase choice, ssh-agent integration, where to put the public key."
+schema: Article
 ---
 
 # Generating an SSH key

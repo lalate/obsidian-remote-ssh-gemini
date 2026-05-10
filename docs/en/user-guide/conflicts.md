@@ -1,6 +1,7 @@
 ---
 title: Conflict handling
 tags: [user-guide]
+description: "How obsidian-remote-ssh detects and surfaces edit conflicts. mtime preconditions, daemon-mediated rejection, the conflict modal, what's preserved vs overwritten."
 ---
 
 # Conflict handling

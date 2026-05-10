@@ -1,3 +1,10 @@
+---
+title: "Architecture: collab safety epic (E2)"
+tags: [architecture, collab, conflicts]
+schema: TechArticle
+description: "Design record for obsidian-remote-ssh's collab + offline-resilience epic: conflict surface design, write preconditions, queue-on-disconnect, watcher resubscription."
+---
+
 # Architecture: collab safety epic (E2)
 
 This doc records the design for the conflict + offline-resilience

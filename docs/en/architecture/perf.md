@@ -1,3 +1,10 @@
+---
+title: "Architecture: performance epic (E1)"
+tags: [architecture, performance]
+schema: TechArticle
+description: "Design record for obsidian-remote-ssh's performance epic: SSH RTT amortisation, daemon thumbnail cache, fs.walk + fs.thumbnail design, batched RPC, profiling results."
+---
+
 # Architecture: performance epic (E1)
 
 This doc is the design record for the performance epic that lands in

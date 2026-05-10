@@ -1,6 +1,7 @@
 ---
 title: Comparison vs other Obsidian sync tools
 tags: [comparison, overview]
+description: "obsidian-remote-ssh vs Obsidian Sync, Syncthing, Dropbox, iCloud, Obsidian Git, Nextcloud, Remotely Save — picking the right vault sync tool by topology and trade-offs."
 ---
 
 # Comparison vs other Obsidian sync tools

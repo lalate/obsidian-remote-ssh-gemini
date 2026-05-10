@@ -1,6 +1,8 @@
 ---
 title: Backup & restore
 tags: [cookbook, how-to, backup, ops]
+description: "Back up and restore your remote Obsidian vault with rsync, restic, or borg. Covers daily snapshots, off-site replication, single-note recovery, full disaster restore."
+schema: Article
 ---
 
 # Backup & restore

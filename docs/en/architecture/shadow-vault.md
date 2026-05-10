@@ -1,3 +1,10 @@
+---
+title: "Architecture: Shadow Vault Approach"
+tags: [architecture, shadow-vault]
+description: "How obsidian-remote-ssh's shadow vault architecture works: separate Obsidian vault per profile, lazy fetch from the remote, why monkey-patching the adapter was retired."
+schema: TechArticle
+---
+
 # Architecture: Shadow Vault Approach
 
 **Status:** Shipped. The shadow-vault model has been the production architecture since v0.4.14 (Phases 0–6A) and is the basis for the v1.0 release line.

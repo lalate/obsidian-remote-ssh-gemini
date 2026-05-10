@@ -1,6 +1,7 @@
 ---
 title: Firewall, ports & NAT
 tags: [server, deploy, networking]
+description: "obsidian-remote-ssh networking: zero new ports (Unix socket only), home NAT options (Tailscale / Cloudflare Tunnel / port-forward), corporate-firewall workarounds."
 ---
 
 # Firewall, ports & NAT

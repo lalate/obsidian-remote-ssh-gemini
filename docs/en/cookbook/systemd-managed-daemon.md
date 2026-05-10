@@ -1,6 +1,8 @@
 ---
 title: systemd-managed daemon
 tags: [cookbook, how-to, systemd, security]
+description: "Replace the auto-deployed daemon with a systemd-managed one: cosign-verify the binary first, install as a user unit, enable lingering, monitor with journalctl."
+schema: Article
 ---
 
 # systemd-managed daemon (with cosign verification)

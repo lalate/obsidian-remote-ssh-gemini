@@ -1,6 +1,7 @@
 ---
 title: Migrating from Obsidian Sync
 tags: [migration, how-to]
+description: "Switch your vault from Obsidian's paid Sync service to obsidian-remote-ssh. Step-by-step migration with rollback plan, replacement features, and known gaps."
 ---
 
 # Migrating from Obsidian Sync

@@ -1,6 +1,8 @@
 ---
 title: Migrating between hosts
 tags: [cookbook, how-to, ops, migration]
+description: "Move your Obsidian vault from one remote host to another (Pi to NAS, home to VPS) with rsync, profile re-target, and host-key trust handoff. Zero-data-loss recipe."
+schema: Article
 ---
 
 # Migrating between hosts

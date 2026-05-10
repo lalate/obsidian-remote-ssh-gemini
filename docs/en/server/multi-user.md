@@ -1,6 +1,7 @@
 ---
 title: Multi-user hosting
 tags: [server, deploy, multi-user]
+description: "Host obsidian-remote-ssh vaults for multiple humans on one remote: one OS user per human (recommended), shared-OS-user anti-pattern, container-per-user isolation."
 ---
 
 # Multi-user hosting

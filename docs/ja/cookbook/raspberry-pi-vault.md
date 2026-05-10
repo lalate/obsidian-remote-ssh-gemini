@@ -2,6 +2,8 @@
 title: Raspberry Pi vault from scratch
 lang: ja
 tags: [cookbook, how-to, raspberry-pi]
+description: "Raspberry Pi をホーム vault サーバとしてゼロからセットアップ: OS インストール、SSH 鍵、vault ディレクトリ、ネットワークアクセス、対応するプラグインプロファイル。"
+schema: Article
 ---
 
 # Raspberry Pi vault — ゼロからのセットアップ

@@ -86,6 +86,12 @@ const config: QuartzConfig = {
       Plugin.Static(),
       Plugin.Favicon(),
       Plugin.NotFoundPage(),
+      // Per-page OG images. Renders a 1200x630 social card for every
+      // page using the page title + description, via Satori (HTML→SVG)
+      // + Sharp (SVG→WebP). When this emitter is active, Head.tsx
+      // detects it and stops linking the static og-image.png — every
+      // page gets its own image referenced from <meta property="og:image">.
+      Plugin.CustomOgImages(),
     ],
   },
 }
