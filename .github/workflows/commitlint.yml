@@ -16,7 +16,7 @@ name: Commitlint
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
 
 concurrency:
   group: commitlint-${{ github.ref }}
