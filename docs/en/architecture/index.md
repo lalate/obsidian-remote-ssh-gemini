@@ -11,9 +11,9 @@ Design specs for the major subsystems. These document **why** decisions were mad
 
 | Doc | What it covers |
 |---|---|
-| [[architecture-shadow-vault\|Shadow vault]] | The "local Obsidian vault that mirrors remote" model — shadow lifecycle, file routing, sync events |
-| [[architecture-perf\|Performance]] | Sync latency budget, perf bench, the per-merge baseline tracking on `perf-baseline` branch |
-| [[architecture-collab\|Collaboration]] | Multi-client editing, conflict handling, the per-client `.obsidian/user/<id>/` workspace partition |
+| [[shadow-vault\|Shadow vault]] | The "local Obsidian vault that mirrors remote" model — shadow lifecycle, file routing, sync events |
+| [[perf\|Performance]] | Sync latency budget, perf bench, the per-merge baseline tracking on `perf-baseline` branch |
+| [[collab\|Collaboration]] | Multi-client editing, conflict handling, the per-client `.obsidian/user/<id>/` workspace partition |
 
 ## Common threads across all three
 

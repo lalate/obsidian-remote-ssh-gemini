@@ -2,7 +2,7 @@
 
 This doc is the design record for the performance epic that lands in
 v0.4.23 onwards. It complements
-[architecture-shadow-vault.md](./architecture-shadow-vault.md) (the
+[shadow-vault.md](./shadow-vault.md) (the
 overall architecture) and [testing-strategy.md](./testing-strategy.md)
 (how the epic gets verified).
 

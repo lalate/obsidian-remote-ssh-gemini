@@ -20,6 +20,7 @@ The daemon speaks **JSON-RPC 2.0** over a length-prefixed framing on a Unix sock
 - **[[en/api/filesystem|Filesystem]]** — `fs.stat`, `fs.read*`, `fs.write*`, `fs.list`, `fs.walk`, `fs.mkdir`, `fs.remove`, etc.
 - **[[en/api/watch|Watch / notifications]]** — `fs.watch`, `fs.unwatch`, `fs.changed` (server-push)
 - **[[en/api/errors|Error codes]]** — full error reference
+- **[[en/api/examples|Examples]]** — copy-pasteable JSON-RPC envelopes for every common operation
 
 ## Protocol version
 

@@ -12,22 +12,30 @@ tags: [home]
 | If you want to… | Read |
 |---|---|
 | Try it in 5 minutes | [[en/getting-started/quickstart\|Quickstart]] |
+| Walk through the whole setup once, with verification | [[en/tutorial\|Tutorial — zero to a working vault]] |
 | Understand what gets installed where | [[en/getting-started/install\|Install]] → [[en/getting-started/first-connect\|First connect]] |
+| Cookbook: do task X | [[en/cookbook/index\|Cookbook]] (RPi vault, SSH key, Tailscale, systemd) |
 | Look up a specific setting | [[en/configuration/profiles\|Configuration reference]] |
 | Run your own server | [[en/server/overview\|Server / deploy guide]] |
 | Verify the daemon binary you downloaded | [[en/security/cosign-verify\|Cosign verification]] |
-| Build something against the protocol | [[en/api/overview\|API & protocol reference]] |
+| Build something against the protocol | [[en/api/overview\|API & protocol reference]] (and [[en/api/examples\|copy-pasteable JSON-RPC examples]]) |
+| Look up a term | [[en/glossary\|Glossary]] |
+| What's coming next | [[en/roadmap\|Roadmap]] |
 
 ## Sections
 
 - **[[en/getting-started/install|Getting started]]** — install, first connect, what to expect
-- **[[en/user-guide/ssh-config|User guide]]** — SSH config import, jump hosts, host keys, conflict handling, terminal pane
+- **[[en/tutorial|Tutorial]]** — long-form walkthrough from zero to verified setup
+- **[[en/cookbook/index|Cookbook]]** — task-oriented how-tos (RPi vault, SSH keygen, Tailscale, systemd)
+- **[[en/user-guide/ssh-config|User guide]]** — SSH config import, jump hosts, host keys, conflict handling, terminal pane, plugin compatibility
 - **[[en/configuration/profiles|Configuration reference]]** — every plugin setting documented
 - **[[en/server/overview|Server / deploy]]** — Docker, systemd, Raspberry Pi, auto-deploy
-- **[[en/api/overview|API & protocol]]** — RPC methods, error codes, payload shapes
+- **[[en/api/overview|API & protocol]]** — RPC methods, error codes, payload shapes, copy-pasteable [[en/api/examples|examples]]
 - **[[en/security/model|Security]]** — threat model, signing, token handling, host-key trust
 - **[[en/operations/troubleshooting|Operations]]** — logs, daemon panel, reconnect, common failures
 - **[[en/architecture/index|Architecture]]** — shadow vault design, sync internals, performance
+- **[[en/glossary|Glossary]]** — terms used across the docs, defined once
+- **[[en/roadmap|Roadmap]]** — what's left before v1.0 + v2 mobile plan
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels

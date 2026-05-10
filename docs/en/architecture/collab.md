@@ -2,8 +2,8 @@
 
 This doc records the design for the conflict + offline-resilience
 epic landing in v0.4.29 onwards. Companion to
-[architecture-shadow-vault.md](./architecture-shadow-vault.md) and
-[architecture-perf.md](./architecture-perf.md).
+[shadow-vault.md](./shadow-vault.md) and
+[perf.md](./perf.md).
 
 ## Goals
 
