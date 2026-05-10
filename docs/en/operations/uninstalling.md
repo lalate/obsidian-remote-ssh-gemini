@@ -1,6 +1,7 @@
 ---
 title: Uninstalling
 tags: [operations, uninstall]
+description: "Cleanly uninstall obsidian-remote-ssh: 4 levels from disable-only to full local + remote scrub. What gets removed at each level and what your vault never touches."
 ---
 
 # Uninstalling

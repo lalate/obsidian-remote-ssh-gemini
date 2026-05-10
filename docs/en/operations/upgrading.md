@@ -1,6 +1,7 @@
 ---
 title: Upgrading
 tags: [operations, upgrade]
+description: "Upgrade obsidian-remote-ssh: stable via Community Plugins, beta via BRAT, daemon redeploy on version mismatch, known data-format migrations, downgrade procedure."
 ---
 
 # Upgrading the plugin + daemon

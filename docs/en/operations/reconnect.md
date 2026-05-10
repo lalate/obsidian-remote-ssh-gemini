@@ -1,6 +1,7 @@
 ---
 title: Reconnect behavior
 tags: [operations]
+description: "How obsidian-remote-ssh recovers from SSH drops: 5-attempt exponential backoff with jitter, daemon reuse on success, watcher resubscription, mobile/sleep behaviour."
 ---
 
 # Reconnect behavior

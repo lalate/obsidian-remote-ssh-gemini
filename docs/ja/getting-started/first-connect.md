@@ -2,6 +2,7 @@
 title: 初回接続
 lang: ja
 tags: [getting-started]
+description: "Connect ボタンを押したときに何が起きるか: SSH ハンドシェイク、cosign 署名済バイナリの自動デプロイ、vault フェッチ、シャドウ vault が開くまでの段階的解説。"
 ---
 
 # 初回接続 — 裏で何が起こっているのか

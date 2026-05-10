@@ -1,6 +1,7 @@
 ---
 title: Cookbook
 tags: [cookbook, how-to]
+description: "Goal-oriented walkthroughs for obsidian-remote-ssh: Raspberry Pi vault, Tailscale, hardware keys, backups, host migration, multi-vault, systemd, reverse proxy."
 ---
 
 # Cookbook

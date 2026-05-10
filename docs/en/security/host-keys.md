@@ -1,6 +1,7 @@
 ---
 title: Host-key trust
 tags: [security]
+description: "obsidian-remote-ssh host-key trust model: independent store separate from ~/.ssh/known_hosts, sha256 fingerprint pinning, TOFU dialog flow, manual edits."
 ---
 
 # Host-key trust

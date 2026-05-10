@@ -1,6 +1,7 @@
 ---
 title: API overview
 tags: [api, reference]
+description: "obsidian-remote-ssh JSON-RPC 2.0 protocol reference. LSP-style framing on a Unix socket, auth handshake, server.info, fs.* method namespace, capabilities-gated extensions."
 ---
 
 # API & protocol — overview

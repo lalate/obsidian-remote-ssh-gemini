@@ -1,6 +1,7 @@
 ---
 title: Profiles
 tags: [configuration, reference]
+description: "Full configuration reference for obsidian-remote-ssh profiles: host, port, username, auth method, vault path, jump host, transport mode, SSH session tuning."
 ---
 
 # Configuration reference — Profiles

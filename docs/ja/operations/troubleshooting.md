@@ -2,6 +2,7 @@
 title: トラブルシューティング
 lang: ja
 tags: [operations]
+description: "obsidian-remote-ssh の典型的な問題の診断: 接続失敗、ホストキー不一致、デーモンデプロイエラー、競合 surface、同期遅延 — 症状、原因、対処。"
 ---
 
 # トラブルシューティング
