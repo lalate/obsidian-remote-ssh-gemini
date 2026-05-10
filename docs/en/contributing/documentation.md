@@ -153,7 +153,7 @@ The root `index.md` should be a thin landing page with a language picker plus an
 | Diagrams | Mermaid (Quartz built-in) | Already used heavily in existing `docs/en/architecture/*.md` |
 | Maths | KaTeX (Quartz built-in) | Reserved for protocol notation if needed |
 | Spell-check | `crate-ci/typos` (CI-only) | Project name allowlist in `_typos.toml` |
-| Link-check | `lycheeverse/lychee` (CI-only) | Both internal `[[wikilinks]]` and external HTTP |
+| Link-check | `scripts/check-docs-links.mjs` (CI gate on every PR; runs locally too) | Internal `[[wikilinks]]` + `#anchor` refs. External HTTP is not currently checked. |
 | Settings/Protocol gen | `typedoc` → markdown | Output committed under `reference/` and `protocol/` so the site builds from a clean checkout |
 
 ### Browser support
