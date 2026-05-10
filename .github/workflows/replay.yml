@@ -17,7 +17,7 @@ name: Cross-version test replay
 # signal-to-noise ratio has been proven over real PR traffic.
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
 
 concurrency:
   group: replay-${{ github.ref }}

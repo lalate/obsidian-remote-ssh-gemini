@@ -7,9 +7,9 @@ name: Integration
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
   pull_request:
-    branches: [main]
+    branches: [main, next]
 
 concurrency:
   group: integration-${{ github.ref }}
