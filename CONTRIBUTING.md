@@ -93,20 +93,26 @@ Why this exists:
 
 #### Cutting a promotion (next → main)
 
-When `next` has accumulated enough verified work to ship:
+When `next` has accumulated enough verified work to ship, do the version bump on a **release branch**, not directly on `next`. This keeps every commit lint-checked + CI-validated without requiring branch-protection bypass:
 
 ```bash
+git checkout -b release/X.Y.Z next
 cd plugin
 npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops -beta suffix)
-git commit -am "release: prepare 1.0.44 promotion"
-git push origin next         # release.yml SKIPS this push (gate: stable-on-next)
-gh pr create --base main --head next --title "release: promote next → main (1.0.44)"
+git commit -am "release: prepare X.Y.Z promotion"
+git push origin release/X.Y.Z
+gh pr create --base main --head release/X.Y.Z \
+  --title "release: promote next → main (X.Y.Z)"
 ```
 
+CI runs the full suite (commitlint, version-check, lint, type-check, tests) on the release branch's head before merge — no admin override.
+
 After CI green and merge:
-- `release.yml` fires on the main push → publishes **v1.0.44** stable.
+- `release.yml` fires on the main push → publishes **v X.Y.Z** stable + cosign-signed binaries.
 - `sync-main-to-next.yml` fires on the main push → opens + auto-merges `sync: main → next` so `next` gets the merge commit.
-- Your next beta cycle starts with `npm run bump:beta:start` (`1.0.44 → 1.0.45-beta.0`).
+- Your next beta cycle starts with `npm run bump:beta:start` (`X.Y.Z → X.Y.(Z+1)-beta.0`) on a normal `feat/...` branch.
+
+> Why a release branch? Pre-2026-05 the docs said "push directly to `next`, then PR next → main". That worked but required admin bypass on `next`'s branch protection (the bump commit hadn't been through CI yet). Branch protection on `main` and `next` now disallows admin bypass, so the bump must live on its own branch + go through CI.
 
 ### Commit messages — Conventional Commits, enforced
 

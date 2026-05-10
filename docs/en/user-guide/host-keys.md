@@ -5,13 +5,7 @@ tags: [user-guide, security]
 
 # Host keys & trust
 
-obsidian-remote-ssh maintains its **own known-host store**, independent of `~/.ssh/known_hosts`. This page explains the trust model and what each dialog means.
-
-## Why a separate store
-
-OpenSSH's `known_hosts` is shared across every `ssh` invocation on your machine. The plugin's separate store keeps trust scoped to the plugin — adding the plugin does not suddenly trust hosts your shell SSH already knew, and removing the plugin does not leave orphan trust elsewhere.
-
-The store lives in the plugin's `data.json` under the `hostKeyStore` key. See [[en/security/host-keys#manual-edits|Security → Host-key trust → Manual edits]] for the on-disk format.
+obsidian-remote-ssh maintains its **own known-host store** (separate from `~/.ssh/known_hosts`) so trust stays scoped to the plugin. Rationale: see [[en/security/host-keys#why-a-separate-store|Security → Host-key trust → Why a separate store]]. The store lives in the plugin's `data.json` under the `hostKeyStore` key — on-disk format at [[en/security/host-keys#manual-edits|Manual edits]].
 
 ## First-connect (TOFU) flow
 
