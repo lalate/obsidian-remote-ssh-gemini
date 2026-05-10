@@ -5,9 +5,9 @@ tags: [cookbook, how-to, systemd, security]
 
 # systemd-managed daemon (with cosign verification)
 
-Goal: instead of letting the plugin auto-deploy + redeploy the daemon on every connect, run a **cosign-verified** binary you control under systemd. Useful for: hosts you keep on 24/7, hosts where you want explicit lifecycle ownership, hosts shared with other users.
+Goal: run a **cosign-verified** daemon binary you control under systemd, so the daemon survives plugin restarts and OS reboots. Useful for: hosts you keep on 24/7, hosts shared with other users, hosts where you want central logging via `journalctl`.
 
-> Trade-off: at time of writing the plugin's auto-deploy still runs on every connect by default — it will overwrite the binary you placed under systemd. The "reuse existing daemon" profile flag is on the roadmap; until then, treat this setup as "warm spare" + accept the redeploy.
+> Good news: the plugin already supports this without any opt-in flag. The reuse-existing-daemon probe (see [[en/server/auto-deploy#what-happens-in-order|auto-deploy step 2]]) attaches to your systemd-managed daemon when it's healthy and skips the binary upload. The deploy fallback only fires if the socket / token / handshake fails — most commonly because your binary version doesn't match the bundle the current plugin was built against.
 
 ## 1. Download + verify the binary
 
@@ -100,7 +100,9 @@ In the plugin, configure the profile to point at the same paths the unit uses:
 | Daemon socket path | `.obsidian-remote/server.sock` (home-relative) |
 | Daemon token path | `.obsidian-remote/token` (home-relative) |
 
-Connect once. The plugin will (currently) redeploy the binary, then attach to the socket. Your systemd unit's binary gets overwritten on this first connect — that's the unfortunate-but-temporary trade-off. The systemd lifecycle still wins after that: the daemon survives plugin restarts, and on Pi reboot systemd brings it back up before you connect from anywhere.
+Connect from the plugin. The reuse probe will find the live socket + valid token your systemd-managed daemon set up and skip the binary upload entirely.
+
+If the connect surprises you by deploying anyway, the most common cause is a binary-version mismatch: the daemon you put under systemd was built against a different protocol/version than the plugin bundle expects, the handshake fails, and the plugin falls through to deploy. Re-download the binary from the [release matching your current plugin version](https://github.com/sotashimozono/obsidian-remote-ssh/releases) and re-`systemctl --user restart`.
 
 ## 5. Logs
 

@@ -36,7 +36,7 @@ Common patterns:
 | Symptom | Cause | Fix |
 |---|---|---|
 | Local edits don't appear on remote | Plugin write is failing silently — open developer console (`Cmd+Opt+I` / `Ctrl+Shift+I`), look for `[remote-ssh]` errors | Often a permission issue on the remote vault dir |
-| Remote edits don't appear locally | `fs.watch` subscription not active, or coalesced too aggressively | Settings → Daemon → Restart; check `inotify` limits |
+| Remote edits don't appear locally | `fs.watch` subscription not active, or hit the `inotify` watch limit | Settings → Daemon → Restart; raise `fs.inotify.max_user_watches` (see [[en/api/watch\|fs.watch caveats]]) |
 | Specific file always conflicts | Two-way edit collision | See [[en/user-guide/conflicts\|Conflict handling]] |
 | Big binary files take forever | Plugin downloads on-demand; first open is slow | Expected — local cache survives across reopens |
 
@@ -49,15 +49,15 @@ Likely culprits, in order of frequency:
 3. **Vault on slow disk** (SD card on Pi) — `fs.walk` cold-cache is the slowest op. Move to USB SSD if possible.
 4. **First connect on a new host** — binary upload is one-time, ~5 MB. Subsequent connects skip it.
 
-For deep perf debug: enable [[en/configuration/advanced|Debug logging]] and check `<plugin>/logs/*.jsonl` for per-op timings.
+For deep perf debug: enable [[en/configuration/advanced|Debug logging]] and check `<plugin>/console.log` (rotated `console.log` + `.1` + `.2` + `.3`) for per-op timings.
 
 ## How to ask for help
 
 When opening an issue, paste:
 
-1. **Plugin version**: Settings → About.
-2. **Daemon version**: Settings → Daemon → status badge.
-3. **Plugin log** (last 50 lines from `<plugin>/logs/`).
+1. **Plugin version**: Settings → Community plugins → "Remote SSH" entry shows the version.
+2. **Daemon version**: Settings → Daemon panel → status badge.
+3. **Plugin log** (last 50 lines from `<vault>/.obsidian/plugins/remote-ssh/console.log`).
 4. **Daemon log** (last 50 lines from `~/.obsidian-remote/server.log`).
 5. **Local OS** + **remote OS / arch** (`uname -a` on remote).
 6. **What you expected vs what happened.**

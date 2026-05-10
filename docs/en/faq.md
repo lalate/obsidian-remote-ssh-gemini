@@ -50,11 +50,13 @@ No. All traffic is over your SSH connection to your host. Telemetry counters (op
 
 Trust scoping. See [[en/security/host-keys|Host-key trust]] for the long answer.
 
-## Why does the plugin re-deploy the daemon every time I connect?
+## Does the plugin re-deploy the daemon every time I connect?
 
-Default behaviour, easy to override (planned profile flag). Re-deploy is ~5 seconds and guarantees you are running the version the plugin was built against. Reusing skips that latency but means you can drift between plugin and daemon versions.
+No — the plugin has a reuse probe that runs first ([[en/server/auto-deploy#what-happens-in-order|step 2 in auto-deploy]]). If your previous daemon's socket + token are still healthy and the protocol version matches, it attaches and skips the binary upload entirely (~1 s reconnect instead of ~5 s).
 
-If your remote daemon is managed by [[en/server/systemd|systemd]] and you do not want the plugin touching it, a "reuse existing daemon" profile flag is on the roadmap; until then, the plugin will redeploy on connect.
+The deploy fallback only fires when the probe fails — typically because the daemon isn't running yet (first connect or after a reboot), the token is gone, or the daemon's protocol version doesn't match what the current plugin bundle expects.
+
+Run your remote daemon under [[en/server/systemd|systemd]] and the reuse path will pick it up cleanly on every connect — no extra flag needed.
 
 ## How do I uninstall cleanly?
 

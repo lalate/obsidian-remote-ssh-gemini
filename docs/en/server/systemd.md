@@ -82,7 +82,7 @@ In the plugin profile, set:
 | Daemon socket path | `.obsidian-remote/server.sock` (home-relative) |
 | Daemon token path | `.obsidian-remote/token` (home-relative) |
 
-> The remote daemon binary path is currently fixed at `~/.obsidian-remote/server` in the plugin (no UI override yet). For a true "systemd-managed daemon living elsewhere" setup, you'd need the planned `Reuse existing daemon` flag — until then, the plugin's auto-redeploy will overwrite your systemd-managed binary on every connect. Run systemd as a "warm spare" only, not as the primary lifecycle owner.
+> The remote daemon binary path is currently fixed at `~/.obsidian-remote/server` in the plugin (no UI override yet). The plugin's reuse-existing-daemon probe (see [[en/server/auto-deploy#what-happens-in-order|auto-deploy step 2]]) will attach to your systemd-managed daemon when it's healthy and skip the binary upload entirely. The deploy fallback only kicks in if the socket / token / handshake fails — typically when your binary version doesn't match the one the current plugin bundle expects.
 
 ## Logs
 
