@@ -7,7 +7,7 @@ tags: [reference, settings, data]
 
 Complete schema for `<vault>/.obsidian/plugins/remote-ssh/data.json` — the file that holds your profiles, host-key trust, and plugin settings. Useful for debugging, scripted multi-machine setup, or rebuilding state by hand.
 
-> Source of truth: `plugin/src/types.ts` (`PluginSettings`, `SshProfile`, `JumpHostConfig`) plus `plugin/src/main.ts:311-326` (the `hostKeyStore` field added when serialising). If anything below disagrees with the source, the source wins.
+> Source of truth: `plugin/src/types.ts` (`PluginSettings`, `SshProfile`, `JumpHostConfig`) plus `plugin/src/main.ts` `saveSettings()` (around lines 374-377 — the `hostKeyStore` field is folded into the saved blob there) and `loadSettings()` (around lines 311-326 — where it's read back). If anything below disagrees with the source, the source wins.
 
 ## Top-level shape
 
