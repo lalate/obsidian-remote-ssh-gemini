@@ -34,19 +34,25 @@ concurrency:
 jobs:
   version-check:
     runs-on: ubuntu-latest
-    # Skip on automated `main → next` sync PRs (head_ref=main): they
-    # carry the same version on both sides by design, and the
-    # sync-main-to-next workflow re-runs CI for the merge content
-    # itself. Without this skip, every promotion would leave a
-    # red sync-PR in the queue.
-    if: github.head_ref != 'main'
+    # NOTE: the JOB always runs so it produces a `success` check-run.
+    # Branch protection lists this as a required check, and a
+    # job-level `if:` would cause GitHub to omit the check entirely
+    # ("expected but missing" → merge blocked). We instead skip at
+    # the STEP level for sync PRs (head_ref=main): no real work
+    # happens, but the empty job still reports green.
     steps:
-      - uses: actions/checkout@v6
+      - name: Skip note (sync PRs only)
+        if: github.head_ref == 'main'
+        run: echo "Sync PR (main → next) — version-check is a no-op (both branches carry the same version by design)."
+
+      - if: github.head_ref != 'main'
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # need both branches for `git show`
 
       - name: Resolve versions
         id: versions
+        if: github.head_ref != 'main'
         run: |
           set -euo pipefail
           base_ref="${{ github.base_ref }}"
@@ -79,6 +85,7 @@ jobs:
           echo "PR base branch:                  $base_ref"
 
       - name: plugin/manifest.json and plugin/package.json must agree
+        if: github.head_ref != 'main'
         run: |
           if [ "${{ steps.versions.outputs.head_manifest }}" \
             != "${{ steps.versions.outputs.head_package }}" ]; then
@@ -92,6 +99,7 @@ jobs:
         # The bundled manifest is what we ship; manifest-beta.json (root) is
         # what BRAT --beta consumers fetch. They must always match — both
         # carry the latest version, whether beta or stable.
+        if: github.head_ref != 'main'
         run: |
           if ! diff -q plugin/manifest.json manifest-beta.json > /dev/null; then
             echo "::error::manifest-beta.json content differs from plugin/manifest.json."\
@@ -105,7 +113,9 @@ jobs:
       - name: BETA channel (PR → next) — root manifest.json must stay pinned
         # On a beta PR the Obsidian Community Plugins store manifest must NOT
         # move; only manifest-beta.json + plugin/manifest.json may advance.
-        if: github.base_ref == 'next'
+        # Also exclude sync PRs (head_ref=main) since those carry no version
+        # change at all.
+        if: github.base_ref == 'next' && github.head_ref != 'main'
         run: |
           if [ "${{ steps.versions.outputs.head_root }}" != "${{ steps.versions.outputs.base_root }}" ]; then
             echo "::error::Beta PRs must not modify root manifest.json."\
@@ -144,6 +154,7 @@ jobs:
           fi
 
       - name: PR version must be strictly greater than base (semver-aware)
+        if: github.head_ref != 'main'
         env:
           BASE_V: ${{ steps.versions.outputs.base_manifest }}
           HEAD_V: ${{ steps.versions.outputs.head_manifest }}
