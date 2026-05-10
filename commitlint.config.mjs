@@ -52,4 +52,14 @@ export default {
     // scopes appear naturally as the codebase grows.
     'scope-empty': [0],
   },
+  // Historical opt-out: one bootstrap commit (`888977d`) landed on
+  // `next` via admin bypass before stricter branch protection was in
+  // place. Its `merge:` prefix isn't a CC type. We acknowledge the
+  // leak by ignoring this specific commit message rather than relaxing
+  // type-enum (which would invite future "merge:" misuse) and rather
+  // than skipping commitlint on the entire promotion PR (which would
+  // hide future leaks).
+  ignores: [
+    (msg) => msg.startsWith('merge: bring main 1.0.43 promotion commit into next'),
+  ],
 };
