@@ -42,6 +42,10 @@ See [[en/security/cosign-verify|Cosign verify]] to check a binary you downloaded
 - **Read+write** access to the configured vault root.
 - **Bind permission** for the Unix socket (in `~/.obsidian-remote/` by default).
 - **CPU, memory**: ~5 MB RSS idle; rises with watcher subscriptions and concurrent transfers. RPi Zero 2 W handles a moderate vault; RPi 4 effortless.
-- **Network**: nothing. The daemon binds a local Unix socket. The plugin tunnels it through SSH; no port exposure required on the remote.
+- **Network**: nothing. The daemon binds a local Unix socket. The plugin tunnels it through SSH; no port exposure required on the remote — see [[en/server/firewall|Firewall, ports & NAT]].
 
-Next: [[en/server/auto-deploy|Auto-deploy]] / [[en/server/docker|Docker]] / [[en/server/systemd|systemd]].
+## Operating multiple users on one host
+
+The defaults are home-relative, so multiple OS users on one host coexist out of the box — each spawns their own daemon under their own UID. See [[en/server/multi-user|Multi-user hosting]] for the full discussion + the anti-pattern of sharing one OS user.
+
+Next: [[en/server/auto-deploy|Auto-deploy]] / [[en/server/docker|Docker]] / [[en/server/systemd|systemd]] / [[en/server/firewall|Firewall]] / [[en/server/multi-user|Multi-user]].

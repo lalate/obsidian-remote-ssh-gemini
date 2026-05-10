@@ -22,6 +22,7 @@ The daemon speaks **JSON-RPC 2.0** with **LSP-style framing** on a Unix socket. 
 - **[[en/api/watch|Watch / notifications]]** — `fs.watch`, `fs.unwatch`, `fs.changed` (server-push)
 - **[[en/api/errors|Error codes]]** — full error reference
 - **[[en/api/examples|Examples]]** — copy-pasteable JSON-RPC envelopes for every common operation
+- **[[en/api/protocol-evolution|Protocol evolution & versioning]]** — what's a breaking change vs capabilities-gated, the strict-equality regime, future-bump triggers
 
 ## Protocol version
 
