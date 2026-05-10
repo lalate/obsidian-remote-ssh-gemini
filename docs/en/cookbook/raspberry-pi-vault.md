@@ -45,7 +45,7 @@ ssh pi@obsidian-vault.local 'mkdir -p ~/notes'
 | Username | `pi` |
 | Authentication | `SSH agent` (recommended) or your private key path |
 | Remote vault path | `/home/pi/notes` (or `~/notes`) |
-| Mode | `RPC daemon` (lower latency than SFTP) |
+| Mode | `Daemon (deploys helper on connect)` (lower latency than the SFTP default) |
 
 Click **Save**, then connect from the command palette: "Remote SSH: Connect" → pick `Pi vault`.
 

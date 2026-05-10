@@ -26,12 +26,19 @@ curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 ```
 
-The `up` command shows a one-time auth URL. Open it, sign into your tailnet (or create one). When the host appears in your tailnet, note its tailscale hostname:
+The `up` command shows a one-time auth URL. Open it, sign into your tailnet (or create one). When the host appears in your tailnet, note its Tailscale IP and MagicDNS hostname:
 
 ```bash
-tailscale status
-# host  100.64.0.1   tagged-machine
-# alias: obsidian-vault.tailnet-XXXX.ts.net
+tailscale ip -4
+# 100.64.0.1
+
+tailscale status | head -3
+# 100.64.0.1   obsidian-vault   you@example.com   linux  -
+# 100.64.0.2   laptop           you@example.com   macOS  active
+
+# MagicDNS hostnames look like:
+#   obsidian-vault.<your-tailnet>.ts.net
+# Find your tailnet name in the Tailscale admin console.
 ```
 
 ## On each editor's laptop

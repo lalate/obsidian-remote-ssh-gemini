@@ -23,13 +23,14 @@ Every connection starts with these two calls before any `fs.*` method.
 // → request: capability + version handshake
 {"jsonrpc":"2.0","id":2,"method":"server.info","params":{}}
 
-// ← response
+// ← response — `capabilities` is sorted alphabetically by the daemon
+//   and includes EVERY registered method (auth + server.info too)
 {
   "jsonrpc":"2.0","id":2,
   "result":{
     "version":"0.1.0",
     "protocolVersion":1,
-    "capabilities":["fs.stat","fs.exists","fs.list","fs.walk","fs.readText","fs.readBinary","fs.readBinaryRange","fs.write","fs.writeBinary","fs.append","fs.appendBinary","fs.mkdir","fs.remove","fs.rmdir","fs.rename","fs.copy","fs.trashLocal","fs.thumbnail","fs.watch","fs.unwatch"],
+    "capabilities":["auth","fs.append","fs.appendBinary","fs.copy","fs.exists","fs.list","fs.mkdir","fs.readBinary","fs.readBinaryRange","fs.readText","fs.remove","fs.rename","fs.rmdir","fs.stat","fs.thumbnail","fs.trashLocal","fs.unwatch","fs.walk","fs.watch","fs.write","fs.writeBinary","server.info"],
     "vaultRoot":"/home/pi/notes"
   }
 }
@@ -296,26 +297,26 @@ Full error catalogue: [[en/api/errors|API → Error codes]].
 
 ## Smoke-testing from the shell
 
-If you want to poke the daemon directly (skip the plugin), open the SSH-tunneled socket via `nc -U` or `socat`:
+If you want to poke the daemon directly (skip the plugin), open the Unix socket via `nc -U` or `socat`. The wire framing is **LSP-style**: a single `Content-Length:` header, blank line, then the JSON body — see `server/internal/rpc/frame.go`.
 
 ```bash
 TOKEN=$(cat ~/.obsidian-remote/token)
 SOCK=~/.obsidian-remote/server.sock
 
-# Length-prefixed JSON-RPC framing helper
+# Emit one LSP-framed JSON-RPC message:
+#   Content-Length: <N>\r\n
+#   \r\n
+#   <N bytes of UTF-8 JSON>
 frame() {
-  local json="$1"
-  local len=${#json}
-  printf '%b' "$(printf '\\x%02x' \
-    $((len >> 24 & 0xff)) $((len >> 16 & 0xff)) \
-    $((len >> 8 & 0xff))  $((len & 0xff)))$json"
+  local body="$1"
+  printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
 }
 
 # Authenticate + list root
 {
   frame '{"jsonrpc":"2.0","id":1,"method":"auth","params":{"token":"'"$TOKEN"'"}}'
   frame '{"jsonrpc":"2.0","id":2,"method":"fs.list","params":{"path":""}}'
-} | nc -U "$SOCK" | xxd | head -40
+} | nc -U "$SOCK"
 ```
 
-For real client-side use, write a small JSON-RPC library that handles framing — manual frames are only for spot-checks.
+For real client-side use, write a small JSON-RPC library that handles the header parsing + max-message-size cap — the daemon caps inbound messages at **16 MiB** (`DefaultMaxMessageBytes`) and closes the connection on a missing or malformed `Content-Length`.

@@ -94,7 +94,7 @@ In Obsidian: Settings → Remote SSH → **Add profile**.
 | Username | your remote user |
 | Authentication | **SSH agent** (preferred) or **Private key** + path |
 | Remote vault path | `/home/<you>/notes` (must exist) |
-| Mode | `RPC daemon` |
+| Mode | `Daemon (deploys helper on connect)` |
 
 Save.
 

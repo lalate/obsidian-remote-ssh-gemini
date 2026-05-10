@@ -2,7 +2,7 @@
 
 This document records the test architecture for `obsidian-remote-ssh`,
 adopted in v0.4.19 (Phase A) and v0.4.22 (Phase B). It complements
-[shadow-vault.md](./shadow-vault.md) — the
+[shadow-vault.md](../architecture/shadow-vault.md) — the
 shadow-vault flow is what we test; this doc explains *how*.
 
 ## Goals

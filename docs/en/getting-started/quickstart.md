@@ -30,7 +30,7 @@ Click **Add profile** and fill in:
 | Authentication | `Private key` | See [[en/configuration/profiles#authentication\|auth options]] |
 | Private key path | `~/.ssh/id_ed25519` | Tilde-expanded at runtime |
 | Remote vault path | `/home/pi/notes` or `~/notes` | Must exist on the remote |
-| Mode | `RPC daemon` | The default; auto-deploys the signed server binary |
+| Mode |  `Daemon (deploys helper on connect)` | Switch from the factory default `SFTP (direct)` for lower latency + push notifications; auto-deploys the signed server binary |
 
 Click **Save**.
 
