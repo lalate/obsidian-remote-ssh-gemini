@@ -21,7 +21,7 @@
     "sshd:start": "node scripts/start-test-sshd.mjs",
     "sshd:stop": "node scripts/stop-test-sshd.mjs",
     "lint": "eslint \"src/**/*.ts\"",
-    "version": "node scripts/bump-version.mjs && git add package.json manifest.json versions.json ../manifest.json ../manifest-beta.json ../versions.json"
+    "version": "node scripts/bump-version.mjs && git add package.json package-lock.json manifest.json versions.json ../manifest.json ../manifest-beta.json ../versions.json"
   },
   "keywords": [
     "obsidian",
