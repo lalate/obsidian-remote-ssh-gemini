@@ -2,6 +2,7 @@
 title: Hardware-key SSH auth (YubiKey, TouchID, Secure Enclave)
 tags: [cookbook, how-to, ssh, security, hardware]
 description: "Use a YubiKey, Nitrokey, macOS Secure Enclave, or Windows Hello to sign SSH connections to your Obsidian vault. FIDO2 ed25519-sk + Apple keychain + TPM recipes."
+schema: Article
 ---
 
 # Hardware-key SSH auth

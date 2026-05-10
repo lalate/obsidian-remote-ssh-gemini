@@ -2,6 +2,7 @@
 title: Raspberry Pi vault from scratch
 tags: [cookbook, how-to, raspberry-pi]
 description: "Set up a Raspberry Pi as your home Obsidian vault server from scratch — OS install, SSH key, vault directory, network access, and the matching plugin profile."
+schema: Article
 ---
 
 # Raspberry Pi vault from scratch

@@ -1,6 +1,7 @@
 ---
 title: Release & deploy pipeline
 tags: [architecture, release, ci, deploy]
+schema: TechArticle
 ---
 
 # Release & deploy pipeline

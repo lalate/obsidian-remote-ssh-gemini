@@ -91,6 +91,40 @@ export default (() => {
         downloadUrl:
           "https://github.com/sotashimozono/obsidian-remote-ssh/releases/latest",
       }
+    } else if (schemaType === "Article" || schemaType === "TechArticle") {
+      // Article + TechArticle share most of the same shape. We auto-fill
+      // headline/description/url/dates/inLanguage from page metadata so
+      // the per-page frontmatter only has to carry `schema: Article` (or
+      // `schema: TechArticle`) — no other fields required.
+      const dates = (fileData.dates ?? {}) as {
+        published?: Date
+        modified?: Date
+        created?: Date
+      }
+      const headline = (fileData.frontmatter?.title ?? "") as string
+      const lang = (fileData.frontmatter?.lang as string | undefined) ?? "en"
+      const articleBlob: Record<string, unknown> = {
+        "@context": "https://schema.org",
+        "@type": schemaType,
+        headline,
+        description,
+        url: canonicalUrl,
+        inLanguage: lang,
+        isPartOf: {
+          "@type": "WebSite",
+          name: cfg.pageTitle ?? "obsidian-remote-ssh",
+          url: `https://${canonicalBaseUrl}/`,
+        },
+      }
+      if (dates.published) {
+        articleBlob.datePublished = dates.published.toISOString()
+      } else if (dates.created) {
+        articleBlob.datePublished = dates.created.toISOString()
+      }
+      if (dates.modified) {
+        articleBlob.dateModified = dates.modified.toISOString()
+      }
+      jsonLdBlob = articleBlob
     } else if (schemaType === "FAQPage") {
       const faqItems = fileData.frontmatter?.faq as
         | Array<{ q: string; a: string }>
