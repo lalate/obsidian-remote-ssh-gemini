@@ -36,6 +36,7 @@ tags: [home]
 - **[[en/architecture/index|Architecture]]** — shadow vault design, sync internals, performance
 - **[[en/glossary|Glossary]]** — terms used across the docs, defined once
 - **[[en/roadmap|Roadmap]]** — what's left before v1.0 + v2 mobile plan
+- **[[en/changelog|Changelog & releases]]** — major-milestone overview + how to find per-release notes
 - **[[en/faq|FAQ]]** — quick answers to recurring questions
 
 ## Release channels
