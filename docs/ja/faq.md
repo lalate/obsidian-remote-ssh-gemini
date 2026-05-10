@@ -2,6 +2,22 @@
 title: FAQ
 lang: ja
 tags: [faq]
+schema: FAQPage
+faq:
+  - q: "Obsidian Sync / Syncthing / Dropbox との違いは?"
+    a: "obsidian-remote-ssh はあなたのリモート SSH ホスト上に正本を 1 つ持ちます (第三者クラウドなし、レプリカもなし)。Obsidian Sync は Obsidian のクラウドに保存、Syncthing と Dropbox は全デバイスに複製。信頼モデルと運用負荷で選んでください。比較ページに全比較表があります。"
+  - q: "モバイルで動きますか?"
+    a: "現在は未対応です。現アーキテクチャはリモートで daemon バイナリを起動するため、デスクトップ Obsidian (Electron) では動作しますが、iOS / Android では OS がサブプロセスの起動を許可しません。モバイルリレー実装はマイルストーンで追跡中です。"
+  - q: "同じ vault を複数クライアントから編集できますか?"
+    a: "はい — 設計上対応しています。各クライアントが独自のシャドウボールトと daemon セッションを持ちます。競合は競合ハンドリングフローで surface し、兄弟ファイルとして残りません。ワークスペース状態 (タブ、ペイン) は .obsidian/user/<client-id>/ 配下で per-client 分離。"
+  - q: "リモートホストが Windows でも動きますか?"
+    a: "現在は非対応です。daemon は Linux (amd64 / arm64) と macOS (Intel / Apple Silicon) 用にビルドされます。Windows + WSL は WSL を remote として扱えば動作 (daemon は Linux 環境で起動)。ネイティブ Windows + OpenSSH サーバはロードマップにありますが未着手です。"
+  - q: "デーモンなし (SFTP のみ) で使えますか?"
+    a: "はい — プロフィールの Mode を sftp に設定してください。daemon デプロイなし、操作あたりレイテンシは大きく (約 50-100 ms vs 5-10 ms)、fs.watch によるプッシュ通知もなし (代わりに polling)。バイナリ配置できないロックダウンされたリモートホストで有用です。"
+  - q: "このプラグインは第三者にデータを送りますか?"
+    a: "いいえ。全トラフィックはあなたのホストへの SSH 接続上です。テレメトリカウンタは opt-in で既定 off、local-only — phone-home 経路はコードベースに存在しません。plugin/src/ 配下のソースで確認できます。"
+  - q: "接続のたびにデーモンを再デプロイしますか?"
+    a: "いいえ — まず実行中の daemon を再利用しようとします。リモートソケットをプローブし、キャッシュ済みトークンを検証。再利用成功ならアップロードなし。再利用失敗 (daemon 未起動、バージョン不一致、トークン無効) のときのみバイナリを再デプロイします。"
 ---
 
 # FAQ

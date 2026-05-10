@@ -2,6 +2,7 @@
 title: obsidian-remote-ssh
 tags: [home]
 description: "Edit Obsidian vaults stored on a remote SSH host — no local copies, no third-party cloud. Install guide, architecture, JSON-RPC protocol, and operations docs."
+schema: SoftwareApplication
 ---
 
 > **Edit remote Obsidian vaults over SSH/SFTP** — like VS Code Remote-SSH, but for Obsidian.

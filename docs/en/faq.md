@@ -2,6 +2,22 @@
 title: FAQ
 tags: [faq]
 description: "Common questions about obsidian-remote-ssh: works offline?, mobile support, conflict handling, daemon safety, comparison vs Sync, troubleshooting first steps."
+schema: FAQPage
+faq:
+  - q: "How is this different from Obsidian Sync, Syncthing, or Dropbox?"
+    a: "obsidian-remote-ssh keeps a single canonical vault on YOUR remote SSH host (no third-party cloud, no replicated copies). Obsidian Sync stores in Obsidian's cloud; Syncthing and Dropbox replicate the vault across all devices. Pick by trust model and ops appetite — see the comparison page for the full breakdown."
+  - q: "Does it work on mobile?"
+    a: "Not yet. The current architecture spawns a daemon binary on the remote, which works on desktop Obsidian (Electron). iOS / Android Obsidian need a relay component because the OS doesn't allow Obsidian to spawn subprocesses. Tracked under the mobile-relay milestone."
+  - q: "Can I use this with multiple clients editing the same vault?"
+    a: "Yes — designed for it. Each client gets its own shadow vault and its own daemon session. Conflicts surface in the conflict-handling flow rather than as sibling files. Workspace state (open tabs, pane sizes) is partitioned per-client under .obsidian/user/<client-id>/."
+  - q: "Does it support Windows as the remote host?"
+    a: "Not currently. The daemon ships for Linux (amd64 / arm64) and macOS (Intel / Apple Silicon). Windows + WSL works — treat WSL as the remote so the daemon runs in its Linux environment. Native Windows + OpenSSH server is on the roadmap but not started."
+  - q: "Can I use it without the daemon (SFTP-only)?"
+    a: "Yes — set the profile Mode to sftp. No daemon deployment, slower per-operation latency (about 50-100 ms vs 5-10 ms), and no fs.watch push notifications (the plugin polls for changes instead). Useful for locked-down remote hosts where deploying a binary isn't feasible."
+  - q: "Does the plugin upload anything to a third party?"
+    a: "No. All traffic flows over your SSH connection to your host. Telemetry counters are opt-in, off by default, and local-only — there is no phone-home path in the codebase. Verify by reading the source under plugin/src/."
+  - q: "Does the plugin re-deploy the daemon every time I connect?"
+    a: "No — it tries to reuse a running daemon first. The plugin probes the remote socket and validates the cached token. If reuse succeeds, no upload happens. The daemon binary is only redeployed when reuse fails (no daemon, version mismatch, or invalid token)."
 ---
 
 # FAQ
