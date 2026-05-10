@@ -116,7 +116,7 @@ sequenceDiagram
   cross-compilable from any host. Plain Go: `image/jpeg`, `image/png`,
   `golang.org/x/image/draw`. HEIC needs cgo; defer.
 - **N-β2** Daemon binary size grows by ~1.5 MB after pulling in the
-  image libs. Plugin bundle (<600 KB guard) is unaffected.
+  image libs. Plugin bundle (<800 KB guard) is unaffected.
 - **N-β3** Backwards compat as in α: an older daemon without
   `fs.thumbnail` makes ResourceBridge transparently fall back to
   `fs.readBinary`.

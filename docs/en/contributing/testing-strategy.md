@@ -17,9 +17,9 @@ shadow-vault flow is what we test; this doc explains *how*.
 ```mermaid
 flowchart TB
     subgraph Local["Per-PR / per-push"]
-        unit["Unit tests<br/>vitest, fully mocked<br/>~330 tests, ~2 s"]
+        unit["Unit tests<br/>vitest, fully mocked<br/>~950 tests across 60+ files"]
         types["TypeScript noEmit<br/>+ ESLint"]
-        bundle["Production build<br/>+ bundle-size guard (<600 KB)"]
+        bundle["Production build<br/>+ bundle-size guard (<800 KB)"]
     end
     subgraph Container["Per-PR (Linux only)"]
         sftp_int["SSH integration<br/>SftpClient vs Docker sshd"]
