@@ -31,7 +31,7 @@ Obsidian's plugin API is opinionated about vault paths. Rather than forking Obsi
 
 The cost: storage on your local machine grows with what you have opened. The plugin keeps a hot cache of recently-touched files; LRU eviction frees space for files not opened in N days.
 
-### "Pre-1.0 stability promises"
+### v1.x stability promises
 
 The wire protocol is **frozen at version 1**. Method additions are non-breaking (capabilities-gated — see [[en/api/overview|API overview]]). Breaking changes ship as new methods, never modifications of existing ones. This means an old plugin can talk to a new daemon (and vice versa) for the lifetime of v1.
 

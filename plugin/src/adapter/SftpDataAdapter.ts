@@ -116,7 +116,7 @@ export class SftpDataAdapter {
      * patched onto `app.vault.adapter`, the `basePath` getter and
      * `getBasePath()` method return this value, so plugins that read
      * `adapter.basePath` (Templater's `tp.file.path`, Kanban's clipboard
-     * paste, Importer, Copilot — see `docs/plugin-compatibility.md`)
+     * paste, Importer, Copilot — see `docs/en/user-guide/plugin-compatibility.md`)
      * receive a path on the shadow vault. Reads against that path
      * succeed against files mirrored locally by the file watcher;
      * writes land in the shadow dir and propagate to the remote.
@@ -126,7 +126,7 @@ export class SftpDataAdapter {
      * vault root via `(adapter as FileSystemAdapter).getBasePath()`
      * captured before the patch is applied.
      *
-     * Survey: PR #165 / docs/plugin-compatibility.md "basePath compat
+     * Survey: PR #165 / docs/en/user-guide/plugin-compatibility.md "basePath compat
      * survey". Implementation: #170.
      */
     private shadowBasePath: string = '',
@@ -153,7 +153,7 @@ export class SftpDataAdapter {
   /**
    * Mirror of `FileSystemAdapter.getBasePath()`. Equivalent to the
    * `basePath` getter; both are surveyed-as-used by community plugins
-   * (#133, see `docs/plugin-compatibility.md`).
+   * (#133, see `docs/en/user-guide/plugin-compatibility.md`).
    */
   getBasePath(): string {
     return this.shadowBasePath;

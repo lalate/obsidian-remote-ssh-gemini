@@ -165,8 +165,8 @@ Commit the staged files alongside your code change.
 
 ## Where things live
 
-- **Architecture decisions** → `docs/architecture-*.md`. The shadow-vault rationale (and why the prior `reconcileFile` route was abandoned) is in `docs/architecture-shadow-vault.md`.
-- **Test strategy** → `docs/testing-strategy.md`. Phase A (multi-client convergence), B (multi-OS), C (sync-latency + UI reflect) are codified there.
+- **Architecture decisions** → `docs/en/architecture/*.md`. The shadow-vault rationale (and why the prior `reconcileFile` route was abandoned) is in `docs/en/architecture/shadow-vault.md`.
+- **Test strategy** → `docs/en/contributing/testing-strategy.md`. Phase A (multi-client convergence), B (multi-OS), C (sync-latency + UI reflect) are codified there.
 - **Performance numbers** → the `perf-baseline` orphan branch's `baseline.ndjson`, refreshed nightly by `bench.yml`.
 - **Issue tracker** → for bug reports, feature requests, design questions.
 - **Security issues** → see [SECURITY.md](SECURITY.md), **not** the public issue tracker.

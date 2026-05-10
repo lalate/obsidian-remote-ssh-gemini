@@ -41,7 +41,7 @@ export const PATCHED_METHODS = [
   'getResourcePath',
   // basePath surface — patched so plugins that join paths against
   // it (Templater's tp.file.path, Kanban clipboard paste, Importer,
-  // Copilot — see docs/plugin-compatibility.md "basePath compat
+  // Copilot — see docs/en/user-guide/plugin-compatibility.md "basePath compat
   // survey") get the shadow-vault local root explicitly. The natural
   // FileSystemAdapter getter already returns this value, but routing
   // through the replacement makes the contract explicit and gives

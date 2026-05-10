@@ -49,7 +49,7 @@ The version shape is the truth: `1.0.43` is stable, `1.0.44-beta.N` is a prerele
 
 ## Project status
 
-Pre-1.0. The shadow-vault architecture is operational, BRAT users are running it daily. The major remaining work is mobile support (iOS/Android) and the multi-client conflict resolver. See the [GitHub issues](https://github.com/sotashimozono/obsidian-remote-ssh/issues) for the live roadmap.
+1.0 released. The shadow-vault architecture is operational; BRAT users are running it daily. Community-store listing is pending Obsidian-team review ([obsidianmd/obsidian-releases#12390](https://github.com/obsidianmd/obsidian-releases/pull/12390)). Mobile support (iOS/Android) is parked as a v2.0 milestone ([#151](https://github.com/sotashimozono/obsidian-remote-ssh/issues/151)). See the [GitHub issues](https://github.com/sotashimozono/obsidian-remote-ssh/issues) for the live roadmap.
 
 ## License
 
