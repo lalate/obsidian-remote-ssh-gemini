@@ -2,6 +2,7 @@
 title: "Architecture: Shadow Vault Approach"
 tags: [architecture, shadow-vault]
 description: "How obsidian-remote-ssh's shadow vault architecture works: separate Obsidian vault per profile, lazy fetch from the remote, why monkey-patching the adapter was retired."
+schema: TechArticle
 ---
 
 # Architecture: Shadow Vault Approach

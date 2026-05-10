@@ -2,6 +2,7 @@
 title: Reverse proxy in front of Docker sshd
 tags: [cookbook, how-to, docker, reverse-proxy, deploy]
 description: "Front the obsidian-remote-ssh sshd container with nginx / Caddy / SSH ProxyJump. TLS termination, multi-tenant routing, hostname-based vault selection."
+schema: Article
 ---
 
 # Reverse proxy in front of Docker sshd
