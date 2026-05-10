@@ -1,3 +1,9 @@
+---
+title: Plugin compatibility
+tags: [user-guide, plugins, compatibility]
+description: "Which Obsidian community plugins work cleanly with obsidian-remote-ssh's shadow vault model. Known-good, known-broken, and quirky-but-fixable plugin behaviours."
+---
+
 # Plugin compatibility
 
 How well each Obsidian community plugin holds up when the vault is

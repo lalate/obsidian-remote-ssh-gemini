@@ -1,6 +1,7 @@
 ---
 title: Performance tuning
 tags: [operations, performance]
+description: "Make obsidian-remote-ssh feel snappy: where time goes, SSH RTT and disk-IO diagnosis, ControlMaster, Tailscale vs WAN, daemon thumbnail cache, fs.watch tuning."
 ---
 
 # Performance tuning

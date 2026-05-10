@@ -1,6 +1,7 @@
 ---
 title: Server overview
 tags: [server, deploy]
+description: "Server side of obsidian-remote-ssh: daemon binary, Unix socket auth, vault root scoping, OS support (Linux/macOS desktop), resource footprint, cosign-verify pointer."
 ---
 
 # Server / deploy — overview

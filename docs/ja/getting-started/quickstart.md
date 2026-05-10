@@ -2,6 +2,7 @@
 title: Quickstart
 lang: ja
 tags: [getting-started, quickstart]
+description: "5 分で動かす: Obsidian からリモート vault に SSH 接続、ノートが表示されることを確認、編集、ラウンドトリップが期待どおり機能することを検証する手順。"
 ---
 
 # 5 分間 Quickstart

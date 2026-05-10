@@ -1,6 +1,7 @@
 ---
 title: Host keys & trust
 tags: [user-guide, security]
+description: "How obsidian-remote-ssh trusts SSH host keys: TOFU on first connect, fingerprint pinning in the plugin's own store, what mismatches mean, manual trust resets."
 ---
 
 # Host keys & trust

@@ -1,6 +1,7 @@
 ---
 title: Jump hosts (bastions)
 tags: [user-guide]
+description: "Connect to an Obsidian vault behind a bastion / jump host. ProxyJump-equivalent in the plugin profile, multi-hop chains, per-hop credential override."
 ---
 
 # Jump hosts (bastions)

@@ -2,6 +2,7 @@
 title: Obsidian Sync からの移行
 lang: ja
 tags: [migration, how-to]
+description: "Obsidian の有料 Sync サービスから obsidian-remote-ssh への移行ガイド。段階的な移行手順、ロールバック計画、代替機能、既知のギャップ。"
 ---
 
 # Obsidian Sync からの移行

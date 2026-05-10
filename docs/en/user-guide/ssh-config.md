@@ -1,6 +1,7 @@
 ---
 title: SSH config & keys
 tags: [user-guide]
+description: "How obsidian-remote-ssh resolves SSH credentials: ed25519/RSA key files, passphrase prompts, ssh-agent fallback, password auth, custom port and identity-only mode."
 ---
 
 # SSH config & keys

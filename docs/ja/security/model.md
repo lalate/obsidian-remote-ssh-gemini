@@ -2,6 +2,7 @@
 title: 脅威モデル
 lang: ja
 tags: [security]
+description: "obsidian-remote-ssh のセキュリティモデル: SSH 転送、デーモン側トークン認証、ホストキー TOFU ストア、cosign 署名バイナリ、vault-root エスケープ防止、脅威モデル。"
 ---
 
 # セキュリティ — 脅威モデル

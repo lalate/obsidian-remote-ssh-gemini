@@ -2,6 +2,7 @@
 title: インストール
 lang: ja
 tags: [getting-started, install]
+description: "obsidian-remote-ssh のインストール: Obsidian Community Plugins ストア、BRAT (beta チャネル)、リリースタグからの手動インストール。デスクトップのみ、Obsidian 1.5+。"
 ---
 
 # obsidian-remote-ssh のインストール

@@ -1,6 +1,7 @@
 ---
 title: Daemon CLI reference
 tags: [reference, daemon, cli]
+description: "obsidian-remote-ssh-server CLI reference: --vault-root / --socket / --token-file / --verbose / --version flags, exit codes, signal handling, state directory layout."
 ---
 
 # Daemon CLI reference

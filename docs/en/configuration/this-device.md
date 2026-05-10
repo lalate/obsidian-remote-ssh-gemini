@@ -1,6 +1,7 @@
 ---
 title: This device
 tags: [configuration, reference]
+description: "Per-device settings for obsidian-remote-ssh: Client ID partitioning of remote workspace state, user name display, telemetry opt-in, debug logging toggle."
 ---
 
 # Configuration reference — This device

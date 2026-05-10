@@ -1,6 +1,7 @@
 ---
 title: Editing multiple vaults from one Obsidian
 tags: [cookbook, how-to, multi-vault]
+description: "Edit work, personal, and family Obsidian vaults from a single Obsidian install. Multiple SSH profiles, separate shadow vaults, shared launcher vault."
 ---
 
 # Editing multiple vaults from one Obsidian
