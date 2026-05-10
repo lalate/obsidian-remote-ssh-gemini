@@ -373,7 +373,7 @@ post-pivot reality.
 ### Phase 6C deliverable (pending)
 
 Manual smoke through the 11 plugins in
-[plugin-compatibility.md](plugin-compatibility.md). Each row
+[plugin-compatibility.md](../user-guide/plugin-compatibility.md). Each row
 moves from 🟡 → ✅ verified or ❌ broken (with category — fs-direct
 reader, etc.). User-driven; ~30–60 min.
 
@@ -438,7 +438,7 @@ for every file in the model.
 - Plugins that hit `fs` directly (Omnisearch, possibly some media
   indexers) cannot be made to work without mirroring the file content
   to a real local path. Mark these `❌ broken (fs-direct)` in
-  [docs/plugin-compatibility.md](plugin-compatibility.md), with a
+  [docs/en/user-guide/plugin-compatibility.md](../user-guide/plugin-compatibility.md), with a
   one-line note pointing here.
 - A future enhancement (out of scope for the initial pivot) could
   shadow-write actual file content to the local basePath as a

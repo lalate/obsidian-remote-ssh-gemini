@@ -35,7 +35,7 @@ Vault on SD card: fine, but `fs.walk` on a large vault can take 5–10s on the f
 
 ## Long-lived daemon
 
-The plugin's auto-deploy kills + restarts the daemon on every connect. For a Pi you'll keep on 24/7, run the daemon under [[en/server/systemd|systemd]] so it survives plugin reconnects and reboots.
+The plugin's auto-deploy reuses an already-running daemon when one is healthy ([[en/server/auto-deploy#what-happens-in-order|reuse probe]]) and only redeploys when reuse fails. For a Pi you'll keep on 24/7, run the daemon under [[en/server/systemd|systemd]] so it survives Pi reboots — the plugin will pick it up on connect via the reuse path.
 
 ## Cooling / throttling
 

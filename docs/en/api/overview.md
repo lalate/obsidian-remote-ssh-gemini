@@ -5,12 +5,13 @@ tags: [api, reference]
 
 # API & protocol — overview
 
-The daemon speaks **JSON-RPC 2.0** over a length-prefixed framing on a Unix socket. The plugin opens the socket via SSH local port-forward; you can also connect directly with any tool that speaks JSON-RPC over a Unix socket (curl with `--unix-socket`, websocat, custom tooling).
+The daemon speaks **JSON-RPC 2.0** with **LSP-style framing** on a Unix socket. The plugin opens the socket via SSH local port-forward; you can also connect directly with any tool that can write LSP-framed JSON-RPC over a Unix socket.
 
 ## Wire format
 
 - **Transport**: Unix socket (default `~/.obsidian-remote/server.sock`)
-- **Framing**: 4-byte big-endian length prefix + JSON payload
+- **Framing**: `Content-Length: <N>\r\n\r\n<N bytes of UTF-8 JSON>` per message — same as the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#headerPart). Unknown headers are silently ignored for forward-compat; missing or malformed `Content-Length` closes the connection.
+- **Max message size**: 16 MiB (server-side cap; oversized messages close the connection)
 - **Encoding**: UTF-8 JSON
 - **Spec**: [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 
@@ -20,6 +21,7 @@ The daemon speaks **JSON-RPC 2.0** over a length-prefixed framing on a Unix sock
 - **[[en/api/filesystem|Filesystem]]** — `fs.stat`, `fs.read*`, `fs.write*`, `fs.list`, `fs.walk`, `fs.mkdir`, `fs.remove`, etc.
 - **[[en/api/watch|Watch / notifications]]** — `fs.watch`, `fs.unwatch`, `fs.changed` (server-push)
 - **[[en/api/errors|Error codes]]** — full error reference
+- **[[en/api/examples|Examples]]** — copy-pasteable JSON-RPC envelopes for every common operation
 
 ## Protocol version
 
@@ -54,20 +56,20 @@ Connect, authenticate, list the root:
 # Read the token (mode 0600, only your user can read it)
 TOKEN=$(cat ~/.obsidian-remote/token)
 
-# Frame helper: 4-byte length prefix + JSON
+# LSP-style frame: Content-Length: <N>\r\n\r\n<body>
 frame() {
-  local json="$1"
-  printf '%b' "$(printf '\x%02x' $((${#json} >> 24 & 0xff)) $((${#json} >> 16 & 0xff)) $((${#json} >> 8 & 0xff)) $((${#json} & 0xff)))$json"
+  local body="$1"
+  printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
 }
 
 # Authenticate, then fs.list
 {
   frame '{"jsonrpc":"2.0","id":1,"method":"auth","params":{"token":"'"$TOKEN"'"}}'
   frame '{"jsonrpc":"2.0","id":2,"method":"fs.list","params":{"path":""}}'
-} | nc -U ~/.obsidian-remote/server.sock | xxd
+} | nc -U ~/.obsidian-remote/server.sock
 ```
 
-(For real tooling, use a JSON-RPC library that handles framing; this is just for spot-checks.)
+(For real tooling, use a JSON-RPC library that handles header parsing — this is just for spot-checks.)
 
 ## Stability
 

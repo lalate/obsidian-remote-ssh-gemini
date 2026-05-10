@@ -46,7 +46,7 @@ A successful `auth` pins the connection to one client identity. Re-`auth` with a
   "result": {
     "version": "0.1.0",
     "protocolVersion": 1,
-    "capabilities": ["fs.stat", "fs.exists", "fs.list", "fs.walk", "fs.read*", "fs.write*", "fs.mkdir", "fs.remove", "fs.rmdir", "fs.rename", "fs.copy", "fs.trashLocal", "fs.thumbnail", "fs.watch"],
+    "capabilities": ["auth", "fs.append", "fs.appendBinary", "fs.copy", "fs.exists", "fs.list", "fs.mkdir", "fs.readBinary", "fs.readBinaryRange", "fs.readText", "fs.remove", "fs.rename", "fs.rmdir", "fs.stat", "fs.thumbnail", "fs.trashLocal", "fs.unwatch", "fs.walk", "fs.watch", "fs.write", "fs.writeBinary", "server.info"],
     "vaultRoot": "/home/pi/notes"
   }
 }

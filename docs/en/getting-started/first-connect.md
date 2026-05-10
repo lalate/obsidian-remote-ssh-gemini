@@ -17,7 +17,7 @@ obsidian-remote-ssh does not edit your remote files directly through Obsidian's 
 
 Result: Obsidian thinks it's editing a local vault. All Obsidian features (Dataview, Templater, Excalidraw, …) work because they ARE working against a local vault. The "remote-ness" lives in the sync layer, invisible to most plugins.
 
-See [[architecture-shadow-vault|Shadow vault architecture]] for the full design.
+See [[shadow-vault|Shadow vault architecture]] for the full design.
 
 ## What gets installed where
 
