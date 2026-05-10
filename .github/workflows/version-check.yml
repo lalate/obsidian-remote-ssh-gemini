@@ -1,23 +1,30 @@
 name: Version check
 
-# Reject any PR whose plugin version isn't a strict bump over the
-# base branch's. Enforces the "every merge = a release" model the
-# repo uses during development: the release-on-merge workflow tags
-# main using `plugin/manifest.json`, so a same-or-lower version
-# would either fail to tag or silently re-tag an existing release.
+# Branch-aware version-bump enforcement for the two-channel release
+# model:
 #
-# Also asserts that `plugin/manifest.json` and `plugin/package.json`
-# agree, so the runtime log (which reads `manifest.json`) and the
-# npm-side metadata never drift apart.
+#   • PR into `next`  → BETA channel.  head version must be `X.Y.Z-beta.N`
+#                       (strictly greater than base, semver-aware), and
+#                       only the beta-channel artefacts (plugin/manifest.json
+#                       + manifest-beta.json) may have moved.  manifest.json
+#                       (root) and versions.json must stay pinned to the
+#                       last stable so the Obsidian Community Plugins store
+#                       isn't accidentally advanced to a prerelease.
+#
+#   • PR into `main`  → STABLE channel.  head version must be plain
+#                       `X.Y.Z` (no -beta suffix), strictly greater than
+#                       base, and ALL manifest files must agree (a stable
+#                       release supersedes the previous beta on every
+#                       channel).
+#
+# The release-on-merge workflow tags using `plugin/manifest.json`, so a
+# same-or-lower version would either fail to tag or silently re-tag an
+# existing release.  The semver compare uses Node so prerelease ordering
+# (`1.0.44-beta.10` > `1.0.44-beta.2`, `1.0.44` > `1.0.44-beta.N`) is
+# handled correctly.
 
 on:
   pull_request:
-    # Two-axis branching model:
-    #   - `next`  → integration branch; most feature/fix PRs target this
-    #   - `main`  → stable channel; promotion PRs (`next` → `main`) and
-    #              emergency hotfixes target this
-    # Both bases enforce a strict version bump so the release pipeline
-    # always has a unique tag to publish from.
     branches: [main, next]
 
 concurrency:
@@ -27,6 +34,12 @@ concurrency:
 jobs:
   version-check:
     runs-on: ubuntu-latest
+    # Skip on automated `main → next` sync PRs (head_ref=main): they
+    # carry the same version on both sides by design, and the
+    # sync-main-to-next workflow re-runs CI for the merge content
+    # itself. Without this skip, every promotion would leave a
+    # red sync-PR in the queue.
+    if: github.head_ref != 'main'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,99 +52,125 @@ jobs:
           base_ref="${{ github.base_ref }}"
           git fetch origin "$base_ref" --depth=1
 
-          base_manifest=$(git show "origin/${base_ref}:plugin/manifest.json" \
-            | jq -r '.version')
+          # head versions
           head_manifest=$(jq -r '.version' plugin/manifest.json)
           head_package=$(jq -r '.version' plugin/package.json)
+          head_root=$(jq -r '.version' manifest.json)
+          head_beta=$(jq -r '.version' manifest-beta.json)
 
-          echo "base_manifest=$base_manifest" >> "$GITHUB_OUTPUT"
-          echo "head_manifest=$head_manifest" >> "$GITHUB_OUTPUT"
-          echo "head_package=$head_package"   >> "$GITHUB_OUTPUT"
+          # base versions for comparison and "must not change" checks
+          base_manifest=$(git show "origin/${base_ref}:plugin/manifest.json" | jq -r '.version')
+          base_root=$(git show "origin/${base_ref}:manifest.json" | jq -r '.version')
 
-          echo "base manifest.json: $base_manifest"
-          echo "head manifest.json: $head_manifest"
-          echo "head package.json:  $head_package"
+          echo "base_ref=$base_ref"               >> "$GITHUB_OUTPUT"
+          echo "head_manifest=$head_manifest"     >> "$GITHUB_OUTPUT"
+          echo "head_package=$head_package"       >> "$GITHUB_OUTPUT"
+          echo "head_root=$head_root"             >> "$GITHUB_OUTPUT"
+          echo "head_beta=$head_beta"             >> "$GITHUB_OUTPUT"
+          echo "base_manifest=$base_manifest"     >> "$GITHUB_OUTPUT"
+          echo "base_root=$base_root"             >> "$GITHUB_OUTPUT"
 
-      - name: manifest.json and package.json must agree
+          echo "base manifest.json (plugin):     $base_manifest"
+          echo "head manifest.json (plugin):     $head_manifest"
+          echo "head package.json:               $head_package"
+          echo "head manifest.json (root):       $head_root"
+          echo "head manifest-beta.json (root):  $head_beta"
+          echo "base manifest.json (root):       $base_root"
+          echo "PR base branch:                  $base_ref"
+
+      - name: plugin/manifest.json and plugin/package.json must agree
         run: |
           if [ "${{ steps.versions.outputs.head_manifest }}" \
             != "${{ steps.versions.outputs.head_package }}" ]; then
             echo "::error::plugin/manifest.json (${{ steps.versions.outputs.head_manifest }})"\
               " and plugin/package.json (${{ steps.versions.outputs.head_package }}) disagree."\
-              " Run 'cd plugin && npm version <X.Y.Z>' to bump both at once."
+              " Run 'cd plugin && npm version <X.Y.Z[-beta.N]>' to bump both at once."
             exit 1
           fi
 
-      - name: Root manifest.json mirror must match plugin/manifest.json
-        # Obsidian's community plugin browser fetches manifest.json
-        # from the repo root (HEAD/manifest.json convention). The
-        # bump-version script writes both files; this check fails
-        # closed if someone hand-edits one without the other.
+      - name: plugin/manifest.json and manifest-beta.json (root) must agree
+        # The bundled manifest is what we ship; manifest-beta.json (root) is
+        # what BRAT --beta consumers fetch. They must always match — both
+        # carry the latest version, whether beta or stable.
         run: |
-          plugin_v=$(jq -r '.version' plugin/manifest.json)
-          root_v=$(jq -r '.version' manifest.json)
-          if [ "$plugin_v" != "$root_v" ]; then
-            echo "::error::manifest.json ($root_v) does not match plugin/manifest.json ($plugin_v)."\
-              " Run 'cd plugin && npm version <X.Y.Z>' to sync."
+          if ! diff -q plugin/manifest.json manifest-beta.json > /dev/null; then
+            echo "::error::manifest-beta.json content differs from plugin/manifest.json."\
+              " Re-run 'cd plugin && npm version <same>' (the bump script syncs both)."
+            diff plugin/manifest.json manifest-beta.json || true
             exit 1
           fi
-          # Also assert full content equality so a divergence in any
-          # field (id / description / authorUrl / minAppVersion) is
-          # caught before submission to obsidianmd/obsidian-releases.
+
+      # ─── Branch-specific assertions ─────────────────────────────────────
+
+      - name: BETA channel (PR → next) — root manifest.json must stay pinned
+        # On a beta PR the Obsidian Community Plugins store manifest must NOT
+        # move; only manifest-beta.json + plugin/manifest.json may advance.
+        if: github.base_ref == 'next'
+        run: |
+          if [ "${{ steps.versions.outputs.head_root }}" != "${{ steps.versions.outputs.base_root }}" ]; then
+            echo "::error::Beta PRs must not modify root manifest.json."\
+              " Got head=${{ steps.versions.outputs.head_root }}, base=${{ steps.versions.outputs.base_root }}."\
+              " Use 'npm version prerelease --preid=beta' (or 'prepatch --preid=beta' to start a new cycle) — these only touch the beta-channel files."
+            exit 1
+          fi
+          # versions.json (both copies) is the stable compatibility map
+          # and must also stay frozen on beta PRs.
+          if ! git diff --quiet "origin/${{ steps.versions.outputs.base_ref }}" -- versions.json plugin/versions.json; then
+            echo "::error::Beta PRs must not modify versions.json."\
+              " The compatibility map only advances on stable releases."
+            git diff "origin/${{ steps.versions.outputs.base_ref }}" -- versions.json plugin/versions.json || true
+            exit 1
+          fi
+
+      - name: STABLE channel (PR → main) — head version must be plain X.Y.Z
+        if: github.base_ref == 'main'
+        run: |
+          head="${{ steps.versions.outputs.head_manifest }}"
+          if [[ "$head" == *-beta.* ]]; then
+            echo "::error::PRs into main must carry a plain stable version (X.Y.Z), got '$head'."\
+              " Strip the -beta.N suffix on next first: 'cd plugin && npm version <X.Y.Z>' (e.g. 1.0.44)."
+            exit 1
+          fi
+          # All three manifests must agree on a stable PR.
           if ! diff -q plugin/manifest.json manifest.json > /dev/null; then
-            echo "::error::manifest.json content differs from plugin/manifest.json."\
-              " Re-run 'cd plugin && npm version <same>' or copy manually."
+            echo "::error::Stable PRs require plugin/manifest.json == manifest.json (root)."
             diff plugin/manifest.json manifest.json || true
             exit 1
           fi
-
-      - name: Root versions.json mirror must match plugin/versions.json
-        run: |
           if ! diff -q plugin/versions.json versions.json > /dev/null; then
-            echo "::error::versions.json content differs from plugin/versions.json."\
-              " Re-run 'cd plugin && npm version <same>' or copy manually."
+            echo "::error::Stable PRs require plugin/versions.json == versions.json (root)."
             diff plugin/versions.json versions.json || true
             exit 1
           fi
 
-      - name: manifest-beta.json must equal manifest.json (pre-1.0)
-        # BRAT (--beta) pulls manifest-beta.json from HEAD of the
-        # default branch. Pre-1.0 every merge IS a beta — there's no
-        # separate `next` branch yet — so beta and stable manifests
-        # must stay byte-identical. Once a `next` branch is cut for
-        # post-1.0 work, drop this assert and let manifest-beta.json
-        # advance independently on `next`.
+      - name: PR version must be strictly greater than base (semver-aware)
+        env:
+          BASE_V: ${{ steps.versions.outputs.base_manifest }}
+          HEAD_V: ${{ steps.versions.outputs.head_manifest }}
         run: |
-          if ! diff -q manifest.json manifest-beta.json > /dev/null; then
-            echo "::error::manifest-beta.json content differs from manifest.json."\
-              " Pre-1.0 they must match. Re-run 'cd plugin && npm version <same>'"\
-              " (the bump script syncs both)."
-            diff manifest.json manifest-beta.json || true
-            exit 1
-          fi
-
-      - name: PR version must be strictly greater than base
-        run: |
-          # Pure-shell semver compare: strip pre-release suffix, split,
-          # compare numerically. A non-strict bump is rejected because
-          # the release-on-merge workflow tags main using this version
-          # and a same-or-lower version would either re-tag an existing
-          # release or fail the tag push.
-          base="${{ steps.versions.outputs.base_manifest }}"
-          head="${{ steps.versions.outputs.head_manifest }}"
-
-          base_core="${base%%-*}"
-          head_core="${head%%-*}"
-          IFS=. read -r bM bm bp <<< "$base_core"
-          IFS=. read -r hM hm hp <<< "$head_core"
-
-          if [ "$hM" -gt "$bM" ] \
-            || { [ "$hM" -eq "$bM" ] && [ "$hm" -gt "$bm" ]; } \
-            || { [ "$hM" -eq "$bM" ] && [ "$hm" -eq "$bm" ] && [ "$hp" -gt "$bp" ]; }
-          then
-            echo "OK: $base → $head"
-          else
-            echo "::error::PR version $head is not greater than base $base."\
-              " Bump with 'cd plugin && npm version patch' (or minor/major)."
-            exit 1
-          fi
+          # Node-based semver compare so prerelease ordering (beta.10 > beta.2,
+          # plain X.Y.Z > X.Y.Z-beta.N) follows the spec.
+          node -e '
+          const cmp = (a, b) => {
+            const parse = (v) => {
+              const m = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(v);
+              if (!m) throw new Error("not a recognised version: " + v);
+              return { M: +m[1], m: +m[2], p: +m[3], pre: m[4] === undefined ? null : +m[4] };
+            };
+            const A = parse(a), B = parse(b);
+            if (A.M !== B.M) return A.M - B.M;
+            if (A.m !== B.m) return A.m - B.m;
+            if (A.p !== B.p) return A.p - B.p;
+            // prerelease < release at the same X.Y.Z
+            if (A.pre === null && B.pre === null) return 0;
+            if (A.pre === null) return 1;
+            if (B.pre === null) return -1;
+            return A.pre - B.pre;
+          };
+          const base = process.env.BASE_V, head = process.env.HEAD_V;
+          if (cmp(head, base) > 0) {
+            console.log("OK: " + base + " → " + head);
+          } else {
+            console.error("::error::PR version " + head + " is not strictly greater than base " + base + ".");
+            process.exit(1);
+          }'
