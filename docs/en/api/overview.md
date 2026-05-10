@@ -10,7 +10,7 @@ The daemon speaks **JSON-RPC 2.0** with **LSP-style framing** on a Unix socket. 
 ## Wire format
 
 - **Transport**: Unix socket (default `~/.obsidian-remote/server.sock`)
-- **Framing**: `Content-Length: <N>\r\n\r\n<N bytes of UTF-8 JSON>` per message — same as the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#headerPart). No other headers are recognised; missing or malformed `Content-Length` closes the connection.
+- **Framing**: `Content-Length: <N>\r\n\r\n<N bytes of UTF-8 JSON>` per message — same as the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#headerPart). Unknown headers are silently ignored for forward-compat; missing or malformed `Content-Length` closes the connection.
 - **Max message size**: 16 MiB (server-side cap; oversized messages close the connection)
 - **Encoding**: UTF-8 JSON
 - **Spec**: [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
