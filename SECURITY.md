@@ -46,8 +46,8 @@ To report a vulnerability:
   unless the plugin actively encourages or facilitates the misuse.
 - Social-engineering scenarios where the user explicitly accepts a
   prompt that surfaces the risk (e.g. trusting a host-key change
-  in the upcoming `HostKeyMismatchModal` — we surface the diff and
-  the security implication; the user's choice to trust is theirs).
+  in `HostKeyMismatchModal` (#132) — we surface the diff and the
+  security implication; the user's choice to trust is theirs).
 
 ## Verifying release artefacts
 

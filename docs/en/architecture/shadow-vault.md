@@ -1,6 +1,6 @@
 # Architecture: Shadow Vault Approach
 
-**Status:** Phases 0–6A shipped end-to-end (v0.4.14). Phase 6B (this docs polish) in flight; Phase 6C (plugin compatibility re-verification) pending.
+**Status:** Shipped. The shadow-vault model has been the production architecture since v0.4.14 (Phases 0–6A) and is the basis for the v1.0 release line.
 **Decided:** 2026-04-27
 **Supersedes:** the monkey-patch-and-reconcile approach used through v0.4.3
 
@@ -379,7 +379,7 @@ reader, etc.). User-driven; ~30–60 min.
 
 ## 6. Backwards compatibility
 
-Pre-1.0, so we don't promise stability across this pivot.
+The pre-1.0 cut-overs below were one-time migrations completed before v1.0 shipped; v1.x preserves the shadow-vault shape and `data.json` schema described elsewhere on this page.
 
 - **Removed (PR #69)**: `data.json:autoPatchAdapter` setting
   (Tier 1-A). The shadow vault always-on model replaces it. On
