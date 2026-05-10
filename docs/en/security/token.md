@@ -5,7 +5,7 @@ tags: [security]
 
 # Token & socket
 
-The daemon authenticates clients via a shared-secret token read from a file. This page covers the lifecycle and what to worry about.
+The daemon authenticates clients via a 32-byte shared-secret token written to a `0600`-mode file at startup, never persisted across daemon restarts. The plugin reads it via SFTP and presents it on the `auth` RPC.
 
 ## What gets generated
 

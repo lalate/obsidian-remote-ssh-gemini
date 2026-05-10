@@ -5,9 +5,7 @@ tags: [server, security, deploy]
 
 # Binary signing
 
-Every release binary is signed with [Cosign keyless](https://docs.sigstore.dev/cosign/signing/overview/) (Sigstore OIDC). No GPG key management, no trust roots to bootstrap — the signature is bound to the GitHub Actions workflow that produced it.
-
-This page covers the publisher side (what the release pipeline does). For verifying a binary you downloaded, see [[en/security/cosign-verify|Cosign verify]].
+Every release binary is signed with [Cosign keyless](https://docs.sigstore.dev/cosign/signing/overview/) (Sigstore OIDC) by the GitHub Actions workflow that produced it — no GPG key management, no trust roots to bootstrap. This page covers the publisher side; verifying a binary you downloaded is over at [[en/security/cosign-verify|Cosign verify]].
 
 ## What gets signed
 

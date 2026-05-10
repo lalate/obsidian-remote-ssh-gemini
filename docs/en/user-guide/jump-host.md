@@ -16,7 +16,7 @@ In a profile, click **Add jump host**:
 | Jump host | `bastion.example.com` |
 | Port | `22` |
 | Username | `your-bastion-user` |
-| Auth | usually shares the parent's credentials; can override per hop |
+| Auth | inherits the profile's credentials by default; per-hop override available |
 
 Multiple hops chain in order: `you → bastion-1 → bastion-2 → target`.
 

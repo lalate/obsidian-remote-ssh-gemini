@@ -5,8 +5,6 @@ tags: [getting-started]
 
 # First connect — what's actually happening
 
-The five-minute [[en/getting-started/quickstart|Quickstart]] glosses over what "connect" does. This page goes through it step-by-step so the first time something breaks, you know where to look.
-
 ## The shadow vault model
 
 obsidian-remote-ssh does not edit your remote files directly through Obsidian's vault layer. Instead it:

@@ -5,7 +5,7 @@ tags: [user-guide]
 
 # SSH config & keys
 
-obsidian-remote-ssh uses your existing SSH credentials (key files, agent) — it does not maintain its own keychain. This page covers how the plugin resolves credentials and what is supported.
+obsidian-remote-ssh uses your existing SSH credentials (key files, agent) — it does not maintain its own keychain.
 
 ## Authentication methods
 

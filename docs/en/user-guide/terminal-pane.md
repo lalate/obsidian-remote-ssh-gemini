@@ -18,7 +18,7 @@ A terminal opens as a regular Obsidian pane; you can split it, drag it to a side
 
 ## What you get
 
-- Your remote user's default login shell (`$SHELL`, typically `bash` or `zsh`).
+- Your remote user's `$SHELL` (override in settings to pin a specific shell).
 - Full TTY: aliases, colours, `fzf`, `htop`, `vim`, `tmux` all work.
 - Resizes when you resize the pane.
 - Persists across pane re-opens within a session — closing the pane retains scrollback until you disconnect.

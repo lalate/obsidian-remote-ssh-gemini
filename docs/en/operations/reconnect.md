@@ -5,7 +5,7 @@ tags: [operations]
 
 # Reconnect behavior
 
-When the SSH connection drops mid-session (network blip, sleep/wake, Wi-Fi roam), the plugin tries to recover automatically before surfacing an error to you.
+When the SSH connection drops mid-session, the plugin retries up to **5 times** with **×1.5 exponential backoff** (1 s → 1.5 s → 2.25 s → … capped at 30 s) before surfacing an error.
 
 ## Default policy
 
