@@ -7,13 +7,13 @@
 # sshd accept the bind-mounted key file regardless of host UID/GID
 # permissions — fine for a throwaway test container, never for prod.
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-server iproute2 \
  && rm -rf /var/lib/apt/lists/* \
- && mkdir /var/run/sshd \
- # Ubuntu 24.04 ships with a pre-created `ubuntu` user at UID 1000;
+ && mkdir -p /var/run/sshd \
+ # Ubuntu 24.04+ ships with a pre-created `ubuntu` user at UID 1000;
  # remove it so the well-known `tester` UID stays available. Older
  # bases (22.04) don't have this user — `|| true` keeps the build
  # green if dependabot ever pulls us back.
