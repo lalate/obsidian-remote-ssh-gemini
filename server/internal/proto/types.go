@@ -234,6 +234,35 @@ type UnwatchParams struct {
 	SubscriptionID string `json:"subscriptionId"`
 }
 
+type CliExecParams struct {
+	Cmd  string            `json:"cmd"`
+	Args []string          `json:"args"`
+	Cwd  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
+}
+
+type CliExecResult struct {
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	ExitCode int    `json:"exitCode"`
+}
+
+type CliSpawnParams struct {
+	ID   string            `json:"id"`
+	Cmd  string            `json:"cmd"`
+	Args []string          `json:"args"`
+	Cwd  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env,omitempty"`
+}
+
+type CliSpawnResult struct {
+	OK bool `json:"ok"`
+}
+
+type CliKillParams struct {
+	ID string `json:"id"`
+}
+
 // ─── server-push notifications ──────────────────────────────────────────────
 
 // FsChangeEvent is the kind of change the server observed on a watched path.
@@ -254,6 +283,18 @@ type FsChangedParams struct {
 	Mtime int64 `json:"mtime,omitempty"`
 	// NewPath is set iff Event == FsChangeEventRenamed.
 	NewPath string `json:"newPath,omitempty"`
+}
+
+type CliOutputParams struct {
+	ID     string `json:"id"`
+	Stream string `json:"stream"`
+	Data   string `json:"data"`
+}
+
+type CliDoneParams struct {
+	ID       string `json:"id"`
+	ExitCode int    `json:"exitCode"`
+	Error    string `json:"error,omitempty"`
 }
 
 // ─── JSON-RPC envelopes ─────────────────────────────────────────────────────

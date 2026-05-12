@@ -64,7 +64,10 @@ export type MethodName =
   | 'fs.copy'
   | 'fs.trashLocal'
   | 'fs.watch'
-  | 'fs.unwatch';
+  | 'fs.unwatch'
+  | 'cli.exec'
+  | 'cli.spawn'
+  | 'cli.kill';
 
 export interface MethodMap {
   'auth':            { params: AuthParams;            result: AuthResult };
@@ -94,6 +97,10 @@ export interface MethodMap {
 
   'fs.watch':        { params: WatchParams;           result: WatchResult };
   'fs.unwatch':      { params: UnwatchParams;         result: Record<string, never> };
+
+  'cli.exec':        { params: CliExecParams;         result: CliExecResult };
+  'cli.spawn':       { params: CliSpawnParams;        result: CliSpawnResult };
+  'cli.kill':        { params: CliKillParams;         result: Record<string, never> };
 }
 
 export type Params<M extends MethodName> = MethodMap[M]['params'];
@@ -211,6 +218,35 @@ export interface WatchParams { path: string; recursive?: boolean }
 export interface WatchResult { subscriptionId: string }
 export interface UnwatchParams { subscriptionId: string }
 
+export interface CliExecParams {
+  cmd: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface CliExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export interface CliSpawnParams {
+  id: string;
+  cmd: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface CliSpawnResult {
+  ok: boolean;
+}
+
+export interface CliKillParams {
+  id: string;
+}
+
 // ─── server-push notifications ───────────────────────────────────────────────
 
 export type FsChangeEvent = 'created' | 'modified' | 'deleted' | 'renamed';
@@ -226,6 +262,20 @@ export interface FsChangedParams {
 
 export interface ServerNotificationMap {
   'fs.changed': FsChangedParams;
+  'cli.output': CliOutputParams;
+  'cli.done': CliDoneParams;
+}
+
+export interface CliOutputParams {
+  id: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+}
+
+export interface CliDoneParams {
+  id: string;
+  exitCode: number;
+  error?: string;
 }
 
 export type ServerNotificationName = keyof ServerNotificationMap;
