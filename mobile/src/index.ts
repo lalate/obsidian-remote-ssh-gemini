@@ -14,3 +14,6 @@ export type { ServerInfo, WsRpcConnectionOptions } from './transport/WsRpcConnec
 
 export { WsRemoteFsClient } from './adapter/WsRemoteFsClient.js';
 export type { RemoteStat, RemoteEntry, CloseListener } from './adapter/WsRemoteFsClient.js';
+
+export { WsRemoteCliClient } from './adapter/WsRemoteCliClient.js';
+export type { CliExecResult, CliSpawnResult, CliOutputParams, CliDoneParams } from './adapter/WsRemoteCliClient.js';

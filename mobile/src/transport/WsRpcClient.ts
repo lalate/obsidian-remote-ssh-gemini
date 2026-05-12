@@ -8,7 +8,8 @@ export type MethodName =
   | 'fs.readText' | 'fs.readBinary' | 'fs.readBinaryRange' | 'fs.thumbnail'
   | 'fs.write' | 'fs.writeBinary' | 'fs.append' | 'fs.appendBinary'
   | 'fs.mkdir' | 'fs.remove' | 'fs.rmdir' | 'fs.rename' | 'fs.copy'
-  | 'fs.watch' | 'fs.unwatch';
+  | 'fs.watch' | 'fs.unwatch'
+  | 'cli.exec' | 'cli.spawn' | 'cli.kill';
 
 export interface WsRpcClientOptions {
   /** Call timeout in milliseconds. Default 30 000. */
