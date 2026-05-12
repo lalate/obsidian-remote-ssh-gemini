@@ -6,6 +6,7 @@ import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
 import { assertSelfReflect } from './helpers/assertSelfReflect';
 import { HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer } from './helpers/harnessVault';
+import { expectFailingWithShape } from './helpers/expectFailingWithShape';
 
 /**
  * Layer 1 of the sync-test framework — **writer self-reflect**.
@@ -27,11 +28,19 @@ import { HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer } from './hel
  * fires on the writer side, so open editor tabs stay bound to the
  * old path.
  *
- * The cases below are written with `it.fails(...)` — they assert
- * what the contract should be, and the helper will throw on timeout
- * because no reflect arrives today. When the fix lands (the patched
- * adapter starts mirroring its mutations into the writer's vault
- * model), removing the `.fails` marker is part of that PR.
+ * The cases below use `expectFailingWithShape(...)` to assert
+ * exactly TODAY's failure mode: the helper throws with
+ * "awaitReflect failed: ..." because no reflect arrives within
+ * budget. That gives us two-way discrimination:
+ *
+ *   - If the fix lands → no throw → wrapper fails → CI red →
+ *     contributor removes the wrapper and asserts success directly.
+ *   - If the test infrastructure breaks → throw with a different
+ *     shape (TypeError, ECONNRESET, etc.) → wrapper fails → CI red
+ *     → contributor diagnoses infra before touching production.
+ *
+ * `it.fails(...)` would have accepted *any* throw as proof, masking
+ * infra bugs as "yes the production bug is still there".
  *
  * Transport coverage: SFTP only for now. The bug is permanent on
  * SFTP (no daemon → no `fs.watch` push to recover via). On RPC the
@@ -92,67 +101,84 @@ describe('Layer 1 — writer self-reflect (SFTP transport)', () => {
 
   // ── #341 regression cases — currently all expected to fail ────────────
 
-  it.fails('write — adapter.write fires vault.trigger("create") on writer', async () => {
+  it('write — TODAY: adapter.write does NOT fire vault.trigger("create") (#341)', async () => {
     const target = `note-write-${stamp}.bin`;
-    await assertSelfReflect({
-      label: 'write->create',
-      op: () => writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('hello'))),
-      fakeFE,
-      expect: { path: target, event: 'create' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'write->create',
+        op: () => writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('hello'))),
+        fakeFE,
+        expect: { path: target, event: 'create' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — SFTP write self-reflect missing',
+    );
   });
 
-  it.fails('modify — adapter.write on an existing path fires vault.trigger("modify")', async () => {
+  it('modify — TODAY: adapter.write (overwrite) does NOT fire vault.trigger("modify") (#341)', async () => {
     const target = `note-modify-${stamp}.bin`;
     // Setup: pre-create so the second write is a modify, not a create.
     // Use the adapter so the bug surface is consistent with how a real
     // Obsidian write would land.
     await writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('v1')));
 
-    await assertSelfReflect({
-      label: 'write->modify',
-      op: () => writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('v2'))),
-      fakeFE,
-      expect: { path: target, event: 'modify' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'write->modify',
+        op: () => writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('v2'))),
+        fakeFE,
+        expect: { path: target, event: 'modify' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — SFTP modify self-reflect missing',
+    );
   });
 
-  it.fails('rename — adapter.rename fires vault.trigger("rename") on writer (issue #341)', async () => {
+  it('rename — TODAY: adapter.rename does NOT fire vault.trigger("rename") (#341)', async () => {
     const oldPath = `note-rename-src-${stamp}.bin`;
     const newPath = `note-rename-dst-${stamp}.bin`;
     await writer.adapter.writeBinary(oldPath, asArrayBuffer(Buffer.from('renamed')));
 
-    await assertSelfReflect({
-      label: 'rename',
-      op: () => writer.adapter.rename(oldPath, newPath),
-      fakeFE,
-      expect: { path: newPath, event: 'rename' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'rename',
+        op: () => writer.adapter.rename(oldPath, newPath),
+        fakeFE,
+        expect: { path: newPath, event: 'rename' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — SFTP rename self-reflect missing (the user-facing reproducer)',
+    );
   });
 
-  it.fails('delete — adapter.remove fires vault.trigger("delete") on writer', async () => {
+  it('delete — TODAY: adapter.remove does NOT fire vault.trigger("delete") (#341)', async () => {
     const target = `note-delete-${stamp}.bin`;
     await writer.adapter.writeBinary(target, asArrayBuffer(Buffer.from('to-delete')));
 
-    await assertSelfReflect({
-      label: 'delete',
-      op: () => writer.adapter.remove(target),
-      fakeFE,
-      expect: { path: target, event: 'delete' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'delete',
+        op: () => writer.adapter.remove(target),
+        fakeFE,
+        expect: { path: target, event: 'delete' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — SFTP delete self-reflect missing',
+    );
   });
 
   // ── post-mutation snapshot invariants (independent of timing) ─────────
   //
-  // Once the fix lands and the `.fails` markers come off above, these
-  // become natural follow-up assertions. Kept here under `it.fails` so
-  // the suite documents the full intended contract today.
+  // Companion snapshot view of #341: after rename, vault.fileMap is
+  // stale on the writer side. Both assertions below currently fail;
+  // we wrap them so the test fails red if/when the bug is fixed (and
+  // also red if the helper / setup breaks differently).
 
-  it.fails('post-rename — writer.vault.fileMap reflects the new path, not the old', async () => {
+  it('post-rename — TODAY: writer.vault.fileMap is unaware of the rename (#341)', async () => {
     const oldPath = `note-fmap-src-${stamp}.bin`;
     const newPath = `note-fmap-dst-${stamp}.bin`;
     await writer.adapter.writeBinary(oldPath, asArrayBuffer(Buffer.from('m')));
@@ -163,7 +189,14 @@ describe('Layer 1 — writer self-reflect (SFTP transport)', () => {
     // makes the assertion future-proof.
     await new Promise<void>((r) => setTimeout(r, 50));
 
-    expect(writerVault.getAbstractFileByPath(newPath)).not.toBeNull();
-    expect(writerVault.getAbstractFileByPath(oldPath)).toBeNull();
+    await expectFailingWithShape(
+      async () => {
+        // Expected post-fix invariant — fails today because no reflect.
+        expect(writerVault.getAbstractFileByPath(newPath)).not.toBeNull();
+        expect(writerVault.getAbstractFileByPath(oldPath)).toBeNull();
+      },
+      /to be null|null/i,
+      '#341 — SFTP fileMap not updated after rename',
+    );
   });
 });

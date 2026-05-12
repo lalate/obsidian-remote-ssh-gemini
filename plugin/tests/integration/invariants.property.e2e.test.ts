@@ -13,6 +13,7 @@ import {
   type InvariantContext,
 } from './helpers/invariants';
 import { opSequenceArbitrary } from './helpers/propertyTesting';
+import { expectFailingWithShape } from './helpers/expectFailingWithShape';
 
 /**
  * Layer 3 (extended) — **property-based** invariant suite.
@@ -98,52 +99,60 @@ describe('Layer 3 — property-based invariants', () => {
     if (pair) await pair.cleanup();
   });
 
-  it.fails('every short op sequence satisfies I1 + I2', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        opSequenceArbitrary({
-          seedPaths: SEED_PATHS,
-          freshPaths: FRESH_PATHS,
-          minOps: 1,
-          maxOps: 3,
-        }),
-        async (ops) => {
-          // Fresh context per fast-check run. The seed paths were
-          // pre-created in beforeAll; the SSH-level state persists
-          // across runs, but the assertion looks only at the **last
-          // op's** effect on writerVault/writerFE, so stale state
-          // from prior runs doesn't poison the check.
-          const ctx: InvariantContext = {
-            client: writer,
-            writerVault,
-            writerFE,
-            opsApplied: [],
-          };
+  it('property — TODAY: I1 + I2 violated for at least some random sequence (#341)', async () => {
+    await expectFailingWithShape(
+      () => fc.assert(
+        fc.asyncProperty(
+          opSequenceArbitrary({
+            seedPaths: SEED_PATHS,
+            freshPaths: FRESH_PATHS,
+            minOps: 1,
+            maxOps: 3,
+          }),
+          async (ops) => {
+            // Fresh context per fast-check run. The seed paths were
+            // pre-created in beforeAll; the SSH-level state persists
+            // across runs, but the assertion looks only at the **last
+            // op's** effect on writerVault/writerFE, so stale state
+            // from prior runs doesn't poison the check.
+            const ctx: InvariantContext = {
+              client: writer,
+              writerVault,
+              writerFE,
+              opsApplied: [],
+            };
 
-          const report = await runScenario({
-            scenarioName: 'property-driven',
-            ctx,
-            ops,
-            invariants: [
-              INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER,
-              INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER,
-            ],
-            settleMs: 50, // tight; the property runs a lot
-          });
+            const report = await runScenario({
+              scenarioName: 'property-driven',
+              ctx,
+              ops,
+              invariants: [
+                INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER,
+                INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER,
+              ],
+              settleMs: 50, // tight; the property runs a lot
+            });
 
-          if (!report.allOk) {
-            // Throwing from inside fc.asyncProperty triggers
-            // shrinking; the error message reaches the eventual
-            // `it` assertion with the shrunk sequence inlined.
-            throw new Error(formatReport(report));
-          }
+            if (!report.allOk) {
+              // Throwing from inside fc.asyncProperty triggers
+              // shrinking; the error message reaches the eventual
+              // `it` assertion with the shrunk sequence inlined.
+              throw new Error(formatReport(report));
+            }
+          },
+        ),
+        {
+          numRuns: 5,
+          timeout: 60_000,
+          verbose: true,
         },
       ),
-      {
-        numRuns: 5,
-        timeout: 60_000,
-        verbose: true,
-      },
+      // fc.assert wraps the inner throw with "Property failed after N tests..."
+      // and includes the inner formatReport message as part of "Got error:".
+      // Match the outer wrapper string (specific to fast-check) plus the
+      // expectation that the counterexample is non-empty.
+      /Property failed after.*Counterexample/s,
+      '#341 — random op sequences trigger I1/I2 violations',
     );
   });
 

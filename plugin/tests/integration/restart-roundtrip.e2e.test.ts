@@ -6,6 +6,7 @@ import { ShadowVaultBootstrap } from '../../src/shadow/ShadowVaultBootstrap';
 import { ObsidianRegistry } from '../../src/shadow/ObsidianRegistry';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
 import { assertConfigRoundTrip } from './helpers/assertConfigRoundTrip';
+import { expectFailingWithShape } from './helpers/expectFailingWithShape';
 import type { SshProfile } from '../../src/types';
 
 /**
@@ -76,6 +77,11 @@ describe('Layer 2 — shared Obsidian config round-trip across plugin restart', 
     baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-roundtrip-base-'));
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-roundtrip-home-'));
     registryConfigPath = path.join(tmpHome, 'obsidian.json');
+    // ObsidianRegistry.register() reads this file before writing, so
+    // it must exist with at least a minimal valid shape. Production
+    // Obsidian creates it on first launch; our tests stand in for
+    // that.
+    fs.writeFileSync(registryConfigPath, JSON.stringify({ vaults: {} }) + '\n', 'utf-8');
 
     // Synthetic source plugin tree: just enough files for
     // `installPlugin` to copy/symlink. The bootstrap doesn't care
@@ -102,66 +108,82 @@ describe('Layer 2 — shared Obsidian config round-trip across plugin restart', 
 
   // ── #342 regression cases ──────────────────────────────────────────────
 
-  it.fails('app.json round-trips: remote→local pull during bootstrap (issue #342)', async () => {
+  it('app.json — TODAY: bootstrap does NOT pull remote app.json (#342)', async () => {
     const profile = makeBootstrapProfile(remoteClient.vaultRoot, 'rt-app');
-    await assertConfigRoundTrip({
-      label: 'app.json',
-      remoteClient,
-      bootstrap,
-      profile,
-      allProfiles: [profile],
-      configBasename: 'app.json',
-      remoteContent: {
-        useMarkdownLinks: false,
-        newLinkFormat: 'shortest',
-        attachmentFolderPath: 'attachments',
-      },
-    });
+    await expectFailingWithShape(
+      () => assertConfigRoundTrip({
+        label: 'app.json',
+        remoteClient,
+        bootstrap,
+        profile,
+        allProfiles: [profile],
+        configBasename: 'app.json',
+        remoteContent: {
+          useMarkdownLinks: false,
+          newLinkFormat: 'shortest',
+          attachmentFolderPath: 'attachments',
+        },
+      }),
+      /local shadow vault missing/,
+      '#342 — app.json not pulled by bootstrap (the user-facing reproducer)',
+    );
   });
 
-  it.fails('appearance.json round-trips: theme survives plugin restart', async () => {
+  it('appearance.json — TODAY: bootstrap does NOT pull remote appearance.json (#342)', async () => {
     const profile = makeBootstrapProfile(remoteClient.vaultRoot, 'rt-appearance');
-    await assertConfigRoundTrip({
-      label: 'appearance.json',
-      remoteClient,
-      bootstrap,
-      profile,
-      allProfiles: [profile],
-      configBasename: 'appearance.json',
-      remoteContent: {
-        baseFontSize: 16,
-        theme: 'obsidian',
-        cssTheme: 'Things',
-      },
-    });
+    await expectFailingWithShape(
+      () => assertConfigRoundTrip({
+        label: 'appearance.json',
+        remoteClient,
+        bootstrap,
+        profile,
+        allProfiles: [profile],
+        configBasename: 'appearance.json',
+        remoteContent: {
+          baseFontSize: 16,
+          theme: 'obsidian',
+          cssTheme: 'Things',
+        },
+      }),
+      /local shadow vault missing/,
+      '#342 — appearance.json not pulled by bootstrap',
+    );
   });
 
-  it.fails('core-plugins.json round-trips: enabled built-ins survive restart', async () => {
+  it('core-plugins.json — TODAY: bootstrap does NOT pull remote core-plugins.json (#342)', async () => {
     const profile = makeBootstrapProfile(remoteClient.vaultRoot, 'rt-core-plugins');
-    await assertConfigRoundTrip({
-      label: 'core-plugins.json',
-      remoteClient,
-      bootstrap,
-      profile,
-      allProfiles: [profile],
-      configBasename: 'core-plugins.json',
-      remoteContent: ['file-explorer', 'search', 'graph', 'backlink'],
-    });
+    await expectFailingWithShape(
+      () => assertConfigRoundTrip({
+        label: 'core-plugins.json',
+        remoteClient,
+        bootstrap,
+        profile,
+        allProfiles: [profile],
+        configBasename: 'core-plugins.json',
+        remoteContent: ['file-explorer', 'search', 'graph', 'backlink'],
+      }),
+      /local shadow vault missing/,
+      '#342 — core-plugins.json not pulled by bootstrap',
+    );
   });
 
-  it.fails('hotkeys.json round-trips: keybinding overrides survive restart', async () => {
+  it('hotkeys.json — TODAY: bootstrap does NOT pull remote hotkeys.json (#342)', async () => {
     const profile = makeBootstrapProfile(remoteClient.vaultRoot, 'rt-hotkeys');
-    await assertConfigRoundTrip({
-      label: 'hotkeys.json',
-      remoteClient,
-      bootstrap,
-      profile,
-      allProfiles: [profile],
-      configBasename: 'hotkeys.json',
-      remoteContent: {
-        'editor:toggle-bold': [{ modifiers: ['Mod'], key: 'B' }],
-      },
-    });
+    await expectFailingWithShape(
+      () => assertConfigRoundTrip({
+        label: 'hotkeys.json',
+        remoteClient,
+        bootstrap,
+        profile,
+        allProfiles: [profile],
+        configBasename: 'hotkeys.json',
+        remoteContent: {
+          'editor:toggle-bold': [{ modifiers: ['Mod'], key: 'B' }],
+        },
+      }),
+      /local shadow vault missing/,
+      '#342 — hotkeys.json not pulled by bootstrap',
+    );
   });
 });
 

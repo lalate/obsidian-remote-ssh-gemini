@@ -11,6 +11,7 @@ import { buildRpcClient, type RpcClientHandle } from './helpers/multiclientRpc';
 import { TEST_PRIVATE_KEY } from './helpers/makeAdapter';
 import { assertSelfReflect } from './helpers/assertSelfReflect';
 import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
+import { expectFailingWithShape } from './helpers/expectFailingWithShape';
 
 /**
  * Layer 1 (extended) — writer self-reflect over **RPC transport**.
@@ -91,51 +92,67 @@ describe('Layer 1 — writer self-reflect (RPC transport)', () => {
     if (daemon) await daemon.teardown();
   });
 
-  it.fails('write — RPC adapter.write fires vault.trigger("create") on writer', async () => {
+  it('write — TODAY: RPC adapter.write does NOT fire vault.trigger("create") (#341)', async () => {
     const target = `${subdirRel}/note-write.bin`;
-    await assertSelfReflect({
-      label: 'rpc:write->create',
-      op: () => writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('hello-rpc'))),
-      fakeFE,
-      expect: { path: target, event: 'create' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'rpc:write->create',
+        op: () => writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('hello-rpc'))),
+        fakeFE,
+        expect: { path: target, event: 'create' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — RPC write self-reflect missing',
+    );
   });
 
-  it.fails('modify — RPC adapter.write overwrite fires vault.trigger("modify")', async () => {
+  it('modify — TODAY: RPC adapter.write (overwrite) does NOT fire vault.trigger("modify") (#341)', async () => {
     const target = `${subdirRel}/note-modify.bin`;
     await writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('v1')));
-    await assertSelfReflect({
-      label: 'rpc:write->modify',
-      op: () => writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('v2'))),
-      fakeFE,
-      expect: { path: target, event: 'modify' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'rpc:write->modify',
+        op: () => writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('v2'))),
+        fakeFE,
+        expect: { path: target, event: 'modify' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — RPC modify self-reflect missing',
+    );
   });
 
-  it.fails('rename — RPC adapter.rename fires vault.trigger("rename") on writer (issue #341)', async () => {
+  it('rename — TODAY: RPC adapter.rename does NOT fire vault.trigger("rename") (#341)', async () => {
     const oldPath = `${subdirRel}/note-rename-src.bin`;
     const newPath = `${subdirRel}/note-rename-dst.bin`;
     await writerAdapter.writeBinary(oldPath, asArrayBuffer(Buffer.from('renamed')));
-    await assertSelfReflect({
-      label: 'rpc:rename',
-      op: () => writerAdapter.rename(oldPath, newPath),
-      fakeFE,
-      expect: { path: newPath, event: 'rename' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'rpc:rename',
+        op: () => writerAdapter.rename(oldPath, newPath),
+        fakeFE,
+        expect: { path: newPath, event: 'rename' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — RPC rename self-reflect missing (proves bug not SFTP-only)',
+    );
   });
 
-  it.fails('delete — RPC adapter.remove fires vault.trigger("delete") on writer', async () => {
+  it('delete — TODAY: RPC adapter.remove does NOT fire vault.trigger("delete") (#341)', async () => {
     const target = `${subdirRel}/note-delete.bin`;
     await writerAdapter.writeBinary(target, asArrayBuffer(Buffer.from('to-delete')));
-    await assertSelfReflect({
-      label: 'rpc:delete',
-      op: () => writerAdapter.remove(target),
-      fakeFE,
-      expect: { path: target, event: 'delete' },
-      budgetMs: PER_CASE_BUDGET_MS,
-    });
+    await expectFailingWithShape(
+      () => assertSelfReflect({
+        label: 'rpc:delete',
+        op: () => writerAdapter.remove(target),
+        fakeFE,
+        expect: { path: target, event: 'delete' },
+        budgetMs: PER_CASE_BUDGET_MS,
+      }),
+      /awaitReflect failed/,
+      '#341 — RPC delete self-reflect missing',
+    );
   });
 });
