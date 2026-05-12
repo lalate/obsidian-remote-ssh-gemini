@@ -88,6 +88,9 @@ under that root.
 | `fs.trashLocal`     | `{ path }`                                     | `{}`                                |
 | `fs.watch`          | `{ path, recursive? }`                         | `{ subscriptionId }`                |
 | `fs.unwatch`        | `{ subscriptionId }`                           | `{}`                                |
+| `cli.exec`          | `{ cmd, args, cwd?, env? }`                   | `CliExecResult`                     |
+| `cli.spawn`         | `{ id, cmd, args, cwd?, env? }`               | `{ ok: true }`                      |
+| `cli.kill`          | `{ id }`                                      | `{}`                                |
 
 Shapes:
 
@@ -115,6 +118,12 @@ interface Entry {
 
 interface ReadTextResult  { content: string;        mtime: number; size: number; encoding: 'utf8'; }
 interface ReadBinaryResult { contentBase64: string; mtime: number; size: number; }
+
+interface CliExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
 ```
 
 Atomicity notes:
@@ -125,6 +134,12 @@ Atomicity notes:
 - `fs.copy` goes through the file contents (no server-side reflink).
 - `fs.trashLocal` moves the path under `<vaultRoot>/.trash/…`,
   creating intermediate dirs as needed.
+
+CLI notes:
+- `cli.exec` / `cli.spawn` / `cli.kill` are auth-gated just like `fs.*`.
+- The current daemon only permits whitelisted command names (`gemini`, `git`).
+- `cwd` is vault-relative; omitted `cwd` defaults to the vault root.
+- `env` adds/overrides process environment variables for the spawned command.
 
 ## Notifications (server → client)
 
@@ -151,6 +166,36 @@ The server pushes notifications on subscribed paths:
   debounce on their side if they want UI-friendly throttling.
 - An `fs.watch` subscription with `recursive: true` emits events for
   every descendant.
+
+CLI streaming notifications:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "cli.output",
+  "params": {
+    "id": "client-correlation-id",
+    "stream": "stdout",
+    "data": "chunk text"
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "cli.done",
+  "params": {
+    "id": "client-correlation-id",
+    "exitCode": 0,
+    "error": ""
+  }
+}
+```
+
+- `cli.output.stream` is `stdout` or `stderr`.
+- `cli.done` is sent once per `cli.spawn` id when the process exits.
+- `cli.done.error` is present only when the process failed before a normal exit-code path.
 
 ## Error codes
 
