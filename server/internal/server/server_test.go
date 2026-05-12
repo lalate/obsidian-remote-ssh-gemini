@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -88,6 +89,9 @@ func startTestServer(t *testing.T) *testServer {
 	disp.Handle("fs.trashLocal", handlers.RequireAuth(handlers.FsTrashLocal(vaultRoot)))
 	disp.Handle("fs.watch", handlers.RequireAuth(handlers.FsWatch(w, nil)))
 	disp.Handle("fs.unwatch", handlers.RequireAuth(handlers.FsUnwatch(w)))
+	disp.Handle("cli.exec", handlers.RequireAuth(handlers.CliExec(vaultRoot)))
+	disp.Handle("cli.spawn", handlers.RequireAuth(handlers.CliSpawn(vaultRoot)))
+	disp.Handle("cli.kill", handlers.RequireAuth(handlers.CliKill()))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -232,6 +236,38 @@ func TestServer_FsOpsRequireAuth(t *testing.T) {
 	_, errObj := c.call(t, "fs.list", map[string]string{"path": ""})
 	if errObj == nil || errObj.Code != proto.ErrorAuthRequired {
 		t.Fatalf("want AuthRequired before auth, got %+v", errObj)
+	}
+}
+
+func TestServer_CliExec_AfterAuth(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found on PATH")
+	}
+
+	ts := startTestServer(t)
+	c := ts.dial(t)
+
+	if _, errObj := c.call(t, "auth", map[string]string{"token": string(ts.token)}); errObj != nil {
+		t.Fatalf("auth: %+v", errObj)
+	}
+
+	result, errObj := c.call(t, "cli.exec", map[string]interface{}{
+		"cmd":  "git",
+		"args": []string{"--version"},
+	})
+	if errObj != nil {
+		t.Fatalf("cli.exec: %+v", errObj)
+	}
+
+	var got proto.CliExecResult
+	if err := json.Unmarshal(result, &got); err != nil {
+		t.Fatalf("unmarshal cli.exec result: %v", err)
+	}
+	if got.ExitCode != 0 {
+		t.Fatalf("exitCode = %d, want 0 (stderr=%q)", got.ExitCode, got.Stderr)
+	}
+	if !strings.Contains(strings.ToLower(got.Stdout), "git version") {
+		t.Fatalf("stdout = %q, want to contain git version", got.Stdout)
 	}
 }
 
@@ -490,6 +526,7 @@ func TestServer_AuthThenServerInfo(t *testing.T) {
 	}
 	wantCaps := []string{
 		"auth",
+		"cli.exec", "cli.kill", "cli.spawn",
 		"fs.append", "fs.appendBinary", "fs.copy",
 		"fs.exists", "fs.list", "fs.mkdir",
 		"fs.readBinary", "fs.readText",
