@@ -271,6 +271,96 @@ func TestServer_CliExec_AfterAuth(t *testing.T) {
 	}
 }
 
+func TestServer_CliSpawn_EmitsOutputAndDone(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found on PATH")
+	}
+
+	ts := startTestServer(t)
+	c := ts.dial(t)
+
+	if _, errObj := c.call(t, "auth", map[string]string{"token": string(ts.token)}); errObj != nil {
+		t.Fatalf("auth: %+v", errObj)
+	}
+
+	spawnID := "spawn-it-1"
+	result, errObj := c.call(t, "cli.spawn", map[string]interface{}{
+		"id":   spawnID,
+		"cmd":  "git",
+		"args": []string{"--version"},
+	})
+	if errObj != nil {
+		t.Fatalf("cli.spawn: %+v", errObj)
+	}
+	var spawnOK proto.CliSpawnResult
+	if err := json.Unmarshal(result, &spawnOK); err != nil {
+		t.Fatalf("unmarshal cli.spawn result: %v", err)
+	}
+	if !spawnOK.OK {
+		t.Fatal("cli.spawn should return ok=true")
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	haveOutput := false
+	haveDone := false
+	for time.Now().Before(deadline) && !haveDone {
+		_ = c.conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		body, err := rpc.ReadFrame(c.reader, 0)
+		if err != nil {
+			continue
+		}
+		var env struct {
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(body, &env); err != nil {
+			continue
+		}
+		switch env.Method {
+		case "cli.output":
+			var p proto.CliOutputParams
+			if err := json.Unmarshal(env.Params, &p); err != nil {
+				t.Fatalf("unmarshal cli.output params: %v", err)
+			}
+			if p.ID == spawnID {
+				haveOutput = true
+			}
+		case "cli.done":
+			var p proto.CliDoneParams
+			if err := json.Unmarshal(env.Params, &p); err != nil {
+				t.Fatalf("unmarshal cli.done params: %v", err)
+			}
+			if p.ID == spawnID {
+				if p.ExitCode != 0 {
+					t.Fatalf("cli.done exitCode = %d, want 0 (error=%q)", p.ExitCode, p.Error)
+				}
+				haveDone = true
+			}
+		}
+	}
+	_ = c.conn.SetReadDeadline(time.Time{})
+	if !haveDone {
+		t.Fatal("never received cli.done within deadline")
+	}
+	if !haveOutput {
+		t.Fatal("never received cli.output for spawned process")
+	}
+}
+
+func TestServer_CliKill_UnknownID(t *testing.T) {
+	ts := startTestServer(t)
+	c := ts.dial(t)
+
+	if _, errObj := c.call(t, "auth", map[string]string{"token": string(ts.token)}); errObj != nil {
+		t.Fatalf("auth: %+v", errObj)
+	}
+
+	_, errObj := c.call(t, "cli.kill", map[string]interface{}{"id": "no-such-process"})
+	if errObj == nil || errObj.Code != proto.ErrorInvalidParams {
+		t.Fatalf("want InvalidParams, got %+v", errObj)
+	}
+}
+
 func TestServer_ReadPipeline(t *testing.T) {
 	ts := startTestServer(t)
 
