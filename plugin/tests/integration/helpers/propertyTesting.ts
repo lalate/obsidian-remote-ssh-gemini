@@ -82,7 +82,9 @@ export function opSequenceArbitrary(
     // Shuffle the fresh pool deterministically per-run via fc so
     // shrinking can collapse "pick fresh[2] then fresh[3]" to
     // "pick fresh[0]" — keeps the failure diagnostic minimal.
-    const shuffledFresh = g(fc.shuffledSubarray(freshPool, { minLength: freshPool.length, maxLength: freshPool.length }));
+    // The `g` callback in fast-check 4.x's fc.gen() takes
+    // (builderFactory, ...args), not a pre-built Arbitrary.
+    const shuffledFresh = g(fc.shuffledSubarray, freshPool, { minLength: freshPool.length, maxLength: freshPool.length });
 
     let freshIdx = 0;
     const takeFresh = (): string | null => {
@@ -93,7 +95,7 @@ export function opSequenceArbitrary(
       return null;
     };
 
-    const length = g(fc.integer({ min: minOps, max: maxOps }));
+    const length = g(fc.integer, { min: minOps, max: maxOps });
     const ops: AdapterOpKind[] = [];
 
     for (let i = 0; i < length; i++) {
@@ -103,19 +105,19 @@ export function opSequenceArbitrary(
         const path = takeFresh();
         if (!path) break;
         live.add(path);
-        ops.push({ kind: 'write', path, content: toArrayBuffer(g(contentArb)) });
+        ops.push({ kind: 'write', path, content: toArrayBuffer(g(() => contentArb)) });
         continue;
       }
 
-      const kind = g(opKindArb);
+      const kind = g(() => opKindArb);
       const liveArr = [...live];
-      const pickLive = (): string => liveArr[g(fc.integer({ min: 0, max: liveArr.length - 1 }))];
+      const pickLive = (): string => liveArr[g(fc.integer, { min: 0, max: liveArr.length - 1 })];
 
       switch (kind) {
         case 'modify': {
           // adapter.writeBinary on an existing path is a modify.
           const path = pickLive();
-          ops.push({ kind: 'write', path, content: toArrayBuffer(g(contentArb)) });
+          ops.push({ kind: 'write', path, content: toArrayBuffer(g(() => contentArb)) });
           continue;
         }
         case 'remove': {
@@ -130,7 +132,7 @@ export function opSequenceArbitrary(
           if (!newPath) {
             // Fresh pool exhausted; fall back to a modify so the
             // sequence stays valid.
-            ops.push({ kind: 'write', path: oldPath, content: toArrayBuffer(g(contentArb)) });
+            ops.push({ kind: 'write', path: oldPath, content: toArrayBuffer(g(() => contentArb)) });
             continue;
           }
           live.delete(oldPath);
