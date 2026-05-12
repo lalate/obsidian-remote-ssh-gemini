@@ -78,7 +78,51 @@ export type MethodName =
   | 'fs.rename'
   | 'fs.copy'
   | 'fs.watch'
-  | 'fs.unwatch';
+  | 'fs.unwatch'
+  | 'cli.exec'
+  | 'cli.spawn'
+  | 'cli.kill';
+
+export interface CliExecParams {
+  cmd: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface CliExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export interface CliSpawnParams {
+  id: string;
+  cmd: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface CliSpawnResult {
+  ok: boolean;
+}
+
+export interface CliKillParams {
+  id: string;
+}
+
+export interface CliOutputParams {
+  id: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+}
+
+export interface CliDoneParams {
+  id: string;
+  exitCode: number;
+  error?: string;
+}
 
 export enum ErrorCode {
   ParseError         = -32700,
