@@ -1,6 +1,6 @@
 {
   "name": "obsidian-remote-ssh",
-  "version": "1.0.49-beta.0",
+  "version": "1.0.49-beta.1",
   "description": "VS Code Remote SSH-like experience for Obsidian",
   "main": "main.js",
   "scripts": {
@@ -53,6 +53,7 @@
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
     "eslint-plugin-obsidianmd": "^0.2.9",
+    "fast-check": "^4.8.0",
     "jsdom": "^29.1.1",
     "obsidian": "latest",
     "typescript": "^6.0.3",
