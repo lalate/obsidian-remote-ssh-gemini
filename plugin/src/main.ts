@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import { StatusBar } from './ui/StatusBar';
 import { ConnectModal } from './ui/ConnectModal';
 import { RemoteTerminalView, VIEW_TYPE_REMOTE_TERMINAL } from './ui/RemoteTerminalView';
+import { CliTerminalView, VIEW_TYPE_CLI_TERMINAL } from './ui/CliTerminalView';
 import { SettingsTab } from './settings/SettingsTab';
 import { logger } from './util/logger';
 import { classifyToNotice } from './transport/errorTaxonomy';
@@ -215,6 +216,21 @@ export default class RemoteSshPlugin extends Plugin {
       getClient: () => this.conn.client.isAlive() ? this.conn.client : null,
       settings: this.settings,
     }));
+
+    this.registerView(VIEW_TYPE_CLI_TERMINAL, leaf => new CliTerminalView(leaf, {
+      getRpc: () => this.conn.rpcConnection?.rpc ?? null,
+    }));
+
+    this.addCommand({
+      id: 'open-cli-terminal',
+      name: 'Open Gemini CLI terminal',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        if (checking) return ready;
+        if (ready) void this.openCliTerminal();
+        return true;
+      },
+    });
 
     this.addCommand({
       id: 'open-terminal',
@@ -641,6 +657,21 @@ export default class RemoteSshPlugin extends Plugin {
     } finally {
       this.openingTerminal = false;
     }
+  }
+
+  async openCliTerminal(): Promise<void> {
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CLI_TERMINAL);
+    if (existing.length > 0) {
+      this.app.workspace.setActiveLeaf(existing[0], { focus: true });
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (!leaf) {
+      new Notice('Remote SSH: no available workspace leaf to open the CLI terminal in');
+      return;
+    }
+    await leaf.setViewState({ type: VIEW_TYPE_CLI_TERMINAL, active: true });
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
   }
 
   /**

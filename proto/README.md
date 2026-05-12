@@ -119,11 +119,36 @@ interface Entry {
 interface ReadTextResult  { content: string;        mtime: number; size: number; encoding: 'utf8'; }
 interface ReadBinaryResult { contentBase64: string; mtime: number; size: number; }
 
-interface CliExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
+// ── cli.exec ──────────────────────────────────────────────────────────
+interface CliExecParams {
+  cmd: string;              // whitelisted binary name (e.g. "gemini", "git")
+  args: string[];           // command-line arguments
+  cwd?: string;             // vault-relative working dir; defaults to vault root
+  env?: Record<string, string>; // extra env vars merged into the process environment
 }
+interface CliExecResult {
+  stdout: string;           // full stdout captured after process exits
+  stderr: string;           // full stderr captured after process exits
+  exitCode: number;         // process exit code (0 = success)
+}
+
+// ── cli.spawn ─────────────────────────────────────────────────────────
+interface CliSpawnParams {
+  id: string;               // client-generated correlation id (e.g. UUID); must be unique per session
+  cmd: string;              // whitelisted binary name
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+interface CliSpawnResult {
+  ok: boolean;              // always true on success; errors are returned as JSON-RPC errors
+}
+
+// ── cli.kill ──────────────────────────────────────────────────────────
+interface CliKillParams {
+  id: string;               // correlation id passed to cli.spawn
+}
+// cli.kill result: {} (empty object)
 ```
 
 Atomicity notes:
@@ -168,6 +193,24 @@ The server pushes notifications on subscribed paths:
   every descendant.
 
 CLI streaming notifications:
+
+```ts
+// Emitted once per stdout/stderr chunk while the spawned process is running.
+interface CliOutputParams {
+  id: string;               // correlation id from cli.spawn
+  stream: 'stdout' | 'stderr';
+  data: string;             // raw text chunk (UTF-8); may be any size
+}
+
+// Emitted exactly once per cli.spawn id when the process terminates.
+interface CliDoneParams {
+  id: string;               // correlation id from cli.spawn
+  exitCode: number;         // process exit code; 0 = success
+  error?: string;           // set only when the process failed to start (e.g. binary not found)
+}
+```
+
+Wire examples:
 
 ```json
 {
