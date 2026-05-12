@@ -76,13 +76,13 @@ export function opSequenceArbitrary(
 
   const contentArb = fc.uint8Array({ minLength: 1, maxLength: 32 });
 
-  return fc.gen()((g) => {
+  return fc.gen().map((g) => {
     const live = new Set<string>(opts.seedPaths);
     const freshPool = [...opts.freshPaths];
     // Shuffle the fresh pool deterministically per-run via fc so
     // shrinking can collapse "pick fresh[2] then fresh[3]" to
     // "pick fresh[0]" — keeps the failure diagnostic minimal.
-    const shuffledFresh = g(fc.shuffledSubarray, freshPool, { minLength: freshPool.length, maxLength: freshPool.length });
+    const shuffledFresh = g(fc.shuffledSubarray(freshPool, { minLength: freshPool.length, maxLength: freshPool.length }));
 
     let freshIdx = 0;
     const takeFresh = (): string | null => {
@@ -93,7 +93,7 @@ export function opSequenceArbitrary(
       return null;
     };
 
-    const length = g(fc.integer, { min: minOps, max: maxOps });
+    const length = g(fc.integer({ min: minOps, max: maxOps }));
     const ops: AdapterOpKind[] = [];
 
     for (let i = 0; i < length; i++) {
@@ -109,7 +109,7 @@ export function opSequenceArbitrary(
 
       const kind = g(opKindArb);
       const liveArr = [...live];
-      const pickLive = (): string => liveArr[g(fc.integer, { min: 0, max: liveArr.length - 1 })];
+      const pickLive = (): string => liveArr[g(fc.integer({ min: 0, max: liveArr.length - 1 }))];
 
       switch (kind) {
         case 'modify': {
