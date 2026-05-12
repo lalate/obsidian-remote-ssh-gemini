@@ -6,6 +6,7 @@ import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/ma
 import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
 import {
   runScenario,
+  formatReport,
   ALL_INVARIANTS,
   INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER,
   INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER,
@@ -64,7 +65,7 @@ describe('Layer 3 — invariant scenarios', () => {
     if (pair) await pair.cleanup();
   });
 
-  it('basic-crud — TODAY: I1 + I2 violated by every op (#341)', async () => {
+  it('basic-crud — every op satisfies I1 + I2 (#341)', async () => {
     const p1 = `inv-${stamp}-a.bin`;
     const p2 = `inv-${stamp}-b.bin`;
 
@@ -82,21 +83,10 @@ describe('Layer 3 — invariant scenarios', () => {
       invariants: [INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER, INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER],
     });
 
-    // Today report.allOk MUST be false (every op violates I1 + I2).
-    // The fix PR will replace these lines with:
-    //     expect(report.allOk, formatReport(report)).toBe(true);
-    expect(report.allOk).toBe(false);
-    const failingInvariants = new Set(
-      report.perStep
-        .flatMap((s) => s.results)
-        .filter((r) => !r.result.ok)
-        .map((r) => r.invariant),
-    );
-    expect(failingInvariants).toContain('I1.WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER');
-    expect(failingInvariants).toContain('I2.ADAPTER_OP_FIRES_MATCHING_TRIGGER');
+    expect(report.allOk, formatReport(report)).toBe(true);
   });
 
-  it('rename-chain — TODAY: I1 + I2 violated across sequential renames (#341)', async () => {
+  it('rename-chain — sequential renames preserve I1 + I2 (#341)', async () => {
     // Resets between scenarios are intentionally not done — the
     // accumulated state mirrors how Obsidian's vault state would
     // accumulate over a real session.
@@ -119,15 +109,7 @@ describe('Layer 3 — invariant scenarios', () => {
       invariants: [INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER, INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER],
     });
 
-    expect(report.allOk).toBe(false);
-    const failingInvariants = new Set(
-      report.perStep
-        .flatMap((s) => s.results)
-        .filter((r) => !r.result.ok)
-        .map((r) => r.invariant),
-    );
-    expect(failingInvariants).toContain('I1.WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER');
-    expect(failingInvariants).toContain('I2.ADAPTER_OP_FIRES_MATCHING_TRIGGER');
+    expect(report.allOk, formatReport(report)).toBe(true);
   });
 
   it('catalog completeness — every invariant has a name + description', () => {
