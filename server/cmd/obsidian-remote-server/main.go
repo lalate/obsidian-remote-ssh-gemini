@@ -176,6 +176,10 @@ func run(args []string) (int, error) {
 	// outgoing fs.changed notifications carry the matching cid.
 	disp.Handle("fs.watch", handlers.RequireAuth(handlers.FsWatch(vaultWatcher, cidCor)))
 	disp.Handle("fs.unwatch", handlers.RequireAuth(handlers.FsUnwatch(vaultWatcher)))
+	// CLI side. Methods are auth-gated and command-restricted in handlers.
+	disp.Handle("cli.exec", handlers.RequireAuth(handlers.CliExec(absRoot)))
+	disp.Handle("cli.spawn", handlers.RequireAuth(handlers.CliSpawn(absRoot)))
+	disp.Handle("cli.kill", handlers.RequireAuth(handlers.CliKill()))
 
 	// Wire signal-driven shutdown: closing the listener unwinds Serve.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
