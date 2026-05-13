@@ -26,10 +26,10 @@ func CliSpawn(vaultRoot string) rpc.Handler {
 		session := server.SessionFromContext(ctx)
 
 		// Check if we are resuming an existing process.
-		if p.ResumeFrom > 0 {
+		if p.ResumeFrom != nil {
 			if proc, ok := getCliProcess(p.ID); ok {
 				// Re-attach and resume.
-				proc.streamer.Resume(session, p.ResumeFrom)
+				proc.streamer.Resume(session, *p.ResumeFrom)
 				return proto.CliSpawnResult{OK: true}, nil
 			}
 			return nil, rpc.ErrInvalidParams("cli.spawn: resume requested for unknown id: " + p.ID)

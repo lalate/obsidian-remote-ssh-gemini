@@ -138,6 +138,156 @@ func TestCliKill_RunningProcess(t *testing.T) {
 	}
 }
 
+func TestCliSpawn_ResumeUnknownID(t *testing.T) {
+	h := CliSpawn(t.TempDir())
+	sess := server.NewSession()
+	ctx := server.WithSession(context.Background(), sess)
+	from := 0
+	raw, _ := json.Marshal(proto.CliSpawnParams{
+		ID:         "unknown-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+		ResumeFrom: &from,
+	})
+
+	_, rerr := h(ctx, raw)
+	if rerr == nil || rerr.Code != proto.ErrorInvalidParams {
+		t.Fatalf("want InvalidParams for unknown resume id, got %+v", rerr)
+	}
+}
+
+func TestCliSpawn_EmitsBatchNotification(t *testing.T) {
+	old := cliWhitelist
+	cliWhitelist = map[string]bool{os.Args[0]: true}
+	t.Cleanup(func() { cliWhitelist = old })
+
+	sess := server.NewSession()
+	pushes := make(chan cliPush, 64)
+	sess.SetNotifier(func(method string, params interface{}, _ *proto.Meta) error {
+		pushes <- cliPush{method: method, params: params}
+		return nil
+	})
+	ctx := server.WithSession(context.Background(), sess)
+
+	id := "spawn-batch-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	h := CliSpawn(t.TempDir())
+	raw, _ := json.Marshal(proto.CliSpawnParams{
+		ID:      id,
+		Cmd:     os.Args[0],
+		Args:    []string{"-test.run=TestCliSpawnHelperProcess", "--", "stream"},
+		Env:     map[string]string{"GO_WANT_SPAWN_HELPER": "1"},
+		Persist: true,
+	})
+
+	if _, rerr := h(ctx, raw); rerr != nil {
+		t.Fatalf("unexpected rpc error: %+v", rerr)
+	}
+
+	haveBatch := false
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-pushes:
+			switch ev.method {
+			case "cli.output.batch":
+				p := ev.params.(proto.CliOutputBatchParams)
+				if len(p.Chunks) > 0 {
+					haveBatch = true
+				}
+			case "cli.done":
+				if !haveBatch {
+					t.Fatal("expected at least one cli.output.batch before cli.done")
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for cli.done")
+		}
+	}
+}
+
+func TestCliSpawn_ResumeFromZeroReplaysPersistedOutput(t *testing.T) {
+	old := cliWhitelist
+	cliWhitelist = map[string]bool{os.Args[0]: true}
+	t.Cleanup(func() { cliWhitelist = old })
+
+	id := "spawn-resume-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	h := CliSpawn(t.TempDir())
+
+	sess1 := server.NewSession()
+	pushes1 := make(chan cliPush, 64)
+	sess1.SetNotifier(func(method string, params interface{}, _ *proto.Meta) error {
+		pushes1 <- cliPush{method: method, params: params}
+		return nil
+	})
+	ctx1 := server.WithSession(context.Background(), sess1)
+
+	spawnRaw, _ := json.Marshal(proto.CliSpawnParams{
+		ID:      id,
+		Cmd:     os.Args[0],
+		Args:    []string{"-test.run=TestCliSpawnHelperProcess", "--", "sleep"},
+		Env:     map[string]string{"GO_WANT_SPAWN_HELPER": "1"},
+		Persist: true,
+	})
+	if _, rerr := h(ctx1, spawnRaw); rerr != nil {
+		t.Fatalf("spawn failed: %+v", rerr)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-pushes1:
+			if ev.method == "cli.output" {
+				goto resume
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for first cli.output")
+		}
+	}
+
+resume:
+	sess2 := server.NewSession()
+	pushes2 := make(chan cliPush, 64)
+	sess2.SetNotifier(func(method string, params interface{}, _ *proto.Meta) error {
+		pushes2 <- cliPush{method: method, params: params}
+		return nil
+	})
+	ctx2 := server.WithSession(context.Background(), sess2)
+	from := 0
+	resumeRaw, _ := json.Marshal(proto.CliSpawnParams{ID: id, ResumeFrom: &from})
+	if _, rerr := h(ctx2, resumeRaw); rerr != nil {
+		t.Fatalf("resume failed: %+v", rerr)
+	}
+
+	haveReplay := false
+	resumeDeadline := time.After(3 * time.Second)
+	for {
+		select {
+		case ev := <-pushes2:
+			if ev.method != "cli.output.batch" {
+				continue
+			}
+			batch := ev.params.(proto.CliOutputBatchParams)
+			for _, chunk := range batch.Chunks {
+				if chunk.ID == id && chunk.Seq == 0 {
+					haveReplay = true
+					break
+				}
+			}
+			if haveReplay {
+				goto kill
+			}
+		case <-resumeDeadline:
+			t.Fatal("timeout waiting for replayed cli.output.batch")
+		}
+	}
+
+kill:
+	kill := CliKill()
+	killRaw, _ := json.Marshal(proto.CliKillParams{ID: id})
+	if _, rerr := kill(ctx1, killRaw); rerr != nil {
+		t.Fatalf("kill failed: %+v", rerr)
+	}
+}
+
 func TestCliSpawnHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_SPAWN_HELPER") != "1" {
 		return

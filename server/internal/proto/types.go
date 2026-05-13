@@ -248,11 +248,13 @@ type CliExecResult struct {
 }
 
 type CliSpawnParams struct {
-	ID   string            `json:"id"`
-	Cmd  string            `json:"cmd"`
-	Args []string          `json:"args"`
-	Cwd  string            `json:"cwd,omitempty"`
-	Env  map[string]string `json:"env,omitempty"`
+	ID         string            `json:"id"`
+	Cmd        string            `json:"cmd"`
+	Args       []string          `json:"args"`
+	Cwd        string            `json:"cwd,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Persist    bool              `json:"persist,omitempty"`
+	ResumeFrom *int              `json:"resumeFrom,omitempty"`
 }
 
 type CliSpawnResult struct {
@@ -289,6 +291,11 @@ type CliOutputParams struct {
 	ID     string `json:"id"`
 	Stream string `json:"stream"`
 	Data   string `json:"data"`
+	Seq    int    `json:"seq"`
+}
+
+type CliOutputBatchParams struct {
+	Chunks []CliOutputParams `json:"chunks"`
 }
 
 type CliDoneParams struct {

@@ -76,6 +76,36 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - 検証: `server` で `go test ./...` 全件成功。
 - コミット: `29ac9f6`
 
+### 11. Phase11: 再接続リジュームのUI接続 + テスト拡充
+- [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts) を更新し、接続断を検知した際に `resumeFrom` を使って `cli.spawn` を自動再試行する復旧フローを実装。
+- [server/internal/proto/types.go](../server/internal/proto/types.go) の `CliSpawnParams.ResumeFrom` を `*int` に変更し、未指定と `0` を区別可能に修正。
+- [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go) を更新し、`resumeFrom=0` を含む再開要求を正しく処理。
+- [server/internal/handlers/cli_spawn_kill_test.go](../server/internal/handlers/cli_spawn_kill_test.go) に以下を追加:
+  - unknown id の resume が `InvalidParams` を返すこと
+  - `cli.output.batch` が送信されること
+  - `resumeFrom=0` から再送できること
+- [plugin/tests/ui/CliTerminalView.test.ts](../plugin/tests/ui/CliTerminalView.test.ts) を新設し、再接続後に `resumeFrom = lastSeq + 1` で `cli.spawn` が呼ばれることを検証。
+- 検証:
+  - `server`: `go test ./internal/handlers -run "TestCliSpawn_(ResumeUnknownID|EmitsBatchNotification|ResumeFromZeroReplaysPersistedOutput)" -v` 成功
+  - `server`: `go test ./internal/server -run TestServer_CliSpawn_EmitsOutputAndDone -v` 成功
+  - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
+  - `plugin`: `npx tsc --noEmit` 成功
+- コミット: `pending`
+
+## あなたが決めること / やること
+1. 再接続復旧のプロダクト方針を確定する
+	- 自動再開をデフォルトONにするか、確認ダイアログを挟むか
+2. ログ保持ポリシーを確定する
+	- JSONLログの保持時間、最大サイズ、削除トリガー
+3. `cli.output` と `cli.output.batch` の公開契約を確定する
+	- 両方維持か、段階的移行か、クライアント側優先ルール
+4. `mobile/dist` の運用方針を確定する
+	- Git管理するか、CI/リリース時生成に寄せるか
+5. 次PRの分割方針を確定する
+	- 例: `server-resume`, `plugin-resume-ui`, `docs+tests` の3本
+6. 受け入れ基準(DoD)を確定する
+	- 切断→再接続→欠落なしで継続表示までをE2Eで確認する基準
+
 ## 補足
 - 作業途中で Git 履歴の再構成が1回発生したが、最終的には現在の履歴を採用。
 - 未追跡の `reference/` 配下ファイルは今回のログ保存先として使用。
