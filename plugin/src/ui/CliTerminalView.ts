@@ -2,6 +2,7 @@ import { ItemView, type WorkspaceLeaf } from 'obsidian';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { RpcClient } from '../transport/RpcClient';
+import type { CliOutputParams, CliOutputBatchParams } from '../proto/types';
 import { logger } from '../util/logger';
 import { errorMessage } from '../util/errorMessage';
 
@@ -43,6 +44,7 @@ export class CliTerminalView extends ItemView {
   private runBtn: HTMLButtonElement | null = null;
   private stopBtn: HTMLButtonElement | null = null;
   private resizeTimer: number | null = null;
+  private resumeTimer: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
 
   /** Disposers for active cli.output / cli.done notification handlers. */
@@ -51,6 +53,12 @@ export class CliTerminalView extends ItemView {
   private activeSpawnId: string | null = null;
   /** Counter to generate unique spawn ids within this session. */
   private spawnSeq = 0;
+  /** Last received sequence number for the active process. */
+  private lastReceivedSeq = -1;
+  /** Last spawned command payload for reconnect-time resume calls. */
+  private lastSpawnPayload: { cmd: string; args: string[] } | null = null;
+  /** True while waiting to resume a running process after reconnect. */
+  private waitingResume = false;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -139,6 +147,10 @@ export class CliTerminalView extends ItemView {
       activeWindow.clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
     }
+    if (this.resumeTimer !== null) {
+      activeWindow.clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.disposeActiveHandlers();
@@ -165,42 +177,31 @@ export class CliTerminalView extends ItemView {
 
     const id = `cli-${++this.spawnSeq}-${Date.now()}`;
     this.activeSpawnId = id;
+    this.lastSpawnPayload = { cmd: 'gemini', args: ['--prompt', prompt] };
+    this.waitingResume = false;
 
     this.term?.writeln('');
     this.term?.writeln(`${ANSI_GREEN}▶ gemini --prompt "${prompt}"${ANSI_RESET}`);
 
-    // Subscribe to streaming notifications before the spawn call so
-    // we don't miss the first chunk if the server is very fast.
-    const disposeOutput = rpc.onNotification('cli.output', (params) => {
+    this.lastReceivedSeq = -1;
+
+    const handleChunk = (params: CliOutputParams) => {
       if (params.id !== id) return;
+      this.lastReceivedSeq = Math.max(this.lastReceivedSeq, params.seq);
       const color = params.stream === 'stderr' ? ANSI_YELLOW : '';
       // Convert \n to \r\n for xterm
       const text = params.data.replace(/\n/g, '\r\n');
       this.term?.write(color ? `${color}${text}${ANSI_RESET}` : text);
-    });
+    };
 
-    const disposesDone = rpc.onNotification('cli.done', (params) => {
-      if (params.id !== id) return;
-      this.disposeActiveHandlers();
-      this.activeSpawnId = null;
-      this.term?.writeln('');
-      if (params.error) {
-        this.term?.writeln(`${ANSI_RED}[Process error: ${params.error}]${ANSI_RESET}`);
-      } else if (params.exitCode !== 0) {
-        this.term?.writeln(`${ANSI_YELLOW}[Exited with code ${params.exitCode}]${ANSI_RESET}`);
-      } else {
-        this.term?.writeln(`${ANSI_GREEN}[Done]${ANSI_RESET}`);
-      }
-      this.setRunning(false);
-    });
-
-    this.activeDisposers = [disposeOutput, disposesDone];
+    this.attachProcessHandlers(rpc, id, handleChunk);
 
     try {
       await rpc.call('cli.spawn', {
         id,
-        cmd: 'gemini',
-        args: ['--prompt', prompt],
+        cmd: this.lastSpawnPayload.cmd,
+        args: this.lastSpawnPayload.args,
+        persist: true,
       });
     } catch (e) {
       this.disposeActiveHandlers();
@@ -225,6 +226,108 @@ export class CliTerminalView extends ItemView {
   private disposeActiveHandlers(): void {
     for (const d of this.activeDisposers) d();
     this.activeDisposers = [];
+  }
+
+  private attachProcessHandlers(
+    rpc: RpcClient,
+    id: string,
+    onChunk: (params: CliOutputParams) => void,
+  ): void {
+    this.disposeActiveHandlers();
+
+    const disposeOutput = rpc.onNotification('cli.output', (params) => {
+      onChunk(params as CliOutputParams);
+    });
+
+    const disposeBatch = rpc.onNotification('cli.output.batch', (params) => {
+      const batch = params as CliOutputBatchParams;
+      for (const chunk of batch.chunks) {
+        onChunk(chunk);
+      }
+    });
+
+    const disposeDone = rpc.onNotification('cli.done', (params) => {
+      if (params.id !== id) return;
+      this.disposeActiveHandlers();
+      this.activeSpawnId = null;
+      this.lastSpawnPayload = null;
+      this.waitingResume = false;
+      this.term?.writeln('');
+      if (params.error) {
+        this.term?.writeln(`${ANSI_RED}[Process error: ${params.error}]${ANSI_RESET}`);
+      } else if (params.exitCode !== 0) {
+        this.term?.writeln(`${ANSI_YELLOW}[Exited with code ${params.exitCode}]${ANSI_RESET}`);
+      } else {
+        this.term?.writeln(`${ANSI_GREEN}[Done]${ANSI_RESET}`);
+      }
+      this.setRunning(false);
+    });
+
+    const disposeClose = rpc.onClose(() => {
+      if (this.activeSpawnId !== id || !this.lastSpawnPayload) return;
+      this.disposeActiveHandlers();
+      this.waitingResume = true;
+      this.term?.writeln('');
+      this.term?.writeln(`${ANSI_YELLOW}[Connection lost. Attempting to resume…]${ANSI_RESET}`);
+      this.scheduleResumeAttempt();
+    });
+
+    this.activeDisposers = [disposeOutput, disposeBatch, disposeDone, disposeClose];
+  }
+
+  private scheduleResumeAttempt(): void {
+    if (this.resumeTimer !== null) activeWindow.clearTimeout(this.resumeTimer);
+    this.resumeTimer = activeWindow.setTimeout(() => {
+      this.resumeTimer = null;
+      void this.tryResumeActiveProcess();
+    }, 1000);
+  }
+
+  private async tryResumeActiveProcess(): Promise<void> {
+    if (!this.waitingResume || !this.activeSpawnId || !this.lastSpawnPayload) return;
+
+    const rpc = this.deps.getRpc();
+    if (!rpc || rpc.isClosed()) {
+      this.scheduleResumeAttempt();
+      return;
+    }
+
+    const id = this.activeSpawnId;
+    const resumeFrom = Math.max(0, this.lastReceivedSeq + 1);
+    const onChunk = (params: CliOutputParams) => {
+      if (params.id !== id) return;
+      this.lastReceivedSeq = Math.max(this.lastReceivedSeq, params.seq);
+      const color = params.stream === 'stderr' ? ANSI_YELLOW : '';
+      const text = params.data.replace(/\n/g, '\r\n');
+      this.term?.write(color ? `${color}${text}${ANSI_RESET}` : text);
+    };
+
+    this.attachProcessHandlers(rpc, id, onChunk);
+
+    try {
+      await rpc.call('cli.spawn', {
+        id,
+        cmd: this.lastSpawnPayload.cmd,
+        args: this.lastSpawnPayload.args,
+        persist: true,
+        resumeFrom,
+      });
+      this.waitingResume = false;
+      this.term?.writeln(`${ANSI_CYAN}[Resumed from seq ${resumeFrom}]${ANSI_RESET}`);
+    } catch (e) {
+      const msg = errorMessage(e);
+      if (msg.includes('unknown id')) {
+        this.waitingResume = false;
+        this.activeSpawnId = null;
+        this.lastSpawnPayload = null;
+        this.setRunning(false);
+        this.disposeActiveHandlers();
+        this.term?.writeln(`${ANSI_RED}[Resume failed: process no longer exists]${ANSI_RESET}`);
+        return;
+      }
+      logger.warn(`CliTerminalView: resume error: ${msg}`);
+      this.scheduleResumeAttempt();
+    }
   }
 
   private setRunning(running: boolean): void {
