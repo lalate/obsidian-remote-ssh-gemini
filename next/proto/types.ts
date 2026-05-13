@@ -102,6 +102,8 @@ export interface CliSpawnParams {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  persist?: boolean;
+  resumeFrom?: number;
 }
 
 export interface CliSpawnResult {
@@ -116,6 +118,11 @@ export interface CliOutputParams {
   id: string;
   stream: 'stdout' | 'stderr';
   data: string;
+  seq: number;
+}
+
+export interface CliOutputBatchParams {
+  chunks: CliOutputParams[];
 }
 
 export interface CliDoneParams {

@@ -3,14 +3,14 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 
-	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/rpc"
-	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/server"
+	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/vaultfs"
 )
 
 var cliWhitelist = map[string]bool{
@@ -32,11 +32,45 @@ func validateCliCommand(cmd string) *rpc.Error {
 	return nil
 }
 
-func resolveCliWorkingDir(vaultRoot, cwd string) (string, *rpc.Error) {
-	if cwd == "" {
-		return vaultRoot, nil
+func validateWorkingDir(vaultRoot, requestedCwd string) (string, *rpc.Error) {
+	// Resolve the root once so both symlink and boundary checks use the
+	// same canonical base path.
+	resolvedRoot, err := filepath.EvalSymlinks(vaultRoot)
+	if err != nil {
+		return "", rpc.ErrInternal("failed to resolve vault root symlinks: " + err.Error())
 	}
-	return resolveOrErr(vaultRoot, cwd)
+
+	var targetDir string
+	if requestedCwd == "" {
+		targetDir = resolvedRoot
+	} else {
+		lexical, err := vaultfs.Resolve(resolvedRoot, requestedCwd)
+		if err != nil {
+			return "", rpc.ErrPathOutsideVault(requestedCwd)
+		}
+		targetDir = lexical
+	}
+
+	// Resolve symlinks to prevent escapes.
+	resolvedPath, err := filepath.EvalSymlinks(targetDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", rpc.ErrFileNotFound(requestedCwd)
+		}
+		return "", rpc.ErrInternal("failed to resolve symlinks: " + err.Error())
+	}
+
+	// Use filepath.Rel instead of naive prefix checks so sibling paths like
+	// /vault-escape are not treated as inside /vault.
+	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
+	if err != nil {
+		return "", rpc.ErrInternal("failed to compare paths: " + err.Error())
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", rpc.ErrPermissionDenied("path outside vault root: " + requestedCwd)
+	}
+
+	return resolvedPath, nil
 }
 
 func buildCliEnv(extra map[string]string) []string {
@@ -48,7 +82,8 @@ func buildCliEnv(extra map[string]string) []string {
 }
 
 type cliProcess struct {
-	cmd *exec.Cmd
+	cmd      *exec.Cmd
+	streamer *cliStreamer
 }
 
 var cliProcessStore = struct {
@@ -77,23 +112,6 @@ func deleteCliProcess(id string) {
 	cliProcessStore.mu.Lock()
 	defer cliProcessStore.mu.Unlock()
 	delete(cliProcessStore.m, id)
-}
-
-func streamCliOutput(session *server.Session, id, stream string, r io.Reader) {
-	buf := make([]byte, 4096)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			_ = session.SendNotification("cli.output", proto.CliOutputParams{
-				ID:     id,
-				Stream: stream,
-				Data:   string(buf[:n]),
-			})
-		}
-		if err != nil {
-			return
-		}
-	}
 }
 
 func killProcess(_ context.Context, p *cliProcess) error {
