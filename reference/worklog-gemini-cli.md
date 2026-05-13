@@ -53,6 +53,29 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - [plugin/src/main.ts](../plugin/src/main.ts) に `registerView(VIEW_TYPE_CLI_TERMINAL, ...)` と `open-cli-terminal` コマンド（`rpcConnection` 接続時のみ有効）を追加。
 - コミット: `42a1060`
 
+### 8. Phase8: プロトコル拡張と堅牢化 (exSpec.md 対応)
+- [GEMINI.md](../GEMINI.md) を新設し、パス検証、JSONLログ、スロットリングの設計指針を明文化。
+- [proto/README.md](../proto/README.md) に `persist`, `resumeFrom`, `seq`, `cli.output.batch` を追記。
+- [server/internal/proto/types.go](../server/internal/proto/types.go) および [plugin/src/proto/types.ts](../plugin/src/proto/types.ts) の型を更新。
+- [server/internal/handlers/cli_common.go](../server/internal/handlers/cli_common.go) の `validateWorkingDir` で `filepath.EvalSymlinks` による厳格なパス検証を実装。
+- [server/internal/handlers/cli_streamer.go](../server/internal/handlers/cli_streamer.go) を新設し、JSONLログ保存、シーケンス番号管理、100ms/50件単位のスロットリングを実装。
+- [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go) を更新し、`resumeFrom` による再接続・再送処理と、永続化時のバックグラウンド実行をサポート。
+- コミット: `pending`
+
+### 9. Phase9: クライアント/UI 対応 (exSpec.md 対応)
+- [mobile/src/adapter/WsRemoteCliClient.ts](../mobile/src/adapter/WsRemoteCliClient.ts) を更新し、バッチ通知と永続化パラメータをサポート。
+- [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts) を更新し、`cli.output.batch` のハンドリングとシーケンス番号の追跡を実装。
+- [plugin/styles.css](../plugin/styles.css) に CLI ターミナル用のスタイルを追加。
+- コミット: `pending`
+
+### 10. Phase10: レビュー指摘の是正
+- [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go) を更新し、`resumeFrom` 指定時に未知の `id` へフォールスルーして再実行しないように修正（unknown id は `InvalidParams` を返却）。
+- [server/internal/handlers/cli_common.go](../server/internal/handlers/cli_common.go) の `validateWorkingDir` を更新し、`EvalSymlinks` + `filepath.Rel` で Vault 配下チェックを厳密化（prefix 判定を廃止）。
+- [server/internal/handlers/cli_streamer.go](../server/internal/handlers/cli_streamer.go) の `Resume` を更新し、再送を 50 件ごとの `cli.output.batch` に分割してバースト送信を抑制。
+- [next/proto/types.ts](../next/proto/types.ts) を更新し、`persist` / `resumeFrom` / `seq` / `CliOutputBatchParams` を同期。
+- 検証: `server` で `go test ./...` 全件成功。
+- コミット: `29ac9f6`
+
 ## 補足
 - 作業途中で Git 履歴の再構成が1回発生したが、最終的には現在の履歴を採用。
 - 未追跡の `reference/` 配下ファイルは今回のログ保存先として使用。
