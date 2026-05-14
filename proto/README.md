@@ -89,7 +89,7 @@ under that root.
 | `fs.watch`          | `{ path, recursive? }`                         | `{ subscriptionId }`                |
 | `fs.unwatch`        | `{ subscriptionId }`                           | `{}`                                |
 | `cli.exec`          | `{ cmd, args, cwd?, env? }`                   | `CliExecResult`                     |
-| `cli.spawn`         | `{ id, cmd, args, cwd?, env? }`               | `{ ok: true }`                      |
+| `cli.spawn`         | `{ id, cmd, args, cwd?, env?, persist? }`    | `{ ok: true }`                      |
 | `cli.kill`          | `{ id }`                                      | `{}`                                |
 
 Shapes:
@@ -139,6 +139,8 @@ interface CliSpawnParams {
   args: string[];
   cwd?: string;
   env?: Record<string, string>;
+  persist?: boolean;        // if true, output is logged to a file for later resumption
+  resumeFrom?: number;      // if set, start streaming from this sequence number
 }
 interface CliSpawnResult {
   ok: boolean;              // always true on success; errors are returned as JSON-RPC errors
@@ -200,6 +202,12 @@ interface CliOutputParams {
   id: string;               // correlation id from cli.spawn
   stream: 'stdout' | 'stderr';
   data: string;             // raw text chunk (UTF-8); may be any size
+  seq: number;              // sequence number for order guarantee and resync
+}
+
+// Emitted when multiple output chunks are bundled to reduce network noise.
+interface CliOutputBatchParams {
+  chunks: CliOutputParams[];
 }
 
 // Emitted exactly once per cli.spawn id when the process terminates.
@@ -219,7 +227,21 @@ Wire examples:
   "params": {
     "id": "client-correlation-id",
     "stream": "stdout",
-    "data": "chunk text"
+    "data": "chunk text",
+    "seq": 0
+  }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "cli.output.batch",
+  "params": {
+    "chunks": [
+      { "id": "id", "stream": "stdout", "data": "a", "seq": 1 },
+      { "id": "id", "stream": "stdout", "data": "b", "seq": 2 }
+    ]
   }
 }
 ```

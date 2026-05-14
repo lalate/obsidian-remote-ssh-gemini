@@ -21,7 +21,7 @@ func CliExec(vaultRoot string) rpc.Handler {
 		if e := validateCliCommand(p.Cmd); e != nil {
 			return nil, e
 		}
-		dir, e := resolveCliWorkingDir(vaultRoot, p.Cwd)
+		dir, e := validateWorkingDir(vaultRoot, p.Cwd)
 		if e != nil {
 			return nil, e
 		}

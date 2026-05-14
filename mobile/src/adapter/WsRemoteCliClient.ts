@@ -14,6 +14,11 @@ export interface CliOutputParams {
   id: string;
   stream: 'stdout' | 'stderr';
   data: string;
+  seq: number;
+}
+
+export interface CliOutputBatchParams {
+  chunks: CliOutputParams[];
 }
 
 export interface CliDoneParams {
@@ -48,6 +53,8 @@ export class WsRemoteCliClient {
     args: string[],
     cwd?: string,
     env?: Record<string, string>,
+    persist?: boolean,
+    resumeFrom?: number,
   ): Promise<CliSpawnResult> {
     return this.rpc.call('cli.spawn', {
       id,
@@ -55,6 +62,8 @@ export class WsRemoteCliClient {
       args,
       ...(cwd !== undefined ? { cwd } : {}),
       ...(env !== undefined ? { env } : {}),
+      ...(persist !== undefined ? { persist } : {}),
+      ...(resumeFrom !== undefined ? { resumeFrom } : {}),
     }) as Promise<CliSpawnResult>;
   }
 
@@ -64,6 +73,10 @@ export class WsRemoteCliClient {
 
   onOutput(handler: (params: CliOutputParams) => void): () => void {
     return this.rpc.onNotification('cli.output', (params) => handler(params as CliOutputParams));
+  }
+
+  onOutputBatch(handler: (params: CliOutputBatchParams) => void): () => void {
+    return this.rpc.onNotification('cli.output.batch', (params) => handler(params as CliOutputBatchParams));
   }
 
   onDone(handler: (params: CliDoneParams) => void): () => void {
