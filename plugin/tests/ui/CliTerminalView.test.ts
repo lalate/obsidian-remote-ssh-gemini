@@ -58,4 +58,28 @@ describe('CliTerminalView resume', () => {
       resumeFrom: 8,
     });
   });
+
+  it('queues a prompt submitted before the input row exists', async () => {
+    const { CliTerminalView } = await import('../../src/ui/CliTerminalView');
+
+    const fakeRpc = {
+      isClosed: () => false,
+      call: vi.fn(),
+      onNotification: () => () => {},
+      onClose: () => () => {},
+    };
+
+    const deps = {
+      getRpc: () => fakeRpc,
+    };
+
+    const view = new CliTerminalView({} as WorkspaceLeaf, deps as never) as unknown as {
+      queuedPrompt: string | null;
+      submitPrompt: (prompt: string) => Promise<void>;
+    };
+
+    await view.submitPrompt('  summarize this  ');
+
+    expect(view.queuedPrompt).toBe('summarize this');
+  });
 });

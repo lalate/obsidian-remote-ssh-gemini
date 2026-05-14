@@ -103,6 +103,19 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - `gh pr ready 344 --undo` により PR #344 を明示的に Draft 状態へ戻した。
 - `gh pr view 344 --json title,isDraft,state,url` で `isDraft: true` / `state: OPEN` を確認。
 
+### 15. Gemini 固有導線: Command Palette から prompt 投入
+- [plugin/src/main.ts](../plugin/src/main.ts) に以下のコマンドを追加。
+  - `Gemini: Summarize selection`
+  - `Gemini: Review selection`
+  - `Gemini: Summarize current note`
+- 各コマンドは現在の selection または note 全文を取得し、[plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts) を開いて Gemini prompt として投入する。
+- [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts) に view 外部から prompt を流し込む `submitPrompt` を追加し、input 行の生成前でも prompt をキューできるようにした。
+- [plugin/tests/ui/CliTerminalView.test.ts](../plugin/tests/ui/CliTerminalView.test.ts) に、open 前 prompt queue の回帰テストを追加。
+- 検証:
+  - `plugin`: `npx tsc --noEmit` 成功
+  - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
+- コミット: `pending`
+
 
 ## あなたが決めること / やること
 1. 再接続復旧のプロダクト方針を確定する

@@ -1,4 +1,4 @@
-import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
+import { Plugin, Notice, FileSystemAdapter, TFile, TFolder, MarkdownView } from 'obsidian';
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
 import { DEFAULT_SETTINGS } from './constants';
@@ -228,6 +228,51 @@ export default class RemoteSshPlugin extends Plugin {
         const ready = !!this.conn.rpcConnection;
         if (checking) return ready;
         if (ready) void this.openCliTerminal();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-summarize-selection',
+      name: 'Gemini: Summarize selection',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const selected = this.getActiveSelection();
+        if (checking) return ready && selected !== null;
+        if (ready && selected) void this.runGeminiPrompt(
+          'Summarize the following Markdown selection as concise bullet points and highlight any action items.',
+          selected,
+        );
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-review-selection',
+      name: 'Gemini: Review selection',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const selected = this.getActiveSelection();
+        if (checking) return ready && selected !== null;
+        if (ready && selected) void this.runGeminiPrompt(
+          'Review the following Markdown selection for clarity, correctness, and concrete improvements. Respond concisely.',
+          selected,
+        );
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-summarize-note',
+      name: 'Gemini: Summarize current note',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const note = this.getActiveNoteContent();
+        if (checking) return ready && note !== null;
+        if (ready && note) void this.runGeminiPrompt(
+          'Summarize the following note and identify the main themes, risks, and next actions.',
+          note,
+        );
         return true;
       },
     });
@@ -659,19 +704,50 @@ export default class RemoteSshPlugin extends Plugin {
     }
   }
 
-  async openCliTerminal(): Promise<void> {
+  async openCliTerminal(): Promise<CliTerminalView | null> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CLI_TERMINAL);
     if (existing.length > 0) {
       this.app.workspace.setActiveLeaf(existing[0], { focus: true });
-      return;
+      return existing[0].view instanceof CliTerminalView ? existing[0].view : null;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) {
       new Notice('Remote SSH: no available workspace leaf to open the CLI terminal in');
-      return;
+      return null;
     }
     await leaf.setViewState({ type: VIEW_TYPE_CLI_TERMINAL, active: true });
     this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    return leaf.view instanceof CliTerminalView ? leaf.view : null;
+  }
+
+  private getActiveSelection(): string | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const text = view?.editor?.getSelection().trim();
+    return text ? text : null;
+  }
+
+  private getActiveNoteContent(): string | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const text = view?.editor?.getValue().trim();
+    return text ? text : null;
+  }
+
+  private async runGeminiPrompt(instruction: string, markdown: string): Promise<void> {
+    const view = await this.openCliTerminal();
+    if (!view) return;
+
+    const activeFile = this.app.workspace.getActiveFile();
+    const fileLabel = activeFile?.path ?? '(unsaved note)';
+    const prompt = [
+      instruction,
+      '',
+      `File: ${fileLabel}`,
+      '',
+      'Markdown:',
+      markdown,
+    ].join('\n');
+
+    await view.submitPrompt(prompt);
   }
 
   /**
