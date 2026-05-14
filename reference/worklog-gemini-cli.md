@@ -77,20 +77,26 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - コミット: `29ac9f6`
 
 ### 11. Phase11: 再接続リジュームのUI接続 + テスト拡充
-- [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts) を更新し、接続断を検知した際に `resumeFrom` を使って `cli.spawn` を自動再試行する復旧フローを実装。
-- [server/internal/proto/types.go](../server/internal/proto/types.go) の `CliSpawnParams.ResumeFrom` を `*int` に変更し、未指定と `0` を区別可能に修正。
-- [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go) を更新し、`resumeFrom=0` を含む再開要求を正しく処理。
-- [server/internal/handlers/cli_spawn_kill_test.go](../server/internal/handlers/cli_spawn_kill_test.go) に以下を追加:
   - unknown id の resume が `InvalidParams` を返すこと
   - `cli.output.batch` が送信されること
   - `resumeFrom=0` から再送できること
-- [plugin/tests/ui/CliTerminalView.test.ts](../plugin/tests/ui/CliTerminalView.test.ts) を新設し、再接続後に `resumeFrom = lastSeq + 1` で `cli.spawn` が呼ばれることを検証。
-- 検証:
   - `server`: `go test ./internal/handlers -run "TestCliSpawn_(ResumeUnknownID|EmitsBatchNotification|ResumeFromZeroReplaysPersistedOutput)" -v` 成功
   - `server`: `go test ./internal/server -run TestServer_CliSpawn_EmitsOutputAndDone -v` 成功
   - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
   - `plugin`: `npx tsc --noEmit` 成功
-- コミット: `pending`
+
+### 12. PR準備: 本家向けに切り出す範囲を整理
+- Upstream 向け PR では Gemini 専用の UI / コマンド導線を外し、再接続復旧の汎用基盤に絞る方針を採用。
+- PR-1 候補: [server/internal/handlers/cli_common.go](../server/internal/handlers/cli_common.go), [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go), [server/internal/handlers/cli_streamer.go](../server/internal/handlers/cli_streamer.go), [server/internal/proto/types.go](../server/internal/proto/types.go), [next/proto/types.ts](../next/proto/types.ts), [server/internal/handlers/cli_spawn_kill_test.go](../server/internal/handlers/cli_spawn_kill_test.go)
+- PR-1 から外すもの: [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts), [plugin/styles.css](../plugin/styles.css), Gemini 固有のテンプレート / コマンド導線
+- 提出前検証の結果:
+  - handler 系 CLI テスト: PASS
+  - server integration テスト: PASS
+  - `go test ./...`: PASS
+  - `npm test -- ui/CliTerminalView.test.ts`: PASS
+  - `npx tsc --noEmit`: PASS
+- 変更差分は作業ログを含めてコミットし、本家PRの本文に検証結果を添付可能な状態に整理。
+
 
 ## あなたが決めること / やること
 1. 再接続復旧のプロダクト方針を確定する
