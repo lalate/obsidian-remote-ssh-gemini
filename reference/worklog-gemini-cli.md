@@ -98,6 +98,11 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - PR には Gemini 固有 UI を含めず、再接続復旧の汎用基盤・安全化・互換性維持に限定した。
 - コミット: `4b78bb5`
 
+### 14. Upstream PR 整形
+- PR #344 の本文を `Summary` / `What Changed` / `Compatibility` / `Validation` / `Non-Goals` の構成に整理。
+- `gh pr ready 344 --undo` により PR #344 を明示的に Draft 状態へ戻した。
+- `gh pr view 344 --json title,isDraft,state,url` で `isDraft: true` / `state: OPEN` を確認。
+
 
 ## あなたが決めること / やること
 1. 再接続復旧のプロダクト方針を確定する
