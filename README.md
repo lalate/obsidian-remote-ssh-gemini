@@ -17,12 +17,16 @@
 [![Obsidian 1.5+](https://img.shields.io/badge/Obsidian-1.5+-7C3AED?logo=obsidian&logoColor=white)](https://obsidian.md)
 [![Go 1.25+](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Node 20+](https://img.shields.io/badge/Node-20+-339933?logo=node.js&logoColor=white)](https://nodejs.org)
-![Platforms: linux · macOS · amd64 · arm64](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%C2%B7%20amd64%20%7C%20arm64-555)
+![Platforms: linux · macOS · iOS · amd64 · arm64](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20iOS%20%C2%B7%20amd64%20%7C%20arm64-555)
 
 > **A VS Code Remote-SSH-style experience for Obsidian.** Open a vault that
 > lives on a remote SSH host, edit it from a real Obsidian window. Files,
 > attachments, search, and live updates — all served from the remote,
 > transparently.
+>
+> **iOS/iPadOS support** now available — edit your remote vault from iPhone or
+> iPad. See [iOS Setup Guide](docs/en/getting-started/ios-setup.md) for
+> instructions and [platform notes](#platform-support-matrix) for limitations.
 >
 > _Status: 1.0 released — daemon binaries cosign-signed, end-to-end tested
 > against Linux + macOS remotes. Community-store listing pending review
@@ -60,6 +64,9 @@
 - **Bring your own SSH setup.** Password, private key, agent forwarding,
   jump host (`ProxyJump`) — all use the same `~/.ssh/config` your
   terminal does.
+- **Works on iOS/iPadOS.** Edit your remote vault on iPhone or iPad via SFTP.
+  See [iOS Setup Guide](docs/en/getting-started/ios-setup.md) and
+  [known limitations](docs/en/getting-started/ios-setup.md#known-limitations).
 
 ---
 
@@ -127,6 +134,9 @@ lives over there, full stop" is the actual requirement.
 > ⚠️ The plugin is not yet in the Obsidian community plugin browser.
 > Install via **BRAT** (recommended for testers — auto-updates) or manually
 > from a [GitHub Release](https://github.com/sotashimozono/obsidian-remote-ssh/releases).
+>
+> **New to Remote SSH?** Start with the [Getting Started](docs/en/getting-started/index.md)
+> guide. **Using iOS?** Jump straight to the [iOS Setup Guide](docs/en/getting-started/ios-setup.md).
 
 ### Option A — BRAT (Beta Reviewers Auto-update Tool)
 

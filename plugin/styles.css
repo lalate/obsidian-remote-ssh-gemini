@@ -409,3 +409,26 @@
     z-index: 2;
     position: relative;
 }
+
+/* ─── Gemini CLI Terminal View ──────────────────────────────────────── */
+
+.remote-ssh-cli-input-row {
+  display: flex;
+  padding: 8px;
+  gap: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.remote-ssh-cli-input {
+  flex: 1;
+}
+
+.remote-ssh-cli-output {
+  /* xterm container should fill space above input row */
+  flex: 1 1 0;
+}
+
+.remote-ssh-cli-stop-btn {
+  color: var(--text-error);
+}

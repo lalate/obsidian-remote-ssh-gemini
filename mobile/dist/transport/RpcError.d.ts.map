@@ -1,0 +1,1 @@
+{"version":3,"file":"RpcError.d.ts","sourceRoot":"","sources":["../../src/transport/RpcError.ts"],"names":[],"mappings":"AAAA;;GAEG;AACH,qBAAa,QAAS,SAAQ,KAAK;IACjC,SAAgB,IAAI,EAAE,MAAM,CAAC;IAC7B,SAAgB,IAAI,CAAC,EAAE,OAAO,CAAC;gBAEnB,IAAI,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,EAAE,IAAI,CAAC,EAAE,OAAO;CAM1D"}
