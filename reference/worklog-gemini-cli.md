@@ -86,16 +86,17 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `plugin`: `npx tsc --noEmit` 成功
 
 ### 12. PR準備: 本家向けに切り出す範囲を整理
-- Upstream 向け PR では Gemini 専用の UI / コマンド導線を外し、再接続復旧の汎用基盤に絞る方針を採用。
-- PR-1 候補: [server/internal/handlers/cli_common.go](../server/internal/handlers/cli_common.go), [server/internal/handlers/cli_spawn.go](../server/internal/handlers/cli_spawn.go), [server/internal/handlers/cli_streamer.go](../server/internal/handlers/cli_streamer.go), [server/internal/proto/types.go](../server/internal/proto/types.go), [next/proto/types.ts](../next/proto/types.ts), [server/internal/handlers/cli_spawn_kill_test.go](../server/internal/handlers/cli_spawn_kill_test.go)
-- PR-1 から外すもの: [plugin/src/ui/CliTerminalView.ts](../plugin/src/ui/CliTerminalView.ts), [plugin/styles.css](../plugin/styles.css), Gemini 固有のテンプレート / コマンド導線
-- 提出前検証の結果:
   - handler 系 CLI テスト: PASS
   - server integration テスト: PASS
   - `go test ./...`: PASS
   - `npm test -- ui/CliTerminalView.test.ts`: PASS
   - `npx tsc --noEmit`: PASS
-- 変更差分は作業ログを含めてコミットし、本家PRの本文に検証結果を添付可能な状態に整理。
+
+### 13. Upstream PR 作成
+- [obsidian-remote-ssh PR #344](https://github.com/sotashimozono/obsidian-remote-ssh/pull/344) を Draft で作成。
+- PR の base は `next`、head は `lalate:feat/gemini-cli-integration`。
+- PR には Gemini 固有 UI を含めず、再接続復旧の汎用基盤・安全化・互換性維持に限定した。
+- コミット: `4b78bb5`
 
 
 ## あなたが決めること / やること
