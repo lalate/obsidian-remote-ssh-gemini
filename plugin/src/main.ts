@@ -2,6 +2,11 @@ import { Plugin, Notice, FileSystemAdapter, TFile, TFolder, MarkdownView } from 
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
 import { DEFAULT_SETTINGS } from './constants';
+import {
+  DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT,
+} from './constants';
 import { SftpClient } from './ssh/SftpClient';
 import { AuthResolver } from './ssh/AuthResolver';
 import { HostKeyStore } from './ssh/HostKeyStore';
@@ -239,10 +244,10 @@ export default class RemoteSshPlugin extends Plugin {
         const ready = !!this.conn.rpcConnection;
         const selected = this.getActiveSelection();
         if (checking) return ready && selected !== null;
-        if (ready && selected) void this.runGeminiPrompt(
-          'Summarize the following Markdown selection as concise bullet points and highlight any action items.',
-          selected,
-        );
+        if (ready && selected) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.summarizeSelection, selected);
+        }
         return true;
       },
     });
@@ -254,10 +259,10 @@ export default class RemoteSshPlugin extends Plugin {
         const ready = !!this.conn.rpcConnection;
         const selected = this.getActiveSelection();
         if (checking) return ready && selected !== null;
-        if (ready && selected) void this.runGeminiPrompt(
-          'Review the following Markdown selection for clarity, correctness, and concrete improvements. Respond concisely.',
-          selected,
-        );
+        if (ready && selected) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.reviewSelection, selected);
+        }
         return true;
       },
     });
@@ -269,10 +274,10 @@ export default class RemoteSshPlugin extends Plugin {
         const ready = !!this.conn.rpcConnection;
         const note = this.getActiveNoteContent();
         if (checking) return ready && note !== null;
-        if (ready && note) void this.runGeminiPrompt(
-          'Summarize the following note and identify the main themes, risks, and next actions.',
-          note,
-        );
+        if (ready && note) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.summarizeNote, note);
+        }
         return true;
       },
     });
@@ -748,6 +753,21 @@ export default class RemoteSshPlugin extends Plugin {
     ].join('\n');
 
     await view.submitPrompt(prompt);
+  }
+
+  private getGeminiPromptTemplates(): {
+    summarizeSelection: string;
+    reviewSelection: string;
+    summarizeNote: string;
+  } {
+    return {
+      summarizeSelection: this.settings.geminiSummarizeSelectionPrompt?.trim()
+        || DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT,
+      reviewSelection: this.settings.geminiReviewSelectionPrompt?.trim()
+        || DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT,
+      summarizeNote: this.settings.geminiSummarizeNotePrompt?.trim()
+        || DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT,
+    };
   }
 
   /**

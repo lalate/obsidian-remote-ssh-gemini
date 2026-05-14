@@ -114,6 +114,16 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - 検証:
   - `plugin`: `npx tsc --noEmit` 成功
   - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
+- コミット: `1b6237e`
+
+### 16. Gemini Prompt Template 設定化
+- [plugin/src/types.ts](../plugin/src/types.ts) に Gemini command-palette 用テンプレート設定項目を追加。
+- [plugin/src/constants.ts](../plugin/src/constants.ts) にテンプレート既定値を追加し、`DEFAULT_SETTINGS` に反映。
+- [plugin/src/settings/SettingsTab.ts](../plugin/src/settings/SettingsTab.ts) に `Gemini` セクションを追加し、3種類のテンプレートを UI から編集可能にした。
+- [plugin/src/main.ts](../plugin/src/main.ts) の Gemini コマンド群を固定文から設定値参照へ変更。
+- 検証:
+  - `plugin`: `npx tsc --noEmit` 成功
+  - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
 - コミット: `pending`
 
 
