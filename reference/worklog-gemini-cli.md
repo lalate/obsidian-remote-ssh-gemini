@@ -114,7 +114,34 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - 検証:
   - `plugin`: `npx tsc --noEmit` 成功
   - `plugin`: `npm test -- ui/CliTerminalView.test.ts` 成功
-- コミット: `1b6237e`
+- コミット: `d743763`
+
+### 17. iOS サポート + BRAT テスティング基盤
+- [plugin/manifest.json](../plugin/manifest.json) と [manifest.json](../manifest.json) から `isDesktopOnly: true` を削除。
+  - iPhone/iPad ユーザーが Community Plugins からインストール可能に
+- [docs/en/getting-started/ios-setup.md](../docs/en/getting-started/ios-setup.md) を新規作成。
+  - Obsidian iOS インストール手順
+  - BRAT 経由でのプラグイン追加手順
+  - SSH プロファイル設定
+  - 操作・トラブルシューティング
+  - 既知の制限（バックグラウンド同期不可等）
+- [README.md](../README.md) を更新。
+  - Platforms バッジに `iOS` を追加
+  - 「What you can do」に iOS 対応機能を記載
+  - iOS Setup Guide へのリンク追加
+- [reference/BRAT-testing-plan.md](../reference/BRAT-testing-plan.md) を作成。
+  - iOS 対応の技術的課題・制限
+  - 4つのフェーズ（manifest対応 → ビルド確認 → BRAT設定 → iPhone テスト）
+- [reference/BETA-TESTING-PROGRAM.md](../reference/BETA-TESTING-PROGRAM.md) を作成。
+  - 3つのテスト段階（Internal → β Testing → Public Release）
+  - テスター募集フロー・テンプレート
+  - フィードバック管理・トリアージ基準
+  - Release Notes への反映方法
+  - 外部テスター依頼時のプロセス完全体系化
+- 検証:
+  - manifest.json JSON 構文確認
+  - ドキュメント markdown リンク確認
+- コミット: `8dd86bb`
 
 ### 16. Gemini Prompt Template 設定化
 - [plugin/src/types.ts](../plugin/src/types.ts) に Gemini command-palette 用テンプレート設定項目を追加。
