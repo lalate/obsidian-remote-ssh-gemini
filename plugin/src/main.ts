@@ -1,4 +1,4 @@
-import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
+import { Plugin, Notice, FileSystemAdapter, Platform, TFile, TFolder } from 'obsidian';
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
 import { DEFAULT_SETTINGS } from './constants';
@@ -42,6 +42,7 @@ import { telemetry, telemetryLogPath } from "./util/Telemetry";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
+  private mobileSafeMode = false;
 
   private secretStore  = new SecretStore();
   private authResolver = new AuthResolver(this.secretStore);
@@ -80,6 +81,26 @@ export default class RemoteSshPlugin extends Plugin {
 
     logger.setDebug(this.settings.enableDebugLog);
     logger.setMaxLines(this.settings.maxLogLines);
+
+    // Phase M1: mobile-safe bootstrap. Until desktop-only subsystems
+    // (shadow vault, daemon deployment, adapter patching) are fully
+    // migrated, keep mobile activation reliable by short-circuiting
+    // before heavy startup wiring.
+    if (Platform.isMobileApp) {
+      this.mobileSafeMode = true;
+      this.addCommand({
+        id: 'mobile-status',
+        name: 'Mobile status (preview)',
+        callback: () => {
+          new Notice(
+            'Remote SSH: mobile preview mode. Activation succeeded; desktop-only startup is disabled for now.',
+          );
+        },
+      });
+      new Notice('Remote SSH: mobile preview mode enabled');
+      return;
+    }
+
     const adapter = this.app.vault.adapter;
     const basePath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
     this.observability = new ObservabilityInstaller(this.manifest, basePath, this.app.vault.configDir);
@@ -290,9 +311,12 @@ export default class RemoteSshPlugin extends Plugin {
   }
 
   onunload() {
+    if (this.mobileSafeMode) {
+      return;
+    }
     // Restore adapter first so any in-flight Obsidian read calls see the
     // original FileSystemAdapter again before we tear down the SSH session.
-    this.adapterMgr.restore();
+    this.adapterMgr?.restore();
     void this.disconnect().catch(() => { /* ignore */ });
     this.statusBar?.remove();
     this.pendingEditsBar?.remove();
