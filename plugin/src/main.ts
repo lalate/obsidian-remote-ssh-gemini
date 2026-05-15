@@ -660,6 +660,13 @@ export default class RemoteSshPlugin extends Plugin {
   private mobileSessionId = '';
   private mobileProfiles: MobileProfile[] = [];
 
+  private getMobileReportMetaLine(): string {
+    const pluginVersion = this.manifest?.version ?? 'unknown';
+    const appVersion = (this.app as App & { version?: string }).version ?? 'unknown';
+    const platform = Platform.isMobileApp ? 'mobile' : 'desktop';
+    return `Meta: plugin=${pluginVersion}, obsidian=${appVersion}, platform=${platform}`;
+  }
+
   private createDefaultMobileProfile(): MobileProfile {
     const id = `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     return {
@@ -815,6 +822,7 @@ export default class RemoteSshPlugin extends Plugin {
   formatMobileVerificationReport(result: MobileVerificationResult): string {
     const lines: string[] = [];
     lines.push(`Mobile verification report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
     lines.push(`Status: ${result.status}`);
     lines.push(`Profiles: total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`);
     if (result.warnings.length > 0) {
@@ -940,6 +948,7 @@ export default class RemoteSshPlugin extends Plugin {
   formatMobileConnectionProbeReport(result: MobileConnectionProbeResult): string {
     const lines: string[] = [];
     lines.push(`Mobile connection probe report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
     lines.push(`Status: ${result.status}`);
     lines.push(
       `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
@@ -1088,6 +1097,7 @@ export default class RemoteSshPlugin extends Plugin {
   formatMobileSshConnectReport(result: MobileSshConnectResult): string {
     const lines: string[] = [];
     lines.push(`Mobile SSH connect test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
     lines.push(`Status: ${result.status}`);
     lines.push(
       `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
