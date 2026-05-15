@@ -575,11 +575,24 @@ type MobileProfile = {
   port: number;
   username: string;
   authMethod: 'password' | 'privateKey' | 'agent';
+  passwordRef?: string;
+  privateKeyPath?: string;
+  passphraseRef?: string;
+  agentSocket?: string;
+  hostKeyFingerprint?: string;
   remotePath: string;
   connectTimeoutMs: number;
   keepaliveIntervalMs: number;
   keepaliveCountMax: number;
   transport?: 'sftp' | 'rpc';
+  jumpHost?: {
+    host: string;
+    port: number;
+    username: string;
+    authMethod: 'password' | 'privateKey' | 'agent';
+    privateKeyPath?: string;
+    passwordRef?: string;
+  };
 };
 
 type MobileVerificationIssue = {
@@ -617,6 +630,27 @@ type MobileConnectionProbeResult = {
   skip: number;
   entries: MobileConnectionProbeEntry[];
   note: string;
+};
+
+type MobileSshConnectAttempt = {
+  profileId: string;
+  profileName: string;
+  target: string;
+  status: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+  detail: string;
+  latencyMs?: number;
+};
+
+type MobileSshConnectResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  attempted: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  note: string;
+  attempts: MobileSshConnectAttempt[];
 };
 
 export default class RemoteSshPlugin extends Plugin {
@@ -922,6 +956,151 @@ export default class RemoteSshPlugin extends Plugin {
     return lines.join('\n');
   }
 
+  private toSshProfile(profile: MobileProfile): SshProfile {
+    return {
+      id: profile.id,
+      name: profile.name,
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      authMethod: profile.authMethod,
+      passwordRef: profile.passwordRef,
+      privateKeyPath: profile.privateKeyPath,
+      passphraseRef: profile.passphraseRef,
+      agentSocket: profile.agentSocket,
+      hostKeyFingerprint: profile.hostKeyFingerprint,
+      remotePath: profile.remotePath,
+      connectTimeoutMs: profile.connectTimeoutMs,
+      keepaliveIntervalMs: profile.keepaliveIntervalMs,
+      keepaliveCountMax: profile.keepaliveCountMax,
+      transport: profile.transport,
+      jumpHost: profile.jumpHost,
+    };
+  }
+
+  async runMobileSshConnectTest(): Promise<MobileSshConnectResult> {
+    const timestamp = new Date().toISOString();
+    const note = 'Attempts a real SSH connect through SftpClient using the first configured mobile profile.';
+    const attempts: MobileSshConnectAttempt[] = [];
+    const profile = this.mobileProfiles[0];
+
+    if (!profile) {
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'WARN',
+        attempted: 0,
+        pass: 0,
+        warn: 0,
+        fail: 0,
+        skip: 1,
+        note,
+        attempts: [
+          {
+            profileId: '(none)',
+            profileName: '(none)',
+            target: '(none)',
+            status: 'SKIP',
+            detail: 'no profiles configured',
+          },
+        ],
+      };
+      this.pushMobilePreviewLog('SSH connect test: skipped (no profiles configured)');
+      return result;
+    }
+
+    const target = `${profile.host}:${profile.port}`;
+    const started = Date.now();
+    try {
+      const [{ SftpClient }, { AuthResolver }, { HostKeyStore }, { SecretStore }] = await Promise.all([
+        import('./ssh/SftpClient'),
+        import('./ssh/AuthResolver'),
+        import('./ssh/HostKeyStore'),
+        import('./ssh/SecretStore'),
+      ]);
+
+      const secretStore = new SecretStore();
+      const authResolver = new AuthResolver(secretStore);
+      const hostKeyStore = new HostKeyStore();
+      const client = new SftpClient(authResolver, hostKeyStore);
+      const sshProfile = this.toSshProfile(profile);
+
+      await client.connect(sshProfile);
+      await client.disconnect();
+
+      const latencyMs = Date.now() - started;
+      attempts.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        target,
+        status: 'PASS',
+        detail: 'SSH connect succeeded and disconnected cleanly',
+        latencyMs,
+      });
+
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'PASS',
+        attempted: 1,
+        pass: 1,
+        warn: 0,
+        fail: 0,
+        skip: 0,
+        note,
+        attempts,
+      };
+      this.pushMobilePreviewLog(`SSH connect test: PASS (${profile.name})`);
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const lower = message.toLowerCase();
+      const status: 'WARN' | 'FAIL' =
+        lower.includes('no password stored') ||
+        lower.includes('no private key path') ||
+        lower.includes('ssh agent requested')
+          ? 'WARN'
+          : 'FAIL';
+      attempts.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        target,
+        status,
+        detail: message,
+        latencyMs,
+      });
+
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status,
+        attempted: 1,
+        pass: 0,
+        warn: status === 'WARN' ? 1 : 0,
+        fail: status === 'FAIL' ? 1 : 0,
+        skip: 0,
+        note,
+        attempts,
+      };
+      this.pushMobilePreviewLog(`SSH connect test: ${status} (${profile.name}) — ${message}`);
+      return result;
+    }
+  }
+
+  formatMobileSshConnectReport(result: MobileSshConnectResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile SSH connect test report @ ${result.timestamp}`);
+    lines.push(`Status: ${result.status}`);
+    lines.push(
+      `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
+    );
+    lines.push(`Note: ${result.note}`);
+    lines.push('Attempts:');
+    for (const a of result.attempts) {
+      const latency = typeof a.latencyMs === 'number' ? `, latency=${a.latencyMs}ms` : '';
+      lines.push(`- ${a.profileName} (${a.target}) -> ${a.status}: ${a.detail}${latency}`);
+    }
+    return lines.join('\n');
+  }
+
   async onload(): Promise<void> {
     const saved = (await this.loadData()) as {
       mobilePreviewLogs?: string[];
@@ -1052,6 +1231,7 @@ export default class RemoteSshPlugin extends Plugin {
 }
 
 >>>>>>> feat(mobile): add preview settings/logs and persist mobile events
+
 
 
 
