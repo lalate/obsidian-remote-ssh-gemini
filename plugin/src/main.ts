@@ -1,6 +1,5 @@
 import { Notice, Platform, Plugin } from 'obsidian';
 import type { App, PluginManifest } from 'obsidian';
-import { Buffer as NodeBuffer } from 'buffer';
 import { MobileSettingsTab } from './settings/MobileSettingsTab';
 import type { SshProfile } from './types';
 
@@ -102,10 +101,14 @@ export default class RemoteSshPlugin extends Plugin {
   private mobileProfiles: MobileProfile[] = [];
 
   private ensureBufferGlobal(): void {
-    const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof NodeBuffer };
-    if (!globalWithBuffer.Buffer) {
-      globalWithBuffer.Buffer = NodeBuffer;
-    }
+    // The mobile runtime may not expose Node's Buffer global. We no longer
+    // import the buffer module eagerly because that can break plugin loading.
+    // Instead, keep the runtime untouched here and let SSH test paths bail out
+    // with a clear warning when Buffer is unavailable.
+  }
+
+  private hasBufferGlobal(): boolean {
+    return typeof (globalThis as { Buffer?: unknown }).Buffer !== 'undefined';
   }
 
   private getMobileReportMetaLine(): string {
@@ -440,6 +443,30 @@ export default class RemoteSshPlugin extends Plugin {
     const note = 'Attempts a real SSH connect through SftpClient using the first configured mobile profile.';
     const attempts: MobileSshConnectAttempt[] = [];
     const profile = this.mobileProfiles[0];
+
+    if (!this.hasBufferGlobal()) {
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'WARN',
+        attempted: 0,
+        pass: 0,
+        warn: 1,
+        fail: 0,
+        skip: 1,
+        note,
+        attempts: [
+          {
+            profileId: '(none)',
+            profileName: '(none)',
+            target: '(none)',
+            status: 'WARN',
+            detail: 'Buffer global is unavailable in this runtime; SSH connect test cannot start',
+          },
+        ],
+      };
+      this.pushMobilePreviewLog('SSH connect test: skipped (Buffer global unavailable)');
+      return result;
+    }
 
     if (!profile) {
       const result: MobileSshConnectResult = {
