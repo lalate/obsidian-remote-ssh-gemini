@@ -81,6 +81,42 @@ type MobilePreviewPlugin = Plugin & {
     }>;
     note: string;
   }) => string;
+  runMobileSshConnectTest: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    attempted: number;
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+    note: string;
+    attempts: Array<{
+      profileId: string;
+      profileName: string;
+      target: string;
+      status: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+      detail: string;
+      latencyMs?: number;
+    }>;
+  }>;
+  formatMobileSshConnectReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    attempted: number;
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+    note: string;
+    attempts: Array<{
+      profileId: string;
+      profileName: string;
+      target: string;
+      status: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+      detail: string;
+      latencyMs?: number;
+    }>;
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -194,10 +230,7 @@ export class MobileSettingsTab extends PluginSettingTab {
 
     const profiles = this.pluginRef.getMobileProfiles();
     if (profiles.length === 0) {
-      containerEl.createEl('p', {
-        text: 'No profiles yet. Tap Add to create one.',
-        cls: 'setting-item-description',
-      });
+      containerEl.createEl('p', { text: 'No profiles yet. Tap Add to create one.', cls: 'setting-item-description' }); new Setting(containerEl).setName('SSH connect test (experimental)').setDesc('Attempt a real SSH connect using the first configured profile. Expect auth failures until credentials are added.').addButton(btn => btn.setButtonText('Run').setCta().onClick(async () => { const result = await this.pluginRef.runMobileSshConnectTest(); if (result.attempted === 0) { new Notice('Remote SSH: SSH connect test skipped (no profiles configured)'); return; } if (result.status === 'PASS') { new Notice('Remote SSH: SSH connect test passed'); return; } if (result.status === 'WARN') { new Notice('Remote SSH: SSH connect test warning (likely missing credentials)'); return; } new Notice('Remote SSH: SSH connect test failed'); })).addButton(btn => btn.setButtonText('Copy report').onClick(async () => { const result = await this.pluginRef.runMobileSshConnectTest(); const report = this.pluginRef.formatMobileSshConnectReport(result); void navigator.clipboard.writeText(report); new Notice('Remote SSH: SSH connect test report copied'); }));
     }
 
     for (const p of profiles) {
@@ -285,3 +318,4 @@ export class MobileSettingsTab extends PluginSettingTab {
     }
   }
 }
+
