@@ -1,6 +1,6 @@
 import { App, FileSystemAdapter, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { telemetry, telemetryLogPath, type TelemetryRecord } from '../util/Telemetry';
-import type RemoteSshPlugin from '../main';
+import type RemoteSshPlugin from '../main.desktop';
 import { ProfileForm } from './ProfileForm';
 import type { SshProfile } from '../types';
 import {
