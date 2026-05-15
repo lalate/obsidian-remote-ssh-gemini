@@ -130,6 +130,18 @@ export default class RemoteSshPlugin extends Plugin {
     return typeof (globalThis as { Buffer?: unknown }).Buffer !== 'undefined';
   }
 
+  private getRuntimeCapabilitySummary(): string {
+    const runtime = globalThis as typeof globalThis & {
+      Buffer?: unknown;
+      require?: unknown;
+      process?: { versions?: { node?: string } };
+    };
+    const hasBuffer = typeof runtime.Buffer !== 'undefined';
+    const hasRequire = typeof runtime.require === 'function';
+    const nodeVersion = runtime.process?.versions?.node;
+    return `capabilities: buffer=${hasBuffer}, require=${hasRequire}, node=${nodeVersion ?? 'none'}`;
+  }
+
   private getMobileReportMetaLine(): string {
     const pluginVersion = this.manifest?.version ?? 'unknown';
     const appVersion = (this.app as App & { version?: string }).version ?? 'unknown';
@@ -464,6 +476,7 @@ export default class RemoteSshPlugin extends Plugin {
     const profile = this.mobileProfiles[0];
 
     if (!this.hasBufferGlobal()) {
+      const capabilitySummary = this.getRuntimeCapabilitySummary();
       const result: MobileSshConnectResult = {
         timestamp,
         status: 'WARN',
@@ -479,11 +492,11 @@ export default class RemoteSshPlugin extends Plugin {
             profileName: '(none)',
             target: '(none)',
             status: 'WARN',
-            detail: 'Buffer global is unavailable in this runtime; SSH connect test cannot start',
+            detail: `Buffer global is unavailable in this runtime; SSH connect test cannot start (${capabilitySummary})`,
           },
         ],
       };
-      this.pushMobilePreviewLog('SSH connect test: skipped (Buffer global unavailable)');
+      this.pushMobilePreviewLog(`SSH connect test: skipped (Buffer global unavailable; ${capabilitySummary})`);
       return result;
     }
 
