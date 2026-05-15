@@ -364,6 +364,10 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - 次の prerelease は `1.0.48-ios.16`。
 - `runMobileSshConnectTest` の Buffer不足 WARN にランタイム能力情報（buffer/require/node）を付与。
 - 次の prerelease は `1.0.48-ios.17`。
+- モバイル設定に relay endpoint 設定（URL / token）を追加。
+- `runMobileRelayProbe` / `formatMobileRelayProbeReport` を追加し、mobile から relay への HTTP 到達性を検証できるようにした。
+- 直SSH不可ランタイムでは relay 経由を正式ルートとする方針を明示。
+- 次の prerelease は `1.0.48-ios.18`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

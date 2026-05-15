@@ -93,12 +93,28 @@ type MobileSshConnectResult = {
   attempts: MobileSshConnectAttempt[];
 };
 
+type MobileRelayConfig = {
+  endpoint: string;
+  authToken?: string;
+};
+
+type MobileRelayProbeResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  latencyMs?: number;
+  httpStatus?: number;
+  detail: string;
+  note: string;
+};
+
 export default class RemoteSshPlugin extends Plugin {
   private desktopDelegate: DesktopPlugin | null = null;
   private mobilePreviewMode = false;
   private mobilePreviewLogs: string[] = [];
   private mobileSessionId = '';
   private mobileProfiles: MobileProfile[] = [];
+  private mobileRelayConfig: MobileRelayConfig = { endpoint: '' };
 
   private ensureBufferGlobal(): void {
     if (this.hasBufferGlobal()) {
@@ -166,6 +182,13 @@ export default class RemoteSshPlugin extends Plugin {
     };
   }
 
+  private createDefaultMobileRelayConfig(): MobileRelayConfig {
+    return {
+      endpoint: '',
+      authToken: '',
+    };
+  }
+
   private pushMobilePreviewLog(message: string): void {
     const line = `[${new Date().toISOString()}] [session:${this.mobileSessionId || 'n/a'}] ${message}`;
     this.mobilePreviewLogs.push(line);
@@ -183,6 +206,7 @@ export default class RemoteSshPlugin extends Plugin {
       ...(saved ?? {}),
       mobilePreviewLogs: this.mobilePreviewLogs,
       profiles: this.mobileProfiles,
+      relay: this.mobileRelayConfig,
     });
   }
 
@@ -192,6 +216,126 @@ export default class RemoteSshPlugin extends Plugin {
 
   getMobileProfiles(): MobileProfile[] {
     return this.mobileProfiles.map(p => ({ ...p }));
+  }
+
+  getMobileRelayConfig(): MobileRelayConfig {
+    return { ...this.mobileRelayConfig };
+  }
+
+  async updateMobileRelayConfig(patch: Partial<MobileRelayConfig>): Promise<void> {
+    this.mobileRelayConfig = { ...this.mobileRelayConfig, ...patch };
+    await this.persistMobilePreviewState();
+  }
+
+  async runMobileRelayProbe(): Promise<MobileRelayProbeResult> {
+    const timestamp = new Date().toISOString();
+    const endpoint = this.mobileRelayConfig.endpoint.trim();
+    const note =
+      'Mobile runtime lacks Node APIs in this environment, so direct SSH is unavailable. '
+      + 'Use relay endpoint reachability as the mobile connectivity gate.';
+
+    if (!endpoint) {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint,
+        detail: 'relay endpoint is not configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay probe: skipped (endpoint not configured)');
+      return result;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        detail: 'relay endpoint is not a valid URL',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay probe: FAIL (invalid endpoint URL)');
+      return result;
+    }
+
+    const started = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const headers: Record<string, string> = {
+      Accept: 'application/json,text/plain,*/*',
+      'Cache-Control': 'no-store',
+    };
+    const token = this.mobileRelayConfig.authToken?.trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await fetch(url.toString(), {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      const latencyMs = Date.now() - started;
+
+      const status: 'PASS' | 'WARN' = response.ok ? 'PASS' : 'WARN';
+      const detail = response.ok
+        ? `relay endpoint reachable (HTTP ${response.status})`
+        : `relay endpoint responded but returned HTTP ${response.status}`;
+
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status,
+        endpoint: url.toString(),
+        latencyMs,
+        httpStatus: response.status,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay probe: ${status} (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`,
+      );
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const raw = e instanceof Error ? e.message : String(e);
+      const detail = raw.toLowerCase().includes('abort')
+        ? 'relay probe timed out after 5000ms'
+        : `relay probe network error: ${raw}`;
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: url.toString(),
+        latencyMs,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: FAIL (${url.toString()}) — ${detail}`);
+      return result;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  formatMobileRelayProbeReport(result: MobileRelayProbeResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay probe report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (typeof result.httpStatus === 'number') {
+      lines.push(`HTTP status: ${result.httpStatus}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
   }
 
   async addMobileProfile(): Promise<void> {
@@ -623,6 +767,7 @@ export default class RemoteSshPlugin extends Plugin {
     const saved = (await this.loadData()) as {
       mobilePreviewLogs?: string[];
       profiles?: Array<Partial<MobileProfile>>;
+      relay?: Partial<MobileRelayConfig>;
     } | null;
     this.mobileSessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     this.mobilePreviewLogs = Array.isArray(saved?.mobilePreviewLogs)
@@ -642,6 +787,12 @@ export default class RemoteSshPlugin extends Plugin {
               : 'password',
         }))
       : [];
+    this.mobileRelayConfig = {
+      ...this.createDefaultMobileRelayConfig(),
+      ...(saved?.relay ?? {}),
+      endpoint: typeof saved?.relay?.endpoint === 'string' ? saved.relay.endpoint : '',
+      authToken: typeof saved?.relay?.authToken === 'string' ? saved.relay.authToken : '',
+    };
 
     if (Platform.isMobileApp) {
       this.mobilePreviewMode = true;
