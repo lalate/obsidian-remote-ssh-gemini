@@ -27,7 +27,28 @@ export class SecretStore {
   }
 
   private deriveKey(): Buffer {
-    const fingerprint = `${os.hostname()}::${os.userInfo().username}::obsidian-remote-ssh`;
+    let hostname = 'unknown-host';
+    let username = 'unknown-user';
+
+    try {
+      const value = (os as typeof os & { hostname?: () => string }).hostname?.();
+      if (typeof value === 'string' && value.length > 0) {
+        hostname = value;
+      }
+    } catch {
+      // Fall back to a stable per-install identifier when os.hostname() is unavailable.
+    }
+
+    try {
+      const info = os.userInfo();
+      if (typeof info.username === 'string' && info.username.length > 0) {
+        username = info.username;
+      }
+    } catch {
+      // Fall back to a stable per-install identifier when os.userInfo() is unavailable.
+    }
+
+    const fingerprint = `${hostname}::${username}::obsidian-remote-ssh`;
     const salt = Buffer.from('rsh-salt-v1');
     return crypto.scryptSync(fingerprint, salt, 32);
   }

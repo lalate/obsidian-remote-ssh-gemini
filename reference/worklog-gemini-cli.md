@@ -354,6 +354,8 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - `MobileSettingsTab` に `SSH connect test (experimental)` セクションを追加（Run / Copy report）。
 - `MobilePreviewPlugin` 型を SSH connect test API に対応させた。
 - バージョンを `1.0.48-ios.11` に更新済み。次の実機確認では SSH ハンドシェイクの PASS/WARN/FAIL を確認する。
+- `SecretStore` の鍵導出をモバイル安全化し、`os.hostname()` / `os.userInfo()` が取れない環境でも落ちずにフォールバックするように修正。
+- 次の prerelease では `1.0.48-ios.13` として再配布し、旧 `Wa.hostname` 系の失敗を切り分ける。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。
