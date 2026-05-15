@@ -591,6 +591,7 @@ type MobileVerificationIssue = {
 
 type MobileVerificationResult = {
   timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
   totalProfiles: number;
   invalidProfiles: number;
   issues: MobileVerificationIssue[];
@@ -679,23 +680,28 @@ export default class RemoteSshPlugin extends Plugin {
     const warnings: string[] = [];
     const profiles = this.mobileProfiles;
     const duplicateKeys = new Map<string, number>();
+    const duplicateNames = new Map<string, number>();
     const invalidProfileIds = new Set<string>();
 
     for (const p of profiles) {
       const profileName = p.name?.trim() || '(unnamed)';
+      const host = p.host?.trim() ?? '';
+      const username = p.username?.trim() ?? '';
+      const remotePath = p.remotePath?.trim() ?? '';
+
       if (!p.name?.trim()) {
         issues.push({ profileId: p.id, profileName, field: 'name', message: 'Name is required' });
         invalidProfileIds.add(p.id);
       }
-      if (!p.host?.trim()) {
+      if (!host) {
         issues.push({ profileId: p.id, profileName, field: 'host', message: 'Host is required' });
         invalidProfileIds.add(p.id);
       }
-      if (!p.username?.trim()) {
+      if (!username) {
         issues.push({ profileId: p.id, profileName, field: 'username', message: 'Username is required' });
         invalidProfileIds.add(p.id);
       }
-      if (!p.remotePath?.trim()) {
+      if (!remotePath) {
         issues.push({ profileId: p.id, profileName, field: 'remotePath', message: 'Remote path is required' });
         invalidProfileIds.add(p.id);
       }
@@ -704,18 +710,41 @@ export default class RemoteSshPlugin extends Plugin {
         invalidProfileIds.add(p.id);
       }
 
-      const key = `${p.username.trim()}@${p.host.trim()}:${p.port}:${p.remotePath.trim()}`;
+      if (host.includes(' ')) {
+        warnings.push(`${profileName}: host contains whitespace`);
+      }
+      if (host === 'localhost' || host === '127.0.0.1') {
+        warnings.push(`${profileName}: host points to local device (${host}); verify this is intended`);
+      }
+      if (remotePath && !remotePath.startsWith('/')) {
+        warnings.push(`${profileName}: remote path is not absolute (${remotePath})`);
+      }
+      if (remotePath.endsWith('/')) {
+        warnings.push(`${profileName}: remote path has trailing slash (${remotePath})`);
+      }
+
+      duplicateNames.set(profileName, (duplicateNames.get(profileName) ?? 0) + 1);
+      const key = `${username}@${host}:${p.port}:${remotePath}`;
       duplicateKeys.set(key, (duplicateKeys.get(key) ?? 0) + 1);
     }
 
+    for (const [name, count] of duplicateNames.entries()) {
+      if (name !== '(unnamed)' && count > 1) {
+        warnings.push(`Duplicate profile name detected (${count}x): ${name}`);
+      }
+    }
     for (const [key, count] of duplicateKeys.entries()) {
       if (count > 1) {
         warnings.push(`Duplicate endpoint+path detected (${count}x): ${key}`);
       }
     }
 
+    const status: 'PASS' | 'WARN' | 'FAIL' =
+      invalidProfileIds.size > 0 ? 'FAIL' : (warnings.length > 0 ? 'WARN' : 'PASS');
+
     const result: MobileVerificationResult = {
       timestamp,
+      status,
       totalProfiles: profiles.length,
       invalidProfiles: invalidProfileIds.size,
       issues,
@@ -723,7 +752,7 @@ export default class RemoteSshPlugin extends Plugin {
     };
 
     this.pushMobilePreviewLog(
-      `Verification suite: total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`,
+      `Verification suite: status=${result.status}, total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`,
     );
     return result;
   }
@@ -731,7 +760,8 @@ export default class RemoteSshPlugin extends Plugin {
   formatMobileVerificationReport(result: MobileVerificationResult): string {
     const lines: string[] = [];
     lines.push(`Mobile verification report @ ${result.timestamp}`);
-    lines.push(`Profiles: total=${result.totalProfiles}, invalid=${result.invalidProfiles}`);
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Profiles: total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`);
     if (result.warnings.length > 0) {
       lines.push('Warnings:');
       for (const w of result.warnings) lines.push(`- ${w}`);
