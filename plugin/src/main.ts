@@ -1,5 +1,6 @@
 import { Notice, Platform, Plugin } from 'obsidian';
 import type { App, PluginManifest } from 'obsidian';
+import { Buffer as NodeBuffer } from 'buffer';
 import { MobileSettingsTab } from './settings/MobileSettingsTab';
 import type { SshProfile } from './types';
 
@@ -99,6 +100,13 @@ export default class RemoteSshPlugin extends Plugin {
   private mobilePreviewLogs: string[] = [];
   private mobileSessionId = '';
   private mobileProfiles: MobileProfile[] = [];
+
+  private ensureBufferGlobal(): void {
+    const globalWithBuffer = globalThis as typeof globalThis & { Buffer?: typeof NodeBuffer };
+    if (!globalWithBuffer.Buffer) {
+      globalWithBuffer.Buffer = NodeBuffer;
+    }
+  }
 
   private getMobileReportMetaLine(): string {
     const pluginVersion = this.manifest?.version ?? 'unknown';
@@ -552,6 +560,7 @@ export default class RemoteSshPlugin extends Plugin {
   }
 
   async onload(): Promise<void> {
+    this.ensureBufferGlobal();
     const saved = (await this.loadData()) as {
       mobilePreviewLogs?: string[];
       profiles?: Array<Partial<MobileProfile>>;
