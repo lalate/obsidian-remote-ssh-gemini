@@ -19,6 +19,30 @@ type MobilePreviewPlugin = Plugin & {
     remotePath?: string;
   }) => Promise<void>;
   removeMobileProfile: (id: string) => Promise<void>;
+  runMobileVerification: () => {
+    timestamp: string;
+    totalProfiles: number;
+    invalidProfiles: number;
+    issues: Array<{
+      profileId: string;
+      profileName: string;
+      field: 'name' | 'host' | 'port' | 'username' | 'remotePath';
+      message: string;
+    }>;
+    warnings: string[];
+  };
+  formatMobileVerificationReport: (result: {
+    timestamp: string;
+    totalProfiles: number;
+    invalidProfiles: number;
+    issues: Array<{
+      profileId: string;
+      profileName: string;
+      field: 'name' | 'host' | 'port' | 'username' | 'remotePath';
+      message: string;
+    }>;
+    warnings: string[];
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -66,6 +90,33 @@ export class MobileSettingsTab extends PluginSettingTab {
         .onClick(async () => {
           await this.pluginRef.addMobileProfile();
           this.display();
+        }));
+
+    new Setting(containerEl)
+      .setName('Verification suite')
+      .setDesc('Run a deterministic preflight check and copy a report for issue sharing.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(() => {
+          const result = this.pluginRef.runMobileVerification();
+          if (result.totalProfiles === 0) {
+            new Notice('Remote SSH: no profiles configured yet');
+            return;
+          }
+          if (result.invalidProfiles === 0) {
+            new Notice('Remote SSH: verification passed');
+            return;
+          }
+          new Notice(`Remote SSH: verification found ${result.invalidProfiles} invalid profiles`);
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(() => {
+          const result = this.pluginRef.runMobileVerification();
+          const report = this.pluginRef.formatMobileVerificationReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: verification report copied');
         }));
 
     const profiles = this.pluginRef.getMobileProfiles();

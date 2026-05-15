@@ -21,6 +21,21 @@ type MobileProfile = {
   transport?: 'sftp' | 'rpc';
 };
 
+type MobileVerificationIssue = {
+  profileId: string;
+  profileName: string;
+  field: 'name' | 'host' | 'port' | 'username' | 'remotePath';
+  message: string;
+};
+
+type MobileVerificationResult = {
+  timestamp: string;
+  totalProfiles: number;
+  invalidProfiles: number;
+  issues: MobileVerificationIssue[];
+  warnings: string[];
+};
+
 export default class RemoteSshPlugin extends Plugin {
   private desktopDelegate: DesktopPlugin | null = null;
   private mobilePreviewMode = false;
@@ -97,6 +112,80 @@ export default class RemoteSshPlugin extends Plugin {
     await this.persistMobilePreviewState();
   }
 
+  runMobileVerification(): MobileVerificationResult {
+    const timestamp = new Date().toISOString();
+    const issues: MobileVerificationIssue[] = [];
+    const warnings: string[] = [];
+    const profiles = this.mobileProfiles;
+    const duplicateKeys = new Map<string, number>();
+    const invalidProfileIds = new Set<string>();
+
+    for (const p of profiles) {
+      const profileName = p.name?.trim() || '(unnamed)';
+      if (!p.name?.trim()) {
+        issues.push({ profileId: p.id, profileName, field: 'name', message: 'Name is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!p.host?.trim()) {
+        issues.push({ profileId: p.id, profileName, field: 'host', message: 'Host is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!p.username?.trim()) {
+        issues.push({ profileId: p.id, profileName, field: 'username', message: 'Username is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!p.remotePath?.trim()) {
+        issues.push({ profileId: p.id, profileName, field: 'remotePath', message: 'Remote path is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!Number.isFinite(p.port) || p.port < 1 || p.port > 65535) {
+        issues.push({ profileId: p.id, profileName, field: 'port', message: 'Port must be between 1 and 65535' });
+        invalidProfileIds.add(p.id);
+      }
+
+      const key = `${p.username.trim()}@${p.host.trim()}:${p.port}:${p.remotePath.trim()}`;
+      duplicateKeys.set(key, (duplicateKeys.get(key) ?? 0) + 1);
+    }
+
+    for (const [key, count] of duplicateKeys.entries()) {
+      if (count > 1) {
+        warnings.push(`Duplicate endpoint+path detected (${count}x): ${key}`);
+      }
+    }
+
+    const result: MobileVerificationResult = {
+      timestamp,
+      totalProfiles: profiles.length,
+      invalidProfiles: invalidProfileIds.size,
+      issues,
+      warnings,
+    };
+
+    this.pushMobilePreviewLog(
+      `Verification suite: total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`,
+    );
+    return result;
+  }
+
+  formatMobileVerificationReport(result: MobileVerificationResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile verification report @ ${result.timestamp}`);
+    lines.push(`Profiles: total=${result.totalProfiles}, invalid=${result.invalidProfiles}`);
+    if (result.warnings.length > 0) {
+      lines.push('Warnings:');
+      for (const w of result.warnings) lines.push(`- ${w}`);
+    }
+    if (result.issues.length > 0) {
+      lines.push('Issues:');
+      for (const i of result.issues) {
+        lines.push(`- ${i.profileName} (${i.profileId}) [${i.field}] ${i.message}`);
+      }
+    } else {
+      lines.push('Issues: none');
+    }
+    return lines.join('\n');
+  }
+
   async onload(): Promise<void> {
     const saved = (await this.loadData()) as {
       mobilePreviewLogs?: string[];
@@ -151,30 +240,29 @@ export default class RemoteSshPlugin extends Plugin {
         id: 'mobile-validate-profiles',
         name: 'Mobile: validate profile settings',
         callback: () => {
-          const profiles = this.mobileProfiles;
-          if (!Array.isArray(profiles) || profiles.length === 0) {
+          const result = this.runMobileVerification();
+          if (result.totalProfiles === 0) {
             this.pushMobilePreviewLog('Profile validation: no profiles configured');
             new Notice('Remote SSH: no profiles configured yet');
             return;
           }
-          let invalid = 0;
-          for (const p of profiles) {
-            const ok = Boolean(
-              p?.name?.trim()
-              && p?.host?.trim()
-              && p?.username?.trim()
-              && p?.remotePath?.trim(),
-            );
-            if (!ok) invalid += 1;
-          }
-          this.pushMobilePreviewLog(
-            `Profile validation: total=${profiles.length}, invalid=${invalid}`,
-          );
-          if (invalid === 0) {
-            new Notice(`Remote SSH: profile settings look good (${profiles.length} profiles)`);
+          this.pushMobilePreviewLog(`Profile validation: total=${result.totalProfiles}, invalid=${result.invalidProfiles}`);
+          if (result.invalidProfiles === 0) {
+            new Notice(`Remote SSH: profile settings look good (${result.totalProfiles} profiles)`);
             return;
           }
-          new Notice(`Remote SSH: ${invalid}/${profiles.length} profiles have missing required fields`);
+          new Notice(`Remote SSH: ${result.invalidProfiles}/${result.totalProfiles} profiles have invalid fields`);
+        },
+      });
+      this.addCommand({
+        id: 'mobile-copy-verification-report',
+        name: 'Mobile: copy verification report',
+        callback: () => {
+          const result = this.runMobileVerification();
+          const report = this.formatMobileVerificationReport(result);
+          void navigator.clipboard.writeText(report);
+          this.pushMobilePreviewLog('Executed command: mobile-copy-verification-report');
+          new Notice('Remote SSH: verification report copied');
         },
       });
       new Notice('Remote SSH: mobile preview mode enabled');
