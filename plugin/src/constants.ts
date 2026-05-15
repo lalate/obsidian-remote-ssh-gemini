@@ -31,7 +31,19 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   // safe; these constants are the canonical "user hasn't customised" values.
   terminalFontSize: 12,
   terminalScrollback: 1000,
+  geminiSummarizeSelectionPrompt: 'Summarize the following Markdown selection as concise bullet points and highlight any action items.',
+  geminiReviewSelectionPrompt: 'Review the following Markdown selection for clarity, correctness, and concrete improvements. Respond concisely.',
+  geminiSummarizeNotePrompt: 'Summarize the following note and identify the main themes, risks, and next actions.',
 };
+
+export const DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT =
+  'Summarize the following Markdown selection as concise bullet points and highlight any action items.';
+
+export const DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT =
+  'Review the following Markdown selection for clarity, correctness, and concrete improvements. Respond concisely.';
+
+export const DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT =
+  'Summarize the following note and identify the main themes, risks, and next actions.';
 
 export const MAX_RETRY = 4;
 export const RETRY_BASE_MS = 1000;

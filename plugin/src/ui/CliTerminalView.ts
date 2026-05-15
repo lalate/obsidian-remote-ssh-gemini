@@ -59,6 +59,8 @@ export class CliTerminalView extends ItemView {
   private lastSpawnPayload: { cmd: string; args: string[] } | null = null;
   /** True while waiting to resume a running process after reconnect. */
   private waitingResume = false;
+  /** Prompt queued before the view finished creating its input row. */
+  private queuedPrompt: string | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -140,6 +142,13 @@ export class CliTerminalView extends ItemView {
 
     this.runBtn.addEventListener('click', () => { void this.runPrompt(); });
     this.stopBtn.addEventListener('click', () => { void this.killActiveProcess(); });
+
+    if (this.queuedPrompt) {
+      const prompt = this.queuedPrompt;
+      this.queuedPrompt = null;
+      this.inputEl.value = prompt;
+      void this.runPrompt(prompt);
+    }
   }
 
   onClose(): Promise<void> {
@@ -162,14 +171,25 @@ export class CliTerminalView extends ItemView {
 
   // ── private helpers ────────────────────────────────────────────────
 
-  private async runPrompt(): Promise<void> {
+  async submitPrompt(prompt: string): Promise<void> {
+    const normalized = prompt.trim();
+    if (!normalized) return;
+    if (!this.inputEl) {
+      this.queuedPrompt = normalized;
+      return;
+    }
+    this.inputEl.value = normalized;
+    await this.runPrompt(normalized);
+  }
+
+  private async runPrompt(promptOverride?: string): Promise<void> {
     const rpc = this.deps.getRpc();
     if (!rpc) {
       this.term?.writeln(`${ANSI_RED}[Not connected]${ANSI_RESET}`);
       return;
     }
 
-    const prompt = this.inputEl?.value.trim() ?? '';
+    const prompt = promptOverride?.trim() ?? this.inputEl?.value.trim() ?? '';
     if (!prompt) return;
 
     this.setRunning(true);

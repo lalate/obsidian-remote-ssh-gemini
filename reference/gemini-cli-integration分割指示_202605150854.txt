@@ -1,0 +1,33 @@
+あなたは上級Gitエンジニアです。
+
+現在のブランチ: feat/gemini-cli-integration
+
+このブランチを以下の2つ（できれば3つ）に論理的に分割したい：
+
+1. **feat/cli-core** （本家PR用・最優先）
+   - cli.* RPCメソッドの追加（exec, spawn, kill）
+   - proto/README.md と types の更新
+   - Goサーバー側の cli ハンドラ全般
+   - reconnect-safe resume 機構（JSONLログ + sequence replay）
+   - セキュリティ強化（whitelisting, cwd validation）
+   - 基本的なテスト
+   - CliTerminalView の最小動作部分（コアロジックのみ）
+
+2. **feat/gemini-ui** （自分のGemini統合用）
+   - Gemini Prompt Templates
+   - Command Palette 拡張
+   - Gemini特化の設定項目
+   - 高度な Terminal UI / Editor Context Sharing など
+
+3. **feat/ios-enhancements** （オプション）
+   - iOS manifest 変更
+   - モバイル特化ドキュメント
+   - BRAT関連設定
+
+### 作業手順
+1. 現在のコミット履歴を `git log --oneline --graph` で確認しながら、どのコミットがどの機能に該当するかを分類して教えてください。
+2. `feat/cli-core` ブランチを作成し、必要なコミットを cherry-pick（または interactive rebase）で正しい順序で適用する具体的なGitコマンド列を提案してください。
+3. 不要なファイル（mobile/dist などビルド成果物）は除外する方法も含めて。
+4. 分割後に各ブランチでやるべきクリーンアップ作業（不要コミットの削除、PR説明の雛形作成など）も提案して。
+
+まず最初に `git log --oneline -20` の結果を想定して、コミットの分類から始めてください。

@@ -4,6 +4,11 @@ import type RemoteSshPlugin from '../main';
 import { ProfileForm } from './ProfileForm';
 import type { SshProfile } from '../types';
 import {
+  DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT,
+} from '../constants';
+import {
   defaultClientId,
   defaultUserName,
   sanitizeClientId,
@@ -109,6 +114,7 @@ export class SettingsTab extends PluginSettingTab {
         }));
 
     this.renderTerminalPanel(containerEl);
+    this.renderGeminiPanel(containerEl);
   }
 
   /**
@@ -162,6 +168,52 @@ export class SettingsTab extends PluginSettingTab {
             this.plugin.settings.terminalScrollback = n;
             await this.plugin.saveSettings();
           }
+        }));
+  }
+
+  private renderGeminiPanel(containerEl: HTMLElement) {
+    new Setting(containerEl).setName('Gemini').setHeading();
+
+    new Setting(containerEl)
+      .setName('Summarize selection template')
+      .setDesc('Instruction template used by "Gemini: Summarize selection". The selected markdown is appended automatically.')
+      .addTextArea(t => t
+        .setPlaceholder(DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT)
+        .setValue(this.plugin.settings.geminiSummarizeSelectionPrompt ?? DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT)
+        .onChange(async v => {
+          const trimmed = v.trim();
+          this.plugin.settings.geminiSummarizeSelectionPrompt = trimmed === ''
+            ? DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT
+            : trimmed;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Review selection template')
+      .setDesc('Instruction template used by "Gemini: Review selection".')
+      .addTextArea(t => t
+        .setPlaceholder(DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT)
+        .setValue(this.plugin.settings.geminiReviewSelectionPrompt ?? DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT)
+        .onChange(async v => {
+          const trimmed = v.trim();
+          this.plugin.settings.geminiReviewSelectionPrompt = trimmed === ''
+            ? DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT
+            : trimmed;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Summarize note template')
+      .setDesc('Instruction template used by "Gemini: Summarize current note".')
+      .addTextArea(t => t
+        .setPlaceholder(DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT)
+        .setValue(this.plugin.settings.geminiSummarizeNotePrompt ?? DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT)
+        .onChange(async v => {
+          const trimmed = v.trim();
+          this.plugin.settings.geminiSummarizeNotePrompt = trimmed === ''
+            ? DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT
+            : trimmed;
+          await this.plugin.saveSettings();
         }));
   }
 

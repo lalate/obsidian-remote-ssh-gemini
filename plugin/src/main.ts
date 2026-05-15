@@ -1,7 +1,12 @@
-import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
+import { Plugin, Notice, FileSystemAdapter, TFile, TFolder, MarkdownView } from 'obsidian';
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
 import { DEFAULT_SETTINGS } from './constants';
+import {
+  DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT,
+  DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT,
+} from './constants';
 import { SftpClient } from './ssh/SftpClient';
 import { AuthResolver } from './ssh/AuthResolver';
 import { HostKeyStore } from './ssh/HostKeyStore';
@@ -228,6 +233,51 @@ export default class RemoteSshPlugin extends Plugin {
         const ready = !!this.conn.rpcConnection;
         if (checking) return ready;
         if (ready) void this.openCliTerminal();
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-summarize-selection',
+      name: 'Gemini: Summarize selection',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const selected = this.getActiveSelection();
+        if (checking) return ready && selected !== null;
+        if (ready && selected) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.summarizeSelection, selected);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-review-selection',
+      name: 'Gemini: Review selection',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const selected = this.getActiveSelection();
+        if (checking) return ready && selected !== null;
+        if (ready && selected) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.reviewSelection, selected);
+        }
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: 'gemini-summarize-note',
+      name: 'Gemini: Summarize current note',
+      checkCallback: (checking) => {
+        const ready = !!this.conn.rpcConnection;
+        const note = this.getActiveNoteContent();
+        if (checking) return ready && note !== null;
+        if (ready && note) {
+          const templates = this.getGeminiPromptTemplates();
+          void this.runGeminiPrompt(templates.summarizeNote, note);
+        }
         return true;
       },
     });
@@ -659,19 +709,65 @@ export default class RemoteSshPlugin extends Plugin {
     }
   }
 
-  async openCliTerminal(): Promise<void> {
+  async openCliTerminal(): Promise<CliTerminalView | null> {
     const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_CLI_TERMINAL);
     if (existing.length > 0) {
       this.app.workspace.setActiveLeaf(existing[0], { focus: true });
-      return;
+      return existing[0].view instanceof CliTerminalView ? existing[0].view : null;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     if (!leaf) {
       new Notice('Remote SSH: no available workspace leaf to open the CLI terminal in');
-      return;
+      return null;
     }
     await leaf.setViewState({ type: VIEW_TYPE_CLI_TERMINAL, active: true });
     this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    return leaf.view instanceof CliTerminalView ? leaf.view : null;
+  }
+
+  private getActiveSelection(): string | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const text = view?.editor?.getSelection().trim();
+    return text ? text : null;
+  }
+
+  private getActiveNoteContent(): string | null {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const text = view?.editor?.getValue().trim();
+    return text ? text : null;
+  }
+
+  private async runGeminiPrompt(instruction: string, markdown: string): Promise<void> {
+    const view = await this.openCliTerminal();
+    if (!view) return;
+
+    const activeFile = this.app.workspace.getActiveFile();
+    const fileLabel = activeFile?.path ?? '(unsaved note)';
+    const prompt = [
+      instruction,
+      '',
+      `File: ${fileLabel}`,
+      '',
+      'Markdown:',
+      markdown,
+    ].join('\n');
+
+    await view.submitPrompt(prompt);
+  }
+
+  private getGeminiPromptTemplates(): {
+    summarizeSelection: string;
+    reviewSelection: string;
+    summarizeNote: string;
+  } {
+    return {
+      summarizeSelection: this.settings.geminiSummarizeSelectionPrompt?.trim()
+        || DEFAULT_GEMINI_SUMMARIZE_SELECTION_PROMPT,
+      reviewSelection: this.settings.geminiReviewSelectionPrompt?.trim()
+        || DEFAULT_GEMINI_REVIEW_SELECTION_PROMPT,
+      summarizeNote: this.settings.geminiSummarizeNotePrompt?.trim()
+        || DEFAULT_GEMINI_SUMMARIZE_NOTE_PROMPT,
+    };
   }
 
   /**

@@ -119,6 +119,13 @@ export interface PluginSettings {
   terminalFontSize?: number;
   terminalScrollback?: number;
   /**
+   * Prompt templates for Gemini command-palette actions. When unset,
+   * the plugin falls back to built-in defaults from constants.ts.
+   */
+  geminiSummarizeSelectionPrompt?: string;
+  geminiReviewSelectionPrompt?: string;
+  geminiSummarizeNotePrompt?: string;
+  /**
    * Shadow-vault marker (Phase 4). When set, the plugin's
    * `onLayoutReady` callback finds the matching profile and
    * automatically connects to it, then runs `VaultModelBuilder` to
