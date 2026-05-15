@@ -358,6 +358,8 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - 次の prerelease では `1.0.48-ios.13` として再配布し、旧 `Wa.hostname` 系の失敗を切り分ける。
 - `main.ts` で `Buffer` をグローバル注入し、モバイル実行系でも `Can't find variable: Buffer` を避けるように修正。
 - 次の prerelease は `1.0.48-ios.14`。
+- `Buffer` のトップレベル import はモバイル起動を壊す可能性があるため廃止し、SSH connect test 側で Buffer 未提供時に WARN で終了するように変更。
+- 次の prerelease は `1.0.48-ios.15`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。
