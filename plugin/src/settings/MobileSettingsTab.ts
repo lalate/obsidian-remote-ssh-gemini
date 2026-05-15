@@ -2,6 +2,23 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 
 type MobilePreviewPlugin = Plugin & {
   getMobilePreviewLogs: () => string[];
+  getMobileProfiles: () => Array<{
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    username: string;
+    remotePath: string;
+  }>;
+  addMobileProfile: () => Promise<void>;
+  updateMobileProfile: (id: string, patch: {
+    name?: string;
+    host?: string;
+    port?: number;
+    username?: string;
+    remotePath?: string;
+  }) => Promise<void>;
+  removeMobileProfile: (id: string) => Promise<void>;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -31,6 +48,89 @@ export class MobileSettingsTab extends PluginSettingTab {
     ul.createEl('li', { text: 'SSH connect/disconnect runtime is not enabled yet.' });
     ul.createEl('li', { text: 'Remote terminal and daemon controls are desktop-only in this phase.' });
     ul.createEl('li', { text: 'Use profile validation + logs for preflight checks before M5.' });
+
+    new Setting(containerEl)
+      .setName('Profiles (preview)')
+      .setHeading();
+
+    containerEl.createEl('p', {
+      text: 'You can create and edit minimum required profile fields on mobile in this phase.',
+      cls: 'setting-item-description',
+    });
+
+    new Setting(containerEl)
+      .setName('Add profile')
+      .addButton(btn => btn
+        .setButtonText('Add')
+        .setCta()
+        .onClick(async () => {
+          await this.pluginRef.addMobileProfile();
+          this.display();
+        }));
+
+    const profiles = this.pluginRef.getMobileProfiles();
+    if (profiles.length === 0) {
+      containerEl.createEl('p', {
+        text: 'No profiles yet. Tap Add to create one.',
+        cls: 'setting-item-description',
+      });
+    }
+
+    for (const p of profiles) {
+      new Setting(containerEl)
+        .setName(`Profile: ${p.name || '(unnamed)'}`)
+        .setDesc(`${p.username || '?'}@${p.host || '?'}:${p.port} -> ${p.remotePath || '?'}`)
+        .addButton(btn => btn
+          .setButtonText('Delete')
+          .setWarning()
+          .onClick(async () => {
+            await this.pluginRef.removeMobileProfile(p.id);
+            this.display();
+          }));
+
+      new Setting(containerEl)
+        .setName('Name')
+        .addText(t => t
+          .setValue(p.name)
+          .onChange(async v => {
+            await this.pluginRef.updateMobileProfile(p.id, { name: v });
+          }));
+
+      new Setting(containerEl)
+        .setName('Host')
+        .addText(t => t
+          .setValue(p.host)
+          .onChange(async v => {
+            await this.pluginRef.updateMobileProfile(p.id, { host: v.trim() });
+          }));
+
+      new Setting(containerEl)
+        .setName('Port')
+        .addText(t => t
+          .setValue(String(p.port))
+          .onChange(async v => {
+            const n = Number.parseInt(v, 10);
+            if (Number.isFinite(n) && n > 0 && n <= 65535) {
+              await this.pluginRef.updateMobileProfile(p.id, { port: n });
+            }
+          }));
+
+      new Setting(containerEl)
+        .setName('Username')
+        .addText(t => t
+          .setValue(p.username)
+          .onChange(async v => {
+            await this.pluginRef.updateMobileProfile(p.id, { username: v.trim() });
+          }));
+
+      new Setting(containerEl)
+        .setName('Remote path')
+        .addText(t => t
+          .setValue(p.remotePath)
+          .onChange(async v => {
+            await this.pluginRef.updateMobileProfile(p.id, { remotePath: v.trim() });
+          }));
+    }
 
     const logs = this.pluginRef.getMobilePreviewLogs();
     const summary = logs.length === 0 ? 'No logs yet' : `${logs.length} log entries`;
