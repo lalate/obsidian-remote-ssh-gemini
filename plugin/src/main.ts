@@ -101,10 +101,29 @@ export default class RemoteSshPlugin extends Plugin {
   private mobileProfiles: MobileProfile[] = [];
 
   private ensureBufferGlobal(): void {
-    // The mobile runtime may not expose Node's Buffer global. We no longer
-    // import the buffer module eagerly because that can break plugin loading.
-    // Instead, keep the runtime untouched here and let SSH test paths bail out
-    // with a clear warning when Buffer is unavailable.
+    if (this.hasBufferGlobal()) {
+      return;
+    }
+
+    const runtime = globalThis as typeof globalThis & {
+      Buffer?: unknown;
+      require?: (id: string) => unknown;
+    };
+
+    const req = runtime.require;
+    if (typeof req !== 'function') {
+      return;
+    }
+
+    try {
+      const maybeBufferModule = req('buffer') as { Buffer?: unknown } | undefined;
+      if (maybeBufferModule?.Buffer) {
+        runtime.Buffer = maybeBufferModule.Buffer as BufferConstructor;
+        this.pushMobilePreviewLog('Buffer global initialized from runtime module');
+      }
+    } catch {
+      // Keep running even when the runtime does not expose the buffer module.
+    }
   }
 
   private hasBufferGlobal(): boolean {
