@@ -45,6 +45,42 @@ type MobilePreviewPlugin = Plugin & {
     }>;
     warnings: string[];
   }) => string;
+  runMobileConnectionProbe: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    attempted: number;
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+    entries: Array<{
+      profileId: string;
+      profileName: string;
+      target: string;
+      outcome: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+      detail: string;
+      latencyMs?: number;
+    }>;
+    note: string;
+  }>;
+  formatMobileConnectionProbeReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    attempted: number;
+    pass: number;
+    warn: number;
+    fail: number;
+    skip: number;
+    entries: Array<{
+      profileId: string;
+      profileName: string;
+      target: string;
+      outcome: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+      detail: string;
+      latencyMs?: number;
+    }>;
+    note: string;
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -123,6 +159,37 @@ export class MobileSettingsTab extends PluginSettingTab {
           const report = this.pluginRef.formatMobileVerificationReport(result);
           void navigator.clipboard.writeText(report);
           new Notice('Remote SSH: verification report copied');
+        }));
+
+    new Setting(containerEl)
+      .setName('Connection probe (best-effort)')
+      .setDesc('Probe host:port reachability from mobile via HTTP HEAD. This is not an SSH handshake test.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileConnectionProbe();
+          if (result.attempted === 0) {
+            new Notice('Remote SSH: connection probe skipped (no valid profiles)');
+            return;
+          }
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: connection probe passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice(`Remote SSH: connection probe completed with ${result.warn} warnings`);
+            return;
+          }
+          new Notice(`Remote SSH: connection probe failed (${result.fail} failures)`);
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileConnectionProbe();
+          const report = this.pluginRef.formatMobileConnectionProbeReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: connection probe report copied');
         }));
 
     const profiles = this.pluginRef.getMobileProfiles();

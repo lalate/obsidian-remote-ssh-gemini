@@ -37,6 +37,27 @@ type MobileVerificationResult = {
   warnings: string[];
 };
 
+type MobileConnectionProbeEntry = {
+  profileId: string;
+  profileName: string;
+  target: string;
+  outcome: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+  detail: string;
+  latencyMs?: number;
+};
+
+type MobileConnectionProbeResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  attempted: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  entries: MobileConnectionProbeEntry[];
+  note: string;
+};
+
 export default class RemoteSshPlugin extends Plugin {
   private desktopDelegate: DesktopPlugin | null = null;
   private mobilePreviewMode = false;
@@ -216,6 +237,130 @@ export default class RemoteSshPlugin extends Plugin {
     return lines.join('\n');
   }
 
+  private classifyProbeError(message: string): { outcome: 'WARN' | 'FAIL'; detail: string } {
+    const m = message.toLowerCase();
+    if (m.includes('timed out') || m.includes('timeout')) {
+      return { outcome: 'FAIL', detail: 'timeout while reaching host/port' };
+    }
+    if (m.includes('ssl') || m.includes('certificate') || m.includes('handshake')) {
+      return {
+        outcome: 'WARN',
+        detail: 'host reachable but TLS/HTTP mismatch (expected on SSH port in many cases)',
+      };
+    }
+    if (m.includes('fetch') || m.includes('network') || m.includes('dns')) {
+      return { outcome: 'FAIL', detail: 'network unreachable or host not resolvable from this device' };
+    }
+    return { outcome: 'WARN', detail: `indeterminate response: ${message}` };
+  }
+
+  async runMobileConnectionProbe(): Promise<MobileConnectionProbeResult> {
+    const timestamp = new Date().toISOString();
+    const entries: MobileConnectionProbeEntry[] = [];
+    const note =
+      'Best-effort probe via HTTP(S) request to host:port. This is not an SSH handshake test, '
+      + 'but helps detect obvious reachability problems from mobile.';
+
+    for (const p of this.mobileProfiles) {
+      const profileName = p.name?.trim() || '(unnamed)';
+      const host = p.host?.trim() ?? '';
+      const remotePath = p.remotePath?.trim() ?? '';
+      const username = p.username?.trim() ?? '';
+      const target = `${host}:${p.port}`;
+
+      if (!host || !username || !remotePath || !Number.isFinite(p.port) || p.port < 1 || p.port > 65535) {
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: 'SKIP',
+          detail: 'profile has missing/invalid required fields',
+        });
+        continue;
+      }
+
+      const started = Date.now();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      try {
+        // HTTP probe only: quick signal that host:port is reachable from mobile.
+        await fetch(`http://${host}:${p.port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const latencyMs = Date.now() - started;
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: 'WARN',
+          detail: 'port responded to HTTP probe (reachable, but service may not be SSH)',
+          latencyMs,
+        });
+      } catch (e) {
+        const latencyMs = Date.now() - started;
+        const raw = e instanceof Error ? e.message : String(e);
+        const classified = this.classifyProbeError(raw);
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: classified.outcome,
+          detail: classified.detail,
+          latencyMs,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    const attempted = entries.filter(e => e.outcome !== 'SKIP').length;
+    const pass = entries.filter(e => e.outcome === 'PASS').length;
+    const warn = entries.filter(e => e.outcome === 'WARN').length;
+    const fail = entries.filter(e => e.outcome === 'FAIL').length;
+    const skip = entries.filter(e => e.outcome === 'SKIP').length;
+    const status: 'PASS' | 'WARN' | 'FAIL' =
+      fail > 0 ? 'FAIL' : (warn > 0 ? 'WARN' : 'PASS');
+
+    const result: MobileConnectionProbeResult = {
+      timestamp,
+      status,
+      attempted,
+      pass,
+      warn,
+      fail,
+      skip,
+      entries,
+      note,
+    };
+
+    this.pushMobilePreviewLog(
+      `Connection probe: status=${status}, attempted=${attempted}, pass=${pass}, warn=${warn}, fail=${fail}, skip=${skip}`,
+    );
+
+    return result;
+  }
+
+  formatMobileConnectionProbeReport(result: MobileConnectionProbeResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile connection probe report @ ${result.timestamp}`);
+    lines.push(`Status: ${result.status}`);
+    lines.push(
+      `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
+    );
+    lines.push(`Note: ${result.note}`);
+    lines.push('Entries:');
+    for (const e of result.entries) {
+      const latency = typeof e.latencyMs === 'number' ? `, latency=${e.latencyMs}ms` : '';
+      lines.push(`- ${e.profileName} (${e.target}) -> ${e.outcome}: ${e.detail}${latency}`);
+    }
+    if (result.entries.length === 0) {
+      lines.push('- (no profiles)');
+    }
+    return lines.join('\n');
+  }
+
   async onload(): Promise<void> {
     const saved = (await this.loadData()) as {
       mobilePreviewLogs?: string[];
@@ -293,6 +438,37 @@ export default class RemoteSshPlugin extends Plugin {
           void navigator.clipboard.writeText(report);
           this.pushMobilePreviewLog('Executed command: mobile-copy-verification-report');
           new Notice('Remote SSH: verification report copied');
+        },
+      });
+      this.addCommand({
+        id: 'mobile-run-connection-probe',
+        name: 'Mobile: run connection probe',
+        callback: async () => {
+          const result = await this.runMobileConnectionProbe();
+          if (result.attempted === 0) {
+            new Notice('Remote SSH: connection probe skipped (no valid profiles)');
+            return;
+          }
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: connection probe passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice(`Remote SSH: connection probe completed with ${result.warn} warnings`);
+            return;
+          }
+          new Notice(`Remote SSH: connection probe failed (${result.fail} failures)`);
+        },
+      });
+      this.addCommand({
+        id: 'mobile-copy-connection-probe-report',
+        name: 'Mobile: copy connection probe report',
+        callback: async () => {
+          const result = await this.runMobileConnectionProbe();
+          const report = this.formatMobileConnectionProbeReport(result);
+          void navigator.clipboard.writeText(report);
+          this.pushMobilePreviewLog('Executed command: mobile-copy-connection-probe-report');
+          new Notice('Remote SSH: connection probe report copied');
         },
       });
       new Notice('Remote SSH: mobile preview mode enabled');
