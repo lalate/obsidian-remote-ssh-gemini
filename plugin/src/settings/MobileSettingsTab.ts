@@ -21,6 +21,7 @@ type MobilePreviewPlugin = Plugin & {
   removeMobileProfile: (id: string) => Promise<void>;
   runMobileVerification: () => {
     timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
     totalProfiles: number;
     invalidProfiles: number;
     issues: Array<{
@@ -33,6 +34,7 @@ type MobilePreviewPlugin = Plugin & {
   };
   formatMobileVerificationReport: (result: {
     timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
     totalProfiles: number;
     invalidProfiles: number;
     issues: Array<{
@@ -104,11 +106,15 @@ export class MobileSettingsTab extends PluginSettingTab {
             new Notice('Remote SSH: no profiles configured yet');
             return;
           }
-          if (result.invalidProfiles === 0) {
+          if (result.status === 'PASS') {
             new Notice('Remote SSH: verification passed');
             return;
           }
-          new Notice(`Remote SSH: verification found ${result.invalidProfiles} invalid profiles`);
+          if (result.status === 'WARN') {
+            new Notice(`Remote SSH: verification passed with ${result.warnings.length} warnings`);
+            return;
+          }
+          new Notice(`Remote SSH: verification failed (${result.invalidProfiles} invalid profiles)`);
         }))
       .addButton(btn => btn
         .setButtonText('Copy report')
