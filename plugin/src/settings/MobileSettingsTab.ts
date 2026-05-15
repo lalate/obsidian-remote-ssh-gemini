@@ -10,6 +10,14 @@ type MobilePreviewPlugin = Plugin & {
     username: string;
     remotePath: string;
   }>;
+  getMobileRelayConfig: () => {
+    endpoint: string;
+    authToken?: string;
+  };
+  updateMobileRelayConfig: (patch: {
+    endpoint?: string;
+    authToken?: string;
+  }) => Promise<void>;
   addMobileProfile: () => Promise<void>;
   updateMobileProfile: (id: string, patch: {
     name?: string;
@@ -116,6 +124,24 @@ type MobilePreviewPlugin = Plugin & {
       detail: string;
       latencyMs?: number;
     }>;
+  }) => string;
+  runMobileRelayProbe: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    latencyMs?: number;
+    httpStatus?: number;
+    detail: string;
+    note: string;
+  }>;
+  formatMobileRelayProbeReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    latencyMs?: number;
+    httpStatus?: number;
+    detail: string;
+    note: string;
   }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
@@ -226,6 +252,65 @@ export class MobileSettingsTab extends PluginSettingTab {
           const report = this.pluginRef.formatMobileConnectionProbeReport(result);
           void navigator.clipboard.writeText(report);
           new Notice('Remote SSH: connection probe report copied');
+        }));
+
+    new Setting(containerEl)
+      .setName('Relay endpoint (mobile path)')
+      .setHeading();
+
+    containerEl.createEl('p', {
+      text: 'Use a relay endpoint from mobile. Direct SSH is unavailable on this runtime.',
+      cls: 'setting-item-description',
+    });
+
+    const relay = this.pluginRef.getMobileRelayConfig();
+
+    new Setting(containerEl)
+      .setName('Relay endpoint URL')
+      .setDesc('Example: https://relay.example.com/healthz')
+      .addText(t => t
+        .setPlaceholder('https://relay.example.com/healthz')
+        .setValue(relay.endpoint ?? '')
+        .onChange(async v => {
+          await this.pluginRef.updateMobileRelayConfig({ endpoint: v.trim() });
+        }));
+
+    new Setting(containerEl)
+      .setName('Relay bearer token (optional)')
+      .setDesc('Used only for relay probe authorization header.')
+      .addText(t => {
+        t.inputEl.type = 'password';
+        t.setValue(relay.authToken ?? '');
+        t.onChange(async v => {
+          await this.pluginRef.updateMobileRelayConfig({ authToken: v.trim() });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('Relay probe')
+      .setDesc('Checks whether the configured relay endpoint is reachable from mobile.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayProbe();
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: relay probe passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice('Remote SSH: relay probe warning');
+            return;
+          }
+          new Notice('Remote SSH: relay probe failed');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayProbe();
+          const report = this.pluginRef.formatMobileRelayProbeReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: relay probe report copied');
         }));
 
     new Setting(containerEl)
