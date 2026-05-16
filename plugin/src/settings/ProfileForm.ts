@@ -138,8 +138,8 @@ export class ProfileForm extends Modal {
       cls: 'setting-item-description',
       text:
         'SFTP (default) talks SFTP directly. RPC auto-deploys obsidian-remote-server on connect ' +
-        'and routes filesystem operations through it — requires the server binary to have been ' +
-        'staged via `npm run build:server`.',
+        'and routes filesystem operations through it. Relay-RPC connects through relay `/v1/connect` ' +
+        'and runs JSON-RPC over WebSocket without direct local SSH sockets.',
     });
 
     new Setting(contentEl)
@@ -147,6 +147,7 @@ export class ProfileForm extends Modal {
       .addDropdown(d => d
         .addOption('sftp', 'SFTP (direct)')
         .addOption('rpc', 'Daemon (deploys helper on connect)')
+        .addOption('relay-rpc', 'Relay-RPC (connect via relay WebSocket)')
         .setValue(this.profile.transport ?? 'sftp')
         .onChange(v => { this.profile.transport = v as RemoteTransport; }));
 
@@ -162,6 +163,31 @@ export class ProfileForm extends Modal {
       .setDesc('Default: `.obsidian-remote/token` (home-relative). Daemon mode only.')
       .addText(t => t.setValue(this.profile.rpcTokenPath ?? '')
         .onChange(v => { this.profile.rpcTokenPath = v.trim() || undefined; }));
+
+    new Setting(contentEl)
+      .setName('Relay base URL')
+      .setDesc('Example: `https://relay.example.com`. Relay-RPC mode only.')
+      .addText(t => t.setPlaceholder('https://relay.example.com')
+        .setValue(this.profile.relayBaseUrl ?? '')
+        .onChange(v => { this.profile.relayBaseUrl = v.trim() || undefined; }));
+
+    new Setting(contentEl)
+      .setName('Relay bearer token')
+      .setDesc('Optional Authorization: Bearer token for relay `/v1/connect`. Relay-RPC mode only.')
+      .addText(t => t.setValue(this.profile.relayAuthToken ?? '')
+        .onChange(v => { this.profile.relayAuthToken = v.trim() || undefined; }));
+
+    new Setting(contentEl)
+      .setName('Relay RPC username')
+      .setDesc('JSON-RPC auth username after WebSocket session.ready. Default fallback: admin')
+      .addText(t => t.setValue(this.profile.relayRpcUsername ?? '')
+        .onChange(v => { this.profile.relayRpcUsername = v.trim() || undefined; }));
+
+    new Setting(contentEl)
+      .setName('Relay RPC password')
+      .setDesc('JSON-RPC auth password after WebSocket session.ready. Default fallback: password')
+      .addText(t => t.setValue(this.profile.relayRpcPassword ?? '')
+        .onChange(v => { this.profile.relayRpcPassword = v.trim() || undefined; }));
 
     const footer = contentEl.createDiv('conflict-footer');
     footer.createEl('button', { text: 'Cancel' }).onclick = () => this.close();

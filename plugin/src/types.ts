@@ -7,7 +7,7 @@ export type AuthMethod = 'password' | 'privateKey' | 'agent';
  * opt in to `'rpc'` per profile when they want auto-deploy of the
  * daemon at connect time.
  */
-export type RemoteTransport = 'sftp' | 'rpc';
+export type RemoteTransport = 'sftp' | 'rpc' | 'relay-rpc';
 
 export enum SyncState {
   IDLE         = 'idle',
@@ -61,6 +61,27 @@ export interface SshProfile {
    * `.obsidian-remote/token`.
    */
   rpcTokenPath?: string;
+
+  /**
+   * Relay-RPC path base URL (for example `https://relay.example.com`).
+   * Used only when `transport === 'relay-rpc'`.
+   */
+  relayBaseUrl?: string;
+  /**
+   * Optional bearer token sent to relay `/v1/connect`.
+   * Used only when `transport === 'relay-rpc'`.
+   */
+  relayAuthToken?: string;
+  /**
+   * JSON-RPC username used after the relay WebSocket session starts.
+   * Used only when `transport === 'relay-rpc'`.
+   */
+  relayRpcUsername?: string;
+  /**
+   * JSON-RPC password used after the relay WebSocket session starts.
+   * Used only when `transport === 'relay-rpc'`.
+   */
+  relayRpcPassword?: string;
 }
 
 export interface PluginSettings {
