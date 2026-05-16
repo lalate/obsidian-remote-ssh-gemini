@@ -6,6 +6,7 @@ can connect to. **Pick the one that matches your existing setup.**
 | Option | When to use | Status |
 |---|---|---|
 | [`docker/`](./docker/) — docker-compose + Dockerfile | You have docker on the server (or a VPS that supports it). Fastest path from zero. | ✅ available (E4-a.A) |
+| [`relay-health/`](./relay-health/) — lightweight HTTP health endpoint | You need a mobile relay probe URL (`https://.../healthz`) for reachability checks. | ✅ available |
 | `systemd/` — daemon as a managed service | You already have an OpenSSH server you want to keep using, and you want the obsidian-remote-server daemon to run as a persistent unit (rather than auto-deployed per-connect). | 🚧 planned (E4-a.B) |
 | `install.sh` — one-line installer | You want `curl … \| bash` simplicity on a fresh box. | 🚧 planned (E4-a.C) |
 
