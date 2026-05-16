@@ -11,7 +11,7 @@ SSH/RPCブリッジ本体はまだ未実装ですが、API形と認証導線を�
 
 - `GET /healthz` で `200` + JSON を返す
 - `GET /v1/capabilities` で利用可能機能を返す
-- `POST /v1/connect` のスタブ実装（入力検証 + `NOT_IMPLEMENTED` 応答）
+- `POST /v1/connect` で relayサーバから target `host:port` への TCP到達プリチェック
 - 任意の Bearer token 認証 (`RELAY_PROBE_TOKEN`)
 - CORS ヘッダ付与 (`ALLOW_ORIGIN`)
 
@@ -31,7 +31,7 @@ docker compose up -d --build
 curl -i http://localhost:8080/healthz
 curl -i http://localhost:8080/v1/capabilities
 
-# connectスタブ（200 + NOT_IMPLEMENTED）
+# connectプリチェック（200 + PRECHECK_OK または TARGET_UNREACHABLE）
 curl -i -X POST http://localhost:8080/v1/connect \
   -H "Content-Type: application/json" \
   -d '{"requestId":"demo-1","host":"example.com","port":22,"username":"obsidian","remotePath":"/home/obsidian/vault"}'
@@ -59,4 +59,4 @@ curl -i -H "Authorization: Bearer <token>" http://localhost:8080/healthz
 ## 注意
 
 - 公開する場合は HTTPS 化してください（Cloudflare Tunnel, Caddy, Nginx など）。
-- `POST /v1/connect` は現在スタブ応答です。次フェーズでSSH/RPCブリッジ本体を実装します。
+- `POST /v1/connect` は現時点で TCP 到達プリチェックまでです。SSH/RPCブリッジ本体は次フェーズです。

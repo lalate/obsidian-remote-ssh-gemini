@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -43,14 +45,17 @@ type connectRequest struct {
 	Port       int    `json:"port"`
 	Username   string `json:"username"`
 	RemotePath string `json:"remotePath"`
+	TimeoutMs  int    `json:"timeoutMs,omitempty"`
 }
 
 type connectResponse struct {
-	OK        bool           `json:"ok"`
-	Code      string         `json:"code"`
-	Message   string         `json:"message"`
-	RequestID string         `json:"requestId,omitempty"`
-	Received  connectRequest `json:"received"`
+	OK                bool           `json:"ok"`
+	Code              string         `json:"code"`
+	Message           string         `json:"message"`
+	RequestID         string         `json:"requestId,omitempty"`
+	Target            string         `json:"target,omitempty"`
+	PrecheckLatencyMs int64          `json:"precheckLatencyMs,omitempty"`
+	Received          connectRequest `json:"received"`
 }
 
 func main() {
@@ -133,7 +138,7 @@ func run(args []string) (int, error) {
 			Version: Version,
 			Capabilities: []string{
 				"healthz",
-				"connect.stub.v1",
+				"connect.precheck.v1",
 			},
 		}
 		writeJSON(w, http.StatusOK, resp, false)
@@ -168,12 +173,34 @@ func run(args []string) (int, error) {
 			return
 		}
 
+		target := net.JoinHostPort(strings.TrimSpace(req.Host), strconv.Itoa(req.Port))
+		timeout := resolveConnectTimeout(req.TimeoutMs)
+		started := time.Now()
+		err := precheckTCPTarget(strings.TrimSpace(req.Host), req.Port, timeout)
+		latencyMs := time.Since(started).Milliseconds()
+
+		if err != nil {
+			resp := connectResponse{
+				OK:                false,
+				Code:              "TARGET_UNREACHABLE",
+				Message:           fmt.Sprintf("tcp precheck failed for %s: %v", target, err),
+				RequestID:         strings.TrimSpace(req.RequestID),
+				Target:            target,
+				PrecheckLatencyMs: latencyMs,
+				Received:          req,
+			}
+			writeJSON(w, http.StatusOK, resp, false)
+			return
+		}
+
 		resp := connectResponse{
-			OK:        false,
-			Code:      "NOT_IMPLEMENTED",
-			Message:   "relay connect bridge is not implemented yet; this endpoint is a scaffold",
-			RequestID: strings.TrimSpace(req.RequestID),
-			Received:  req,
+			OK:                true,
+			Code:              "PRECHECK_OK",
+			Message:           "tcp precheck to target succeeded; SSH/RPC bridge wiring is the next step",
+			RequestID:         strings.TrimSpace(req.RequestID),
+			Target:            target,
+			PrecheckLatencyMs: latencyMs,
+			Received:          req,
 		}
 		writeJSON(w, http.StatusOK, resp, false)
 	})
@@ -230,7 +257,31 @@ func validateConnectRequest(req connectRequest) []string {
 	if strings.TrimSpace(req.RemotePath) == "" {
 		issues = append(issues, "remotePath is required")
 	}
+	if req.TimeoutMs < 0 {
+		issues = append(issues, "timeoutMs must be >= 0")
+	}
 	return issues
+}
+
+func resolveConnectTimeout(timeoutMs int) time.Duration {
+	if timeoutMs <= 0 {
+		return 3 * time.Second
+	}
+	if timeoutMs > 15000 {
+		return 15 * time.Second
+	}
+	return time.Duration(timeoutMs) * time.Millisecond
+}
+
+func precheckTCPTarget(host string, port int, timeout time.Duration) error {
+	target := net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port))
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.Dial("tcp", target)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
 }
 
 func setHeaders(w http.ResponseWriter, allowOrigin string) {
