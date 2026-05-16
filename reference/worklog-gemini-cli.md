@@ -381,6 +381,11 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `GET /v1/capabilities` を追加。
   - `POST /v1/connect` スタブを追加（入力検証、認証、`NOT_IMPLEMENTED` 応答）。
   - `server/cmd/obsidian-remote-relay-health/main_test.go` で認証/検証/応答をテスト化。
+- plugin mobile settings に relay connect test を追加。
+  - relay endpoint から `/v1/connect` を導出し、先頭profileをPOST。
+  - 応答 `code`（`NOT_IMPLEMENTED` など）と HTTP status をレポート表示。
+  - `requestUrl` 優先 + `fetch` fallback で実行。
+- 次の prerelease は `1.0.48-ios.20`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

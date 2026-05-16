@@ -143,6 +143,26 @@ type MobilePreviewPlugin = Plugin & {
     detail: string;
     note: string;
   }) => string;
+  runMobileRelayConnectTest: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    latencyMs?: number;
+    httpStatus?: number;
+    code?: string;
+    detail: string;
+    note: string;
+  }>;
+  formatMobileRelayConnectReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    latencyMs?: number;
+    httpStatus?: number;
+    code?: string;
+    detail: string;
+    note: string;
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -311,6 +331,33 @@ export class MobileSettingsTab extends PluginSettingTab {
           const report = this.pluginRef.formatMobileRelayProbeReport(result);
           void navigator.clipboard.writeText(report);
           new Notice('Remote SSH: relay probe report copied');
+        }));
+
+    new Setting(containerEl)
+      .setName('Relay connect test')
+      .setDesc('POST first profile to relay /v1/connect and inspect relay response code.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayConnectTest();
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: relay connect test passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice(`Remote SSH: relay connect test warning${result.code ? ` (${result.code})` : ''}`);
+            return;
+          }
+          new Notice('Remote SSH: relay connect test failed');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayConnectTest();
+          const report = this.pluginRef.formatMobileRelayConnectReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: relay connect test report copied');
         }));
 
     new Setting(containerEl)

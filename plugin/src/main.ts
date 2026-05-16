@@ -108,6 +108,23 @@ type MobileRelayProbeResult = {
   note: string;
 };
 
+type MobileRelayConnectResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  latencyMs?: number;
+  httpStatus?: number;
+  code?: string;
+  detail: string;
+  note: string;
+};
+
+type RelayConnectApiBody = {
+  ok?: boolean;
+  code?: string;
+  message?: string;
+};
+
 export default class RemoteSshPlugin extends Plugin {
   private desktopDelegate: DesktopPlugin | null = null;
   private mobilePreviewMode = false;
@@ -383,6 +400,221 @@ export default class RemoteSshPlugin extends Plugin {
     lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
     if (typeof result.httpStatus === 'number') {
       lines.push(`HTTP status: ${result.httpStatus}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  private deriveRelayConnectUrl(endpoint: string): string {
+    const url = new URL(endpoint);
+    return `${url.origin}/v1/connect`;
+  }
+
+  private parseRelayConnectBody(rawText: string): RelayConnectApiBody {
+    if (!rawText) {
+      return {};
+    }
+    try {
+      return JSON.parse(rawText) as RelayConnectApiBody;
+    } catch {
+      return {};
+    }
+  }
+
+  async runMobileRelayConnectTest(): Promise<MobileRelayConnectResult> {
+    const timestamp = new Date().toISOString();
+    const endpoint = this.mobileRelayConfig.endpoint.trim();
+    const note =
+      'Posts the first mobile profile to relay /v1/connect. '
+      + 'The current relay scaffold may return NOT_IMPLEMENTED until the SSH bridge is wired.';
+
+    if (!endpoint) {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint,
+        detail: 'relay endpoint is not configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (endpoint not configured)');
+      return result;
+    }
+
+    let connectUrl = '';
+    try {
+      connectUrl = this.deriveRelayConnectUrl(endpoint);
+    } catch {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        detail: 'relay endpoint is not a valid URL',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: FAIL (invalid endpoint URL)');
+      return result;
+    }
+
+    const profile = this.mobileProfiles[0];
+    if (!profile) {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: connectUrl,
+        detail: 'no profiles configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (no profiles configured)');
+      return result;
+    }
+
+    const host = profile.host?.trim() ?? '';
+    const username = profile.username?.trim() ?? '';
+    const remotePath = profile.remotePath?.trim() ?? '';
+    if (!host || !username || !remotePath || !Number.isFinite(profile.port) || profile.port < 1 || profile.port > 65535) {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: connectUrl,
+        detail: 'first profile has missing/invalid required fields (host, port, username, remotePath)',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (first profile invalid)');
+      return result;
+    }
+
+    const started = Date.now();
+    const headers: Record<string, string> = {
+      Accept: 'application/json,text/plain,*/*',
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    };
+    const token = this.mobileRelayConfig.authToken?.trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const body = JSON.stringify({
+      requestId: `mobile-${Date.now().toString(36)}`,
+      host,
+      port: profile.port,
+      username,
+      remotePath,
+    });
+
+    try {
+      const response = await requestUrl({
+        url: connectUrl,
+        method: 'POST',
+        headers,
+        body,
+        throw: false,
+      });
+      const latencyMs = Date.now() - started;
+      const rawText = typeof response.text === 'string' ? response.text : '';
+      const parsed = this.parseRelayConnectBody(rawText);
+      const code = typeof parsed.code === 'string' ? parsed.code : undefined;
+      const message = typeof parsed.message === 'string' ? parsed.message : '';
+
+      let status: 'PASS' | 'WARN' | 'FAIL' = 'FAIL';
+      if (response.status >= 200 && response.status < 300) {
+        status = code === 'NOT_IMPLEMENTED' ? 'WARN' : (parsed.ok === true ? 'PASS' : 'WARN');
+      }
+
+      const detail =
+        response.status >= 200 && response.status < 300
+          ? `relay connect responded (HTTP ${response.status}${code ? `, code=${code}` : ''}${message ? `, message=${message}` : ''})`
+          : `relay connect failed with HTTP ${response.status}`;
+
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status,
+        endpoint: connectUrl,
+        latencyMs,
+        httpStatus: response.status,
+        code,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay connect test: ${status} (${connectUrl}, http=${response.status}${code ? `, code=${code}` : ''}, latency=${latencyMs}ms)`,
+      );
+      return result;
+    } catch (requestErr) {
+      const latencyMs = Date.now() - started;
+      const requestErrMessage = requestErr instanceof Error ? requestErr.message : String(requestErr);
+      let fetchErrMessage = '';
+
+      try {
+        const fetchResponse = await fetch(connectUrl, {
+          method: 'POST',
+          headers,
+          body,
+          cache: 'no-store',
+        });
+        const responseText = await fetchResponse.text();
+        const parsed = this.parseRelayConnectBody(responseText);
+        const code = typeof parsed.code === 'string' ? parsed.code : undefined;
+        const message = typeof parsed.message === 'string' ? parsed.message : '';
+
+        const status: 'PASS' | 'WARN' | 'FAIL' = fetchResponse.ok
+          ? (code === 'NOT_IMPLEMENTED' ? 'WARN' : (parsed.ok === true ? 'PASS' : 'WARN'))
+          : 'FAIL';
+        const detail = fetchResponse.ok
+          ? `relay connect responded via fetch fallback (HTTP ${fetchResponse.status}${code ? `, code=${code}` : ''}${message ? `, message=${message}` : ''})`
+          : `relay connect failed via fetch fallback with HTTP ${fetchResponse.status}`;
+
+        const result: MobileRelayConnectResult = {
+          timestamp,
+          status,
+          endpoint: connectUrl,
+          latencyMs,
+          httpStatus: fetchResponse.status,
+          code,
+          detail,
+          note,
+        };
+        this.pushMobilePreviewLog(
+          `Relay connect test: ${status} via fetch fallback (${connectUrl}, http=${fetchResponse.status}${code ? `, code=${code}` : ''}, latency=${latencyMs}ms)`,
+        );
+        return result;
+      } catch (fetchErr) {
+        fetchErrMessage = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      }
+
+      const timeoutHit = requestErrMessage.toLowerCase().includes('abort') || fetchErrMessage.toLowerCase().includes('abort');
+      const detail = timeoutHit
+        ? 'relay connect test timed out'
+        : `relay connect network error: requestUrl=${requestErrMessage}; fetch=${fetchErrMessage || 'n/a'}`;
+
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connectUrl,
+        latencyMs,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay connect test: FAIL (${connectUrl}) — ${detail}`);
+      return result;
+    }
+  }
+
+  formatMobileRelayConnectReport(result: MobileRelayConnectResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay connect test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (typeof result.httpStatus === 'number') {
+      lines.push(`HTTP status: ${result.httpStatus}`);
+    }
+    if (result.code) {
+      lines.push(`Relay code: ${result.code}`);
     }
     if (typeof result.latencyMs === 'number') {
       lines.push(`Latency: ${result.latencyMs}ms`);
