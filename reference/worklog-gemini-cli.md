@@ -485,3 +485,55 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。
   - `mobile-status` / `mobile-copy-preview-logs` コマンド実行ログを確認。
   - セッション切替ログ（`Unloaded` → 新session `Activated`）を確認。
+
+### 2026-05-16: モバイル対応 M5（Relay-RPC Desktop Parity）
+**実施日**: 2026-05-16 13:48 JST
+
+#### 作業内容
+- **MobileProfile 型拡張**: `transport?: 'sftp' | 'rpc' | 'relay-rpc'` + relay 関連フィールド（`relayBaseUrl`, `relayAuthToken`, `relayRpcUsername`, `relayRpcPassword`）を追加。
+- **Profile-level relay config 実装**:
+  - `getPrimaryMobileProfile()`: relay-rpc profile を優先的に選択
+  - `resolveRelayRuntimeConfig()`: profile-first / global-fallback パターンで relay endpoint/token/credentials を解決
+- **Retry 基盤構築**:
+  - `shouldRetryRelayRpcFailure()`: timeout/websocket/network/stream test error で再試行判定
+  - `runMobileSshConnectTest()`: 3回まで exponential backoff (400ms × attempt) で自動リトライ
+- **MobileSettingsTab UI 強化**:
+  - Transport selector (SFTP/RPC/Relay-RPC) を追加
+  - Transport に応じて relay fields (URL/token/username/password) を条件表示
+  - 非 relay-rpc 時に Node API 制限の警告を表示
+  - Verification warnings を改善（transport != relay-rpc の場合に alert）
+- **完全自動化スクリプト**:
+  - `plugin/scripts/release-ios-brat.mjs` を新規作成
+  - `npm run release:ios:brat` で以下を 1コマンドで自動実行:
+    1. `bump:ios:brat` で version 採番 (X.Y.Z-ios.N → N+1)
+    2. `build` でビルド
+    3. `git add/commit` でコミット (messageSuffix 対応)
+    4. `git push origin next` で push
+    5. `gh release create` で prerelease 作成 + assets 添付
+  - `plugin/package.json` に `"release:ios:brat": "node scripts/release-ios-brat.mjs"` を追加
+
+#### バージョン進行
+- 1.0.48-ios.27 (relay TCP echo path) → 1.0.48-ios.28 (M5 実装完了) → **1.0.48-ios.29** (release-ios-brat script 追加)
+
+#### iOS 実機検証結果
+- **1.0.48-ios.29 deployment**:
+  - prerelease から iOS 端末へ install 成功
+  - Mobile Settings で testProfile (relay-rpc transport) を設定済み
+  
+- **Mainline connect test 実施**:
+  - テスト実施時刻: 2026-05-16T13:48:43.850Z, 2026-05-16T13:50:21.235Z
+  - 各実行: attempted=1, pass=1 (retry 不要 = 初回成功)
+  - latency: 97ms, 110ms (acceptable)
+  - relay stream: wss:// 接続確立済み
+  - relay RPC: auth/server.info/fs.write/fs.read 全て成功
+  - server identity: `obsidian-remote-relay v0.0.0-dev` 確認済み
+
+#### メモ・教訓
+- retry=3 基盤は実装済みだが、iOS 端末の安定ネットワーク環境では初回成功した (attempt=1)
+- Transport dropdown で "relay-rpc not configured" warning は表示されず → profile-level relay config が正常に機能している
+- 今後、intentional network degradation 検証で retry ロジックの動作確認ができる
+
+#### 次のステップ
+1. **Network resilience testing** (optional): WiFi toggle / network throttle で retry 3回分の backoff 確認
+2. **Full automation** (complete): `release-ios-brat` スクリプトで次回リリース時間を短縮
+3. **Documentation** (optional): Profile-level transport 選択、Desktop parity mode をガイドドキュメント化
