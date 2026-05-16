@@ -167,6 +167,28 @@ type MobilePreviewPlugin = Plugin & {
     detail: string;
     note: string;
   }) => string;
+  runMobileRelayStreamTest: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    sessionId?: string;
+    streamUrl?: string;
+    relayCode?: string;
+    latencyMs?: number;
+    detail: string;
+    note: string;
+  }>;
+  formatMobileRelayStreamReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    sessionId?: string;
+    streamUrl?: string;
+    relayCode?: string;
+    latencyMs?: number;
+    detail: string;
+    note: string;
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -362,6 +384,33 @@ export class MobileSettingsTab extends PluginSettingTab {
           const report = this.pluginRef.formatMobileRelayConnectReport(result);
           void navigator.clipboard.writeText(report);
           new Notice('Remote SSH: relay connect test report copied');
+        }));
+
+    new Setting(containerEl)
+      .setName('Relay stream test')
+      .setDesc('Runs relay connect then opens streamUrl websocket and waits for session.ready.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayStreamTest();
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: relay stream test passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice('Remote SSH: relay stream test warning');
+            return;
+          }
+          new Notice('Remote SSH: relay stream test failed');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayStreamTest();
+          const report = this.pluginRef.formatMobileRelayStreamReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: relay stream test report copied');
         }));
 
     new Setting(containerEl)
