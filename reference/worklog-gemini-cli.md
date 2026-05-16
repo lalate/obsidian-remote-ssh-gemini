@@ -377,6 +377,10 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `GET /healthz` で 200 + JSON を返す最小HTTPサービス。
   - 任意の Bearer token (`RELAY_PROBE_TOKEN`) と CORS (`ALLOW_ORIGIN`) をサポート。
 - `deploy/relay-health/` に Dockerfile / compose / README / .env.example を追加し、独立デプロイ可能化。
+- relay次フェーズの最小APIスキャフォールドを追加。
+  - `GET /v1/capabilities` を追加。
+  - `POST /v1/connect` スタブを追加（入力検証、認証、`NOT_IMPLEMENTED` 応答）。
+  - `server/cmd/obsidian-remote-relay-health/main_test.go` で認証/検証/応答をテスト化。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。
