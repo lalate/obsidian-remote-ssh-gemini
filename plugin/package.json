@@ -24,6 +24,7 @@
     "lint": "eslint \"src/**/*.ts\"",
     "bump:beta:start": "npm version prepatch --preid=beta --no-git-tag-version",
     "bump:beta": "npm version prerelease --preid=beta --no-git-tag-version",
+    "bump:ios:brat": "node scripts/bump-ios-brat.mjs",
     "bump:stable": "node scripts/bump-stable.mjs",
     "version": "node scripts/bump-version.mjs && git add package.json package-lock.json manifest.json versions.json ../manifest.json ../manifest-beta.json ../versions.json"
   },

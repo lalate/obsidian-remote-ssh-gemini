@@ -9,6 +9,11 @@ type MobilePreviewPlugin = Plugin & {
     port: number;
     username: string;
     remotePath: string;
+    transport?: 'sftp' | 'rpc' | 'relay-rpc';
+    relayBaseUrl?: string;
+    relayAuthToken?: string;
+    relayRpcUsername?: string;
+    relayRpcPassword?: string;
   }>;
   getMobileRelayConfig: () => {
     endpoint: string;
@@ -29,6 +34,11 @@ type MobilePreviewPlugin = Plugin & {
     port?: number;
     username?: string;
     remotePath?: string;
+    transport?: 'sftp' | 'rpc' | 'relay-rpc';
+    relayBaseUrl?: string;
+    relayAuthToken?: string;
+    relayRpcUsername?: string;
+    relayRpcPassword?: string;
   }) => Promise<void>;
   removeMobileProfile: (id: string) => Promise<void>;
   runMobileVerification: () => {
@@ -239,24 +249,24 @@ export class MobileSettingsTab extends PluginSettingTab {
 
     containerEl.createEl('p', {
       text:
-        'Desktop runtime is gated in this phase. This panel keeps local logs so ' +
-        'you can report activation and runtime behavior while mobile support is being built out.',
+        'Desktop parity mode is being expanded on mobile. This panel keeps local logs so ' +
+        'you can validate runtime behavior while relay-rpc mainline support is rolling out.',
       cls: 'setting-item-description',
     });
 
     const warn = containerEl.createDiv({ cls: 'setting-item-description' });
     warn.createEl('strong', { text: 'Current mobile limitations' });
     const ul = warn.createEl('ul');
-    ul.createEl('li', { text: 'SSH connect/disconnect runtime is not enabled yet.' });
+    ul.createEl('li', { text: 'Direct SSH on mobile depends on runtime Node API availability.' });
     ul.createEl('li', { text: 'Remote terminal and daemon controls are desktop-only in this phase.' });
-    ul.createEl('li', { text: 'Use profile validation + logs for preflight checks before M5.' });
+    ul.createEl('li', { text: 'For desktop-equivalent path, set transport=relay-rpc per profile.' });
 
     new Setting(containerEl)
       .setName('Profiles (preview)')
       .setHeading();
 
     containerEl.createEl('p', {
-      text: 'You can create and edit minimum required profile fields on mobile in this phase.',
+      text: 'You can create and edit desktop-equivalent profile fields (transport + relay credentials included).',
       cls: 'setting-item-description',
     });
 
@@ -414,7 +424,7 @@ export class MobileSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Relay connect test')
-      .setDesc('POST first profile to relay /v1/connect and inspect relay response code.')
+      .setDesc('POST active profile to relay /v1/connect and inspect relay response code.')
       .addButton(btn => btn
         .setButtonText('Run')
         .setCta()
@@ -586,6 +596,69 @@ export class MobileSettingsTab extends PluginSettingTab {
           .onChange(async v => {
             await this.pluginRef.updateMobileProfile(p.id, { remotePath: v.trim() });
           }));
+
+      new Setting(containerEl)
+        .setName('Transport')
+        .setDesc('Desktop parity: select relay-rpc to use relay JSON-RPC as mainline path.')
+        .addDropdown(d => d
+          .addOption('sftp', 'SFTP')
+          .addOption('rpc', 'SSH + RPC daemon')
+          .addOption('relay-rpc', 'Relay-RPC')
+          .setValue(p.transport ?? 'sftp')
+          .onChange(async v => {
+            await this.pluginRef.updateMobileProfile(p.id, { transport: v as 'sftp' | 'rpc' | 'relay-rpc' });
+            this.display();
+          }));
+
+      if ((p.transport ?? 'sftp') !== 'relay-rpc') {
+        new Setting(containerEl)
+          .setName('Mobile transport note')
+          .setDesc('SFTP/RPC may fail on mobile depending on runtime Node API availability. For desktop-equivalent behavior, use relay-rpc.');
+      }
+
+      if ((p.transport ?? 'sftp') === 'relay-rpc') {
+        new Setting(containerEl)
+          .setName('Relay base URL (profile)')
+          .setDesc('Example: https://relay.example.com (fallback to global relay endpoint when empty).')
+          .addText(t => t
+            .setPlaceholder('https://relay.example.com')
+            .setValue(p.relayBaseUrl ?? '')
+            .onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { relayBaseUrl: v.trim() });
+            }));
+
+        new Setting(containerEl)
+          .setName('Relay bearer token (profile, optional)')
+          .setDesc('Optional Authorization bearer token for /v1/connect.')
+          .addText(t => {
+            t.inputEl.type = 'password';
+            t.setValue(p.relayAuthToken ?? '');
+            t.onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { relayAuthToken: v.trim() });
+            });
+          });
+
+        new Setting(containerEl)
+          .setName('Relay RPC username (profile)')
+          .setDesc('Default fallback: admin')
+          .addText(t => t
+            .setPlaceholder('admin')
+            .setValue(p.relayRpcUsername ?? '')
+            .onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { relayRpcUsername: v.trim() });
+            }));
+
+        new Setting(containerEl)
+          .setName('Relay RPC password (profile)')
+          .setDesc('Default fallback: password')
+          .addText(t => {
+            t.inputEl.type = 'password';
+            t.setValue(p.relayRpcPassword ?? '');
+            t.onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { relayRpcPassword: v.trim() });
+            });
+          });
+      }
     }
 
     const logs = this.pluginRef.getMobilePreviewLogs();
