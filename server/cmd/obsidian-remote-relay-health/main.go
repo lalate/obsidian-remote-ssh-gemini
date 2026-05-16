@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,7 +26,31 @@ type healthResponse struct {
 }
 
 type errorResponse struct {
-	Error string `json:"error"`
+	Error   string   `json:"error"`
+	Details []string `json:"details,omitempty"`
+}
+
+type capabilitiesResponse struct {
+	OK           bool     `json:"ok"`
+	Service      string   `json:"service"`
+	Version      string   `json:"version"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type connectRequest struct {
+	RequestID  string `json:"requestId,omitempty"`
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	Username   string `json:"username"`
+	RemotePath string `json:"remotePath"`
+}
+
+type connectResponse struct {
+	OK        bool           `json:"ok"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	RequestID string         `json:"requestId,omitempty"`
+	Received  connectRequest `json:"received"`
 }
 
 func main() {
@@ -68,31 +93,94 @@ func run(args []string) (int, error) {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
+			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"}, false)
 			return
 		}
 
-		if tokenValue != "" {
-			auth := strings.TrimSpace(r.Header.Get("Authorization"))
-			expected := "Bearer " + tokenValue
-			if auth != expected {
-				writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
-				return
-			}
+		if !authorizeRequest(tokenValue, r) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"}, r.Method == http.MethodHead)
+			return
 		}
 
 		resp := healthResponse{
 			OK:        true,
-			Service:   "obsidian-remote-relay-health",
+			Service:   "obsidian-remote-relay",
 			Version:   Version,
 			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, resp, r.Method == http.MethodHead)
+	})
+
+	mux.HandleFunc("/v1/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		setHeaders(w, *allowOrigin)
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"}, false)
+			return
+		}
+		if !authorizeRequest(tokenValue, r) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"}, false)
+			return
+		}
+
+		resp := capabilitiesResponse{
+			OK:      true,
+			Service: "obsidian-remote-relay",
+			Version: Version,
+			Capabilities: []string{
+				"healthz",
+				"connect.stub.v1",
+			},
+		}
+		writeJSON(w, http.StatusOK, resp, false)
+	})
+
+	mux.HandleFunc("/v1/connect", func(w http.ResponseWriter, r *http.Request) {
+		setHeaders(w, *allowOrigin)
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"}, false)
+			return
+		}
+		if !authorizeRequest(tokenValue, r) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"}, false)
+			return
+		}
+
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		var req connectRequest
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid json payload"}, false)
+			return
+		}
+
+		if issues := validateConnectRequest(req); len(issues) > 0 {
+			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request", Details: issues}, false)
+			return
+		}
+
+		resp := connectResponse{
+			OK:        false,
+			Code:      "NOT_IMPLEMENTED",
+			Message:   "relay connect bridge is not implemented yet; this endpoint is a scaffold",
+			RequestID: strings.TrimSpace(req.RequestID),
+			Received:  req,
+		}
+		writeJSON(w, http.StatusOK, resp, false)
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		setHeaders(w, *allowOrigin)
-		writeJSON(w, http.StatusNotFound, errorResponse{Error: "not found"})
+		writeJSON(w, http.StatusNotFound, errorResponse{Error: "not found"}, false)
 	})
 
 	server := &http.Server{
@@ -119,14 +207,43 @@ func normalizePath(path string) string {
 	return trimmed
 }
 
+func authorizeRequest(tokenValue string, r *http.Request) bool {
+	if tokenValue == "" {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	expected := "Bearer " + tokenValue
+	return auth == expected
+}
+
+func validateConnectRequest(req connectRequest) []string {
+	issues := make([]string, 0, 4)
+	if strings.TrimSpace(req.Host) == "" {
+		issues = append(issues, "host is required")
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		issues = append(issues, "port must be between 1 and 65535")
+	}
+	if strings.TrimSpace(req.Username) == "" {
+		issues = append(issues, "username is required")
+	}
+	if strings.TrimSpace(req.RemotePath) == "" {
+		issues = append(issues, "remotePath is required")
+	}
+	return issues
+}
+
 func setHeaders(w http.ResponseWriter, allowOrigin string) {
 	w.Header().Set("Access-Control-Allow-Origin", allowOrigin)
 	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
 }
 
-func writeJSON(w http.ResponseWriter, status int, payload any) {
+func writeJSON(w http.ResponseWriter, status int, payload any, omitBody bool) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
+	if omitBody {
+		return
+	}
 	_ = json.NewEncoder(w).Encode(payload)
 }
