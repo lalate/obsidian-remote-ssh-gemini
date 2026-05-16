@@ -6,6 +6,7 @@ import type { SftpClient } from '../ssh/SftpClient';
 import type { PluginSettings } from '../types';
 import { logger } from '../util/logger';
 import { errorMessage } from '../util/errorMessage';
+import { clearConflictStreamActivity, pulseConflictStreamActivity } from '../conflict/ConflictStreamGate';
 
 export const VIEW_TYPE_REMOTE_TERMINAL = 'remote-ssh-terminal';
 const RESIZE_DEBOUNCE_MS = 100;
@@ -95,7 +96,10 @@ export class RemoteTerminalView extends ItemView {
     }
 
     this.shell = new RemoteShell(client, {
-      onData: (chunk) => { this.term?.write(chunk); },
+      onData: (chunk) => {
+        pulseConflictStreamActivity();
+        this.term?.write(chunk);
+      },
       onClose: (reason, cause) => {
         // Always log so the channel-close audit trail isn't lost when
         // the View has already torn down — `this.term` may be null
@@ -156,6 +160,7 @@ export class RemoteTerminalView extends ItemView {
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.shell?.close();
+    clearConflictStreamActivity();
     this.shell = null;
     this.term?.dispose();
     this.term = null;

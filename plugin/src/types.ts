@@ -75,6 +75,12 @@ export interface PluginSettings {
    */
   reconnectMaxRetries: number;
   /**
+   * Non-blocking conflict UX switch.
+   * true: defer conflict modals while high-priority streams are active.
+   * false: always show conflict modals immediately.
+   */
+  autoResumeDeferredConflicts?: boolean;
+  /**
    * Override for `defaultClientId()` used by PathMapper. Determines
    * the per-client subtree on the remote (`.obsidian/user/<id>/...`).
    * Empty string falls back to a sanitized OS hostname. Changing this
