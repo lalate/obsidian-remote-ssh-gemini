@@ -386,6 +386,13 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - 応答 `code`（`NOT_IMPLEMENTED` など）と HTTP status をレポート表示。
   - `requestUrl` 優先 + `fetch` fallback で実行。
 - 次の prerelease は `1.0.48-ios.20`。
+- relay `/v1/connect` をスタブから TCP到達プリチェックへ更新。
+  - 成功時: `code=PRECHECK_OK`, `ok=true`。
+  - 到達不可時: `code=TARGET_UNREACHABLE`, `ok=false`。
+- plugin relay connect test の判定を更新。
+  - `PRECHECK_OK` を PASS。
+  - `TARGET_UNREACHABLE` を FAIL。
+- 次の prerelease は `1.0.48-ios.21`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

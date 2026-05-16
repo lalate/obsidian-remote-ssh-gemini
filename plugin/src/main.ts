@@ -522,7 +522,15 @@ export default class RemoteSshPlugin extends Plugin {
 
       let status: 'PASS' | 'WARN' | 'FAIL' = 'FAIL';
       if (response.status >= 200 && response.status < 300) {
-        status = code === 'NOT_IMPLEMENTED' ? 'WARN' : (parsed.ok === true ? 'PASS' : 'WARN');
+        if (code === 'NOT_IMPLEMENTED') {
+          status = 'WARN';
+        } else if (code === 'TARGET_UNREACHABLE') {
+          status = 'FAIL';
+        } else if (parsed.ok === true || code === 'PRECHECK_OK') {
+          status = 'PASS';
+        } else {
+          status = 'WARN';
+        }
       }
 
       const detail =
@@ -562,7 +570,11 @@ export default class RemoteSshPlugin extends Plugin {
         const message = typeof parsed.message === 'string' ? parsed.message : '';
 
         const status: 'PASS' | 'WARN' | 'FAIL' = fetchResponse.ok
-          ? (code === 'NOT_IMPLEMENTED' ? 'WARN' : (parsed.ok === true ? 'PASS' : 'WARN'))
+          ? (code === 'NOT_IMPLEMENTED'
+            ? 'WARN'
+            : (code === 'TARGET_UNREACHABLE'
+              ? 'FAIL'
+              : (parsed.ok === true || code === 'PRECHECK_OK' ? 'PASS' : 'WARN')))
           : 'FAIL';
         const detail = fetchResponse.ok
           ? `relay connect responded via fetch fallback (HTTP ${fetchResponse.status}${code ? `, code=${code}` : ''}${message ? `, message=${message}` : ''})`
