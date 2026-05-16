@@ -13,10 +13,14 @@ type MobilePreviewPlugin = Plugin & {
   getMobileRelayConfig: () => {
     endpoint: string;
     authToken?: string;
+    rpcUsername?: string;
+    rpcPassword?: string;
   };
   updateMobileRelayConfig: (patch: {
     endpoint?: string;
     authToken?: string;
+    rpcUsername?: string;
+    rpcPassword?: string;
   }) => Promise<void>;
   addMobileProfile: () => Promise<void>;
   updateMobileProfile: (id: string, patch: {
@@ -189,6 +193,34 @@ type MobilePreviewPlugin = Plugin & {
     detail: string;
     note: string;
   }) => string;
+  runMobileRelayRpcTest: () => Promise<{
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    sessionId?: string;
+    streamUrl?: string;
+    relayCode?: string;
+    latencyMs?: number;
+    serverName?: string;
+    serverVersion?: string;
+    fsPath?: string;
+    detail: string;
+    note: string;
+  }>;
+  formatMobileRelayRpcReport: (result: {
+    timestamp: string;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    endpoint: string;
+    sessionId?: string;
+    streamUrl?: string;
+    relayCode?: string;
+    latencyMs?: number;
+    serverName?: string;
+    serverVersion?: string;
+    fsPath?: string;
+    detail: string;
+    note: string;
+  }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
 };
 
@@ -333,6 +365,27 @@ export class MobileSettingsTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName('Relay RPC username')
+      .setDesc('JSON-RPC auth username used for relay stream handshake. Default fallback: admin')
+      .addText(t => t
+        .setPlaceholder('admin')
+        .setValue(relay.rpcUsername ?? '')
+        .onChange(async v => {
+          await this.pluginRef.updateMobileRelayConfig({ rpcUsername: v.trim() });
+        }));
+
+    new Setting(containerEl)
+      .setName('Relay RPC password')
+      .setDesc('JSON-RPC auth password used for relay stream handshake. Default fallback: password')
+      .addText(t => {
+        t.inputEl.type = 'password';
+        t.setValue(relay.rpcPassword ?? '');
+        t.onChange(async v => {
+          await this.pluginRef.updateMobileRelayConfig({ rpcPassword: v.trim() });
+        });
+      });
+
+    new Setting(containerEl)
       .setName('Relay probe')
       .setDesc('Checks whether the configured relay endpoint is reachable from mobile.')
       .addButton(btn => btn
@@ -414,26 +467,53 @@ export class MobileSettingsTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('SSH connect test (experimental)')
-      .setDesc('Attempt a real SSH connect using the first configured profile. Expect auth failures until credentials are added.')
+      .setName('Relay JSON-RPC test')
+      .setDesc('stream test + JSON-RPC auth/server.info handshake over WebSocket.')
+      .addButton(btn => btn
+        .setButtonText('Run')
+        .setCta()
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayRpcTest();
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: relay RPC test passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice('Remote SSH: relay RPC test warning');
+            return;
+          }
+          new Notice('Remote SSH: relay RPC test failed');
+        }))
+      .addButton(btn => btn
+        .setButtonText('Copy report')
+        .onClick(async () => {
+          const result = await this.pluginRef.runMobileRelayRpcTest();
+          const report = this.pluginRef.formatMobileRelayRpcReport(result);
+          void navigator.clipboard.writeText(report);
+          new Notice('Remote SSH: relay RPC test report copied');
+        }));
+
+    new Setting(containerEl)
+      .setName('Mainline connect test')
+      .setDesc('If relay endpoint is configured, tests relay JSON-RPC path. Otherwise attempts direct SSH connect.')
       .addButton(btn => btn
         .setButtonText('Run')
         .setCta()
         .onClick(async () => {
           const result = await this.pluginRef.runMobileSshConnectTest();
           if (result.attempted === 0) {
-            new Notice('Remote SSH: SSH connect test skipped (no profiles configured)');
+            new Notice('Remote SSH: mainline connect test skipped (no profiles configured)');
             return;
           }
           if (result.status === 'PASS') {
-            new Notice('Remote SSH: SSH connect test passed');
+            new Notice('Remote SSH: mainline connect test passed');
             return;
           }
           if (result.status === 'WARN') {
-            new Notice('Remote SSH: SSH connect test warning (likely missing credentials)');
+            new Notice('Remote SSH: mainline connect test warning');
             return;
           }
-          new Notice('Remote SSH: SSH connect test failed');
+          new Notice('Remote SSH: mainline connect test failed');
         }))
       .addButton(btn => btn
         .setButtonText('Copy report')
@@ -441,7 +521,7 @@ export class MobileSettingsTab extends PluginSettingTab {
           const result = await this.pluginRef.runMobileSshConnectTest();
           const report = this.pluginRef.formatMobileSshConnectReport(result);
           void navigator.clipboard.writeText(report);
-          new Notice('Remote SSH: SSH connect test report copied');
+          new Notice('Remote SSH: mainline connect test report copied');
         }));
 
     const profiles = this.pluginRef.getMobileProfiles();

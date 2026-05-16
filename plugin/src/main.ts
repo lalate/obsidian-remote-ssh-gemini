@@ -742,7 +742,7 @@ export default class RemoteSshPlugin extends Plugin {
         streamUrl: connect.streamUrl,
         relayCode: connect.code,
         latencyMs: connect.latencyMs,
-        detail: 'relay connect response did not include streamUrl',
+        detail: `relay connect did not provide streamUrl (${connect.detail})`,
         note,
       };
     }
@@ -886,7 +886,7 @@ export default class RemoteSshPlugin extends Plugin {
         timestamp,
         status: 'WARN',
         endpoint: stream.endpoint,
-        detail: 'stream test returned no streamUrl',
+        detail: `stream test did not provide streamUrl (${stream.detail})`,
         note,
       };
     }
@@ -1262,6 +1262,38 @@ export default class RemoteSshPlugin extends Plugin {
     const note = 'Attempts a real SSH connect through SftpClient using the first configured mobile profile.';
     const attempts: MobileSshConnectAttempt[] = [];
     const profile = this.mobileProfiles[0];
+
+    // Mobile mainline: when relay endpoint is configured, prefer relay RPC
+    // over direct SSH. iOS cannot reliably provide Node sockets/Buffer in
+    // all environments, while relay path is the production target.
+    const relayEndpoint = this.mobileRelayConfig.endpoint?.trim() ?? '';
+    if (relayEndpoint.length > 0) {
+      const relay = await this.runMobileRelayRpcTest();
+      const mappedStatus: 'PASS' | 'WARN' | 'FAIL' = relay.status;
+      const attempt: MobileSshConnectAttempt = {
+        profileId: profile?.id ?? '(none)',
+        profileName: profile?.name ?? '(none)',
+        target: relay.endpoint || '(relay endpoint not configured)',
+        status: mappedStatus,
+        detail:
+          `relay mainline: ${relay.detail}`
+          + (relay.streamUrl ? ` (stream=${relay.streamUrl})` : ''),
+        latencyMs: relay.latencyMs,
+      };
+      return {
+        timestamp,
+        status: mappedStatus,
+        attempted: 1,
+        pass: mappedStatus === 'PASS' ? 1 : 0,
+        warn: mappedStatus === 'WARN' ? 1 : 0,
+        fail: mappedStatus === 'FAIL' ? 1 : 0,
+        skip: 0,
+        note:
+          'Relay endpoint is configured, so mobile mainline connect test uses relay JSON-RPC '
+          + '(auth/server.info/fs.write/fs.read) instead of direct SSH.',
+        attempts: [attempt],
+      };
+    }
 
     if (!this.hasBufferGlobal()) {
       const capabilitySummary = this.getRuntimeCapabilitySummary();
