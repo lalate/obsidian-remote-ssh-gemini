@@ -12,6 +12,10 @@ export const DEFAULT_PROFILE: Omit<SshProfile, 'id' | 'name'> = {
   keepaliveIntervalMs: 10000,
   keepaliveCountMax: 3,
   transport: 'sftp',
+  relayBaseUrl: '',
+  relayAuthToken: '',
+  relayRpcUsername: '',
+  relayRpcPassword: '',
 };
 
 export const DEFAULT_SETTINGS: PluginSettings = {

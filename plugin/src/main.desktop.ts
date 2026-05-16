@@ -39,6 +39,7 @@ import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
 import { telemetry, telemetryLogPath } from "./util/Telemetry";
+import { establishRelayWsConnection } from './transport/RelayWsConnection';
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -409,22 +410,72 @@ export default class RemoteSshPlugin extends Plugin {
       return;
     }
     this.setState(SyncState.CONNECTING);
-    try {
-      await this.conn.connectSsh(profile);
-    } catch (e) {
-      this.setState(SyncState.ERROR);
-      const { notice, classified } = classifyToNotice(e);
-      logger.error(`Connect failed: ${classified.title}`, {
-        category: classified.category, code: classified.code,
-        original: classified.original.message, profileId: profile.id,
-      });
-      new Notice(notice);
-      try { await this.conn.client.disconnect(); } catch { /* ignore */ }
-      return;
-    }
-
     const transport = profile.transport ?? 'sftp';
     let rpcSummary = '';
+
+    if (transport === 'relay-rpc') {
+      const relayBaseUrl = profile.relayBaseUrl?.trim() ?? '';
+      if (!relayBaseUrl) {
+        this.setState(SyncState.ERROR);
+        new Notice('Remote SSH: relay base URL is required for Relay-RPC transport');
+        return;
+      }
+      const effectivePath = normalizeRemotePath(profile.remotePath);
+      try {
+        const relayConn = await establishRelayWsConnection({
+          baseUrl: relayBaseUrl,
+          target: {
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            remotePath: effectivePath,
+          },
+          authToken: profile.relayAuthToken?.trim() || undefined,
+          rpcCredentials: {
+            username: profile.relayRpcUsername?.trim() || 'admin',
+            password: profile.relayRpcPassword?.trim() || 'password',
+          },
+        });
+        // RelayWsRpcClient is intentionally shape-compatible with RpcClient.
+        this.conn.rpcConnection = {
+          rpc: relayConn.rpc as unknown as Awaited<ReturnType<typeof establishRpcConnection>>['rpc'],
+          info: {
+            protocolVersion: 1,
+            version: 'relay-ws',
+            capabilities: [],
+          },
+          close: () => relayConn.close(),
+        } as unknown as Awaited<ReturnType<typeof establishRpcConnection>>;
+        this.conn.activeRemoteBasePath = effectivePath;
+        this.conn.activeProfile = profile;
+        rpcSummary = ` — relay session ${relayConn.sessionId}`;
+      } catch (e) {
+        this.setState(SyncState.ERROR);
+        const { notice, classified } = classifyToNotice(e);
+        logger.error(`Relay startup failed: ${classified.title}`, {
+          category: classified.category, code: classified.code,
+          original: classified.original.message, profileId: profile.id,
+        });
+        new Notice(notice);
+        try { await this.conn.client.disconnect(); } catch { /* ignore */ }
+        return;
+      }
+    } else {
+      try {
+        await this.conn.connectSsh(profile);
+      } catch (e) {
+        this.setState(SyncState.ERROR);
+        const { notice, classified } = classifyToNotice(e);
+        logger.error(`Connect failed: ${classified.title}`, {
+          category: classified.category, code: classified.code,
+          original: classified.original.message, profileId: profile.id,
+        });
+        new Notice(notice);
+        try { await this.conn.client.disconnect(); } catch { /* ignore */ }
+        return;
+      }
+    }
+
     if (transport === 'rpc') {
       try {
         await this.conn.startRpcSession(profile, this.conn.activeRemoteBasePath!);
