@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   enableDebugLog: false,
   maxLogLines: 500,
   reconnectMaxRetries: 5,
+  autoResumeDeferredConflicts: true,
   clientId: '',
   userName: '',
   // Phase 4 marker for shadow vaults; null on a normal vault. Only

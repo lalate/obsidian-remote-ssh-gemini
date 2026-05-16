@@ -12,6 +12,7 @@ import { WriteConflictModal } from '../ui/WriteConflictModal';
 import { ThreeWayMergeModal } from '../ui/ThreeWayMergeModal';
 import { AncestorTracker } from '../conflict/AncestorTracker';
 import { ConflictResolver } from '../conflict/ConflictResolver';
+import { ConflictDeferralCoordinator } from '../conflict/ConflictDeferralCoordinator';
 import { OfflineQueue } from '../offline/OfflineQueue';
 import { QueueReplayer } from '../offline/QueueReplayer';
 import { PendingEditsBar } from '../ui/PendingEditsBar';
@@ -68,6 +69,7 @@ export class AdapterManager {
   private ancestorTracker: AncestorTracker | null = null;
   private offlineQueue: OfflineQueue | null = null;
   private resourceBridge: ResourceBridge | null = null;
+  private readonly conflictDeferral: ConflictDeferralCoordinator;
 
   constructor(
     private readonly app: App,
@@ -77,7 +79,12 @@ export class AdapterManager {
     private readonly pendingEditsBar: PendingEditsBar,
     private readonly getSettings: () => PluginSettings,
     private readonly transferTracker: TransferTracker | null = null,
-  ) {}
+  ) {
+    this.conflictDeferral = new ConflictDeferralCoordinator(
+      this.app,
+      () => this.getSettings().autoResumeDeferredConflicts ?? true,
+    );
+  }
 
   get dataAdapter(): SftpDataAdapter | null {
     return this._dataAdapter;
@@ -205,8 +212,15 @@ export class AdapterManager {
       fsClient,
       this.readCache,
       this.ancestorTracker,
-      (vaultPath, panes) => new ThreeWayMergeModal(this.app, { path: vaultPath, ...panes }).prompt(),
-      (vaultPath) => new WriteConflictModal(this.app, vaultPath).prompt(),
+      (vaultPath, panes) => this.conflictDeferral.handleTextConflict(
+        vaultPath,
+        panes,
+        () => new ThreeWayMergeModal(this.app, { path: vaultPath, ...panes }).prompt(),
+      ),
+      (vaultPath) => this.conflictDeferral.handleBinaryConflict(
+        vaultPath,
+        () => new WriteConflictModal(this.app, vaultPath).prompt(),
+      ),
     );
     this._dataAdapter = new SftpDataAdapter(
       fsClient,
@@ -294,6 +308,7 @@ export class AdapterManager {
     this.ancestorTracker?.clear();
     this.ancestorTracker = null;
     this.transferTracker?.clear();
+    this.conflictDeferral.clear();
     // Bridge tears down asynchronously; we don't await here because
     // restore() must remain sync for the connection-close hook.
     void this.stopResourceBridge();
@@ -301,6 +316,14 @@ export class AdapterManager {
     // File Explorer back to the local view after un-patching, but
     // shadow vaults are torn down by closing their window — there's
     // no in-place "switch back" UX to support anymore.
+  }
+
+  deferredConflictCount(): number {
+    return this.conflictDeferral.pendingCount();
+  }
+
+  async resolveDeferredConflicts(): Promise<number> {
+    return await this.conflictDeferral.resolvePendingConflicts();
   }
 
   /**

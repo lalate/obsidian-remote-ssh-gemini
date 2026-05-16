@@ -108,6 +108,19 @@ export class SettingsTab extends PluginSettingTab {
           }
         }));
 
+    new Setting(containerEl)
+      .setName('Auto-resume deferred conflicts')
+      .setDesc(
+        'When terminal/log streams are active, defer conflict dialogs to avoid UI blocking. ' +
+        'After the stream stabilizes, you can resolve queued conflicts from the command palette.',
+      )
+      .addToggle(t => t
+        .setValue(this.plugin.settings.autoResumeDeferredConflicts ?? true)
+        .onChange(async v => {
+          this.plugin.settings.autoResumeDeferredConflicts = v;
+          await this.plugin.saveSettings();
+        }));
+
     this.renderTerminalPanel(containerEl);
   }
 
