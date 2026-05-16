@@ -403,6 +403,11 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - relay connect 実行後、`streamUrl` へ WebSocket接続。
   - `session.ready` 受信を PASS 条件としてレポート化。
 - 次の prerelease は `1.0.48-ios.23`。
+- relay `/v1/stream/:sessionId` を echo から raw TCP 中継に更新。
+  - WebSocket binary frames を session.Target の TCP socket へ転送。
+  - target からの bytes を WebSocket binary frames として返送。
+  - text frames は将来の制御メッセージ用に保持。
+- 次の prerelease は `1.0.48-ios.24`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。
