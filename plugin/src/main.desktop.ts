@@ -186,6 +186,23 @@ export default class RemoteSshPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'resolve-deferred-conflicts',
+      name: 'Resolve deferred conflicts',
+      checkCallback: (checking) => {
+        const count = this.adapterMgr?.deferredConflictCount() ?? 0;
+        if (checking) return count > 0;
+        void this.adapterMgr.resolveDeferredConflicts().then(opened => {
+          if (opened === 0) {
+            new Notice('Remote SSH: no deferred conflicts');
+            return;
+          }
+          new Notice(`Remote SSH: opened ${opened} deferred conflict dialog(s)`);
+        });
+        return true;
+      },
+    });
+
+    this.addCommand({
       id: 'debug-patch-adapter',
       name: 'Debug: patch app.vault.adapter onto SFTP (read-side only)',
       callback: () => this.debugPatchAdapter(),
