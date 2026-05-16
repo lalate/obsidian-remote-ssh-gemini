@@ -368,6 +368,11 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
 - `runMobileRelayProbe` / `formatMobileRelayProbeReport` を追加し、mobile から relay への HTTP 到達性を検証できるようにした。
 - 直SSH不可ランタイムでは relay 経由を正式ルートとする方針を明示。
 - 次の prerelease は `1.0.48-ios.18`。
+- relay probe の診断を改善:
+  - GitHub URLのような非relayエンドポイント誤設定を WARN で明示。
+  - `requestUrl` を優先し、失敗時に `fetch` フォールバックを実施。
+  - 失敗時の detail に `requestUrl` / `fetch` 両方のエラーを含めて切り分け容易化。
+- 次の prerelease は `1.0.48-ios.19`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

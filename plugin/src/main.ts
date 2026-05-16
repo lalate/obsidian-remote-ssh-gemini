@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin } from 'obsidian';
+import { Notice, Platform, Plugin, requestUrl } from 'obsidian';
 import type { App, PluginManifest } from 'obsidian';
 import { MobileSettingsTab } from './settings/MobileSettingsTab';
 import type { SshProfile } from './types';
@@ -261,6 +261,31 @@ export default class RemoteSshPlugin extends Plugin {
       return result;
     }
 
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: url.toString(),
+        detail: `relay endpoint must use http/https (received: ${url.protocol})`,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: FAIL (unsupported scheme: ${url.protocol})`);
+      return result;
+    }
+
+    const host = url.hostname.toLowerCase();
+    if (host === 'github.com' || host.endsWith('.github.com') || host.includes('githubusercontent.com')) {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: url.toString(),
+        detail: 'configured endpoint looks like a GitHub page, not a relay API/health endpoint',
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: WARN (${url.toString()}) — likely non-relay endpoint`);
+      return result;
+    }
+
     const started = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -274,16 +299,16 @@ export default class RemoteSshPlugin extends Plugin {
     }
 
     try {
-      const response = await fetch(url.toString(), {
+      const response = await requestUrl({
+        url: url.toString(),
         method: 'GET',
         headers,
-        signal: controller.signal,
-        cache: 'no-store',
+        throw: false,
       });
       const latencyMs = Date.now() - started;
 
-      const status: 'PASS' | 'WARN' = response.ok ? 'PASS' : 'WARN';
-      const detail = response.ok
+      const status: 'PASS' | 'WARN' = response.status >= 200 && response.status < 300 ? 'PASS' : 'WARN';
+      const detail = response.status >= 200 && response.status < 300
         ? `relay endpoint reachable (HTTP ${response.status})`
         : `relay endpoint responded but returned HTTP ${response.status}`;
 
@@ -296,16 +321,45 @@ export default class RemoteSshPlugin extends Plugin {
         detail,
         note,
       };
-      this.pushMobilePreviewLog(
-        `Relay probe: ${status} (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`,
-      );
+      this.pushMobilePreviewLog(`Relay probe: ${status} (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`);
       return result;
-    } catch (e) {
+    } catch (requestErr) {
+      let fetchErrMessage = '';
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const latencyMs = Date.now() - started;
+        const status: 'PASS' | 'WARN' = response.ok ? 'PASS' : 'WARN';
+        const detail = response.ok
+          ? `relay endpoint reachable via fetch fallback (HTTP ${response.status})`
+          : `relay endpoint responded via fetch fallback but returned HTTP ${response.status}`;
+        const result: MobileRelayProbeResult = {
+          timestamp,
+          status,
+          endpoint: url.toString(),
+          latencyMs,
+          httpStatus: response.status,
+          detail,
+          note,
+        };
+        this.pushMobilePreviewLog(
+          `Relay probe: ${status} via fetch fallback (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`,
+        );
+        return result;
+      } catch (fetchErr) {
+        fetchErrMessage = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      }
+
       const latencyMs = Date.now() - started;
-      const raw = e instanceof Error ? e.message : String(e);
-      const detail = raw.toLowerCase().includes('abort')
+      const requestErrMessage = requestErr instanceof Error ? requestErr.message : String(requestErr);
+      const timeoutHit = requestErrMessage.toLowerCase().includes('abort') || fetchErrMessage.toLowerCase().includes('abort');
+      const detail = timeoutHit
         ? 'relay probe timed out after 5000ms'
-        : `relay probe network error: ${raw}`;
+        : `relay probe network error: requestUrl=${requestErrMessage}; fetch=${fetchErrMessage || 'n/a'}`;
       const result: MobileRelayProbeResult = {
         timestamp,
         status: 'FAIL',
