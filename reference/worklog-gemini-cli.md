@@ -332,6 +332,78 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
     - `Profiles: total=2, invalid=0, warnings=0`
     - `Issues: none`
 
+### 2026-05-16
+
+#### 作業内容
+- Relay サーバーに WSS を有効化。
+- JSON-RPC エンドポイント `/v1/jsonrpc` を追加。
+  - 実装したメソッド: `auth`, `server.info`, `fs.read`, `fs.write`
+
+### 2026-05-16: iOS TLS/WSS 実機通過 + Mainline 統合(第一段)
+- `1.0.48-ios.27` を prerelease 作成し、iOS 実機で以下がすべて PASS:
+  - relay connect (HTTPS `/v1/connect`)
+  - relay stream (WSS `session.ready`)
+  - relay JSON-RPC (`auth`, `server.info`, `fs.write`, `fs.read`)
+- TLS の再現性向上:
+  - Local CA + server cert 生成スクリプトを整備
+  - iOS 用 CA 配布 (`relay-ios.cer`) を手順化
+  - relay-health README に iOS 証明書導入手順を追記
+- Mainline 統合(第一段):
+  - `runMobileSshConnectTest` を relay endpoint 設定時は relay RPC 経路優先で評価するよう変更
+  - Mobile Settings の文言を `Mainline connect test` に更新
+  - 目的: モバイル本線での接続判定を SSH 直結ではなく relay 経路に寄せる
+- テストスクリプト `relay_jsonrpc_test.go` を作成。
+- ドキュメント `README.md` を更新。
+
+#### 手間取った点
+- WSS の証明書と秘密鍵の設定。
+  - `.env` ファイルにパスを追加し、`ListenAndServeTLS` を使用。
+- JSON-RPC メソッドのエラーハンドリング。
+  - 不正なリクエストに対する適切なレスポンスを実装。
+
+#### 次のステップ
+- エンドツーエンドテストの実施。
+- モバイルクライアントからの接続確認。
+
+### 2026-05-16 (E2E 着手)
+
+#### 作業内容
+- relay-health の起動を TLS 必須から「証明書が両方あるときのみ TLS、それ以外は HTTP」に修正。
+- `deploy/relay-health/scripts/e2e-jsonrpc.ps1` を追加し、`healthz` / `capabilities` / `jsonrpc(server.info, auth)` の一括確認を可能化。
+- README に E2E 実行コマンドを追記。
+
+#### 手間取った点
+- Docker Desktop のデーモン停止により `docker compose up -d --build` が実行不可。
+- 端末環境で `GOOS=linux` が残ると、Windows 上の `go test` 実行時に `%1 is not a valid Win32 application` が発生。
+
+#### メモ
+- ローカル検証前に `Remove-Item Env:GOOS -ErrorAction SilentlyContinue` と `Remove-Item Env:GOARCH -ErrorAction SilentlyContinue` を実行すると安全。
+
+#### 実行結果
+- WSL で relay-health を起動し、Windows PowerShell から `pwsh ./scripts/e2e-jsonrpc.ps1` 実行で成功。
+- 確認済み: healthz / capabilities / jsonrpc(server.info, auth)
+
+#### 追加改善
+- E2E スクリプトを fs.write / fs.read まで拡張。
+- 自己署名証明書検証用に `-SkipTlsVerify` オプションを追加。
+- Windows/WSL 両対応の `bootstrap-e2e.ps1` を追加（compose up + E2E を一括実行）。
+
+### 2026-05-16 (Stage A)
+
+#### 作業内容
+- `/v1/stream/:sessionId` を raw TCP 中継から WS JSON-RPC 処理へ変更。
+- 接続時 `session.ready` を送信後、`auth` / `server.info` / `fs.read` / `fs.write` を JSON-RPC 2.0 で処理。
+- `e2e-ws-jsonrpc.ps1` を追加し、`connect -> websocket -> auth -> server.info` の検証を自動化。
+
+#### メモ
+- WS では text/binary フレームを JSON として解釈し、`Parse error` / `Invalid Request` を JSON-RPC 2.0 で返す。
+
+#### 追加対応
+- `deploy/relay-health/docker-compose.yml` に TLS 環境変数 (`TLS_CERT_FILE`, `TLS_KEY_FILE`) を配線。
+- `./certs:/certs:ro` をマウントし、WSS 検証用証明書をコンテナへ注入可能化。
+- healthcheck を HTTP/HTTPS 自動切替に変更。
+- `scripts/generate-self-signed-certs.ps1` を追加し、WSL OpenSSL で証明書生成 + `.env` 反映を自動化。
+
 ### 2026-05-16: モバイル対応 M5-alpha（接続プローブ）
 - `main.ts` に `runMobileConnectionProbe` / `formatMobileConnectionProbeReport` を追加。
 - モバイルから host:port 到達性をベストエフォートで判定する HTTP HEAD プローブを実装。
