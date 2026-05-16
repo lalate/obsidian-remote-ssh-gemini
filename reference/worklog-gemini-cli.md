@@ -373,6 +373,10 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `requestUrl` を優先し、失敗時に `fetch` フォールバックを実施。
   - 失敗時の detail に `requestUrl` / `fetch` 両方のエラーを含めて切り分け容易化。
 - 次の prerelease は `1.0.48-ios.19`。
+- 疎通用URL準備のため、`server/cmd/obsidian-remote-relay-health` を追加。
+  - `GET /healthz` で 200 + JSON を返す最小HTTPサービス。
+  - 任意の Bearer token (`RELAY_PROBE_TOKEN`) と CORS (`ALLOW_ORIGIN`) をサポート。
+- `deploy/relay-health/` に Dockerfile / compose / README / .env.example を追加し、独立デプロイ可能化。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

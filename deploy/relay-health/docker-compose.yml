@@ -1,0 +1,23 @@
+services:
+  relay-health:
+    build:
+      context: ../..
+      dockerfile: deploy/relay-health/Dockerfile
+      args:
+        VERSION: ${RELAY_HEALTH_VERSION:-0.0.0-dev}
+    image: obsidian-remote-relay-health:latest
+    container_name: obsidian-remote-relay-health
+    restart: unless-stopped
+    environment:
+      RELAY_PROBE_TOKEN: ${RELAY_PROBE_TOKEN:-}
+    command:
+      - --listen=:8080
+      - --path=/healthz
+      - --allow-origin=${ALLOW_ORIGIN:-*}
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
