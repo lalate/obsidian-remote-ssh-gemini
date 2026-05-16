@@ -96,6 +96,8 @@ type MobileSshConnectResult = {
 type MobileRelayConfig = {
   endpoint: string;
   authToken?: string;
+  rpcUsername?: string;
+  rpcPassword?: string;
 };
 
 type MobileRelayProbeResult = {
@@ -129,6 +131,21 @@ type MobileRelayStreamResult = {
   streamUrl?: string;
   relayCode?: string;
   latencyMs?: number;
+  detail: string;
+  note: string;
+};
+
+type MobileRelayRpcResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  sessionId?: string;
+  streamUrl?: string;
+  relayCode?: string;
+  latencyMs?: number;
+  serverName?: string;
+  serverVersion?: string;
+  fsPath?: string;
   detail: string;
   note: string;
 };
@@ -219,6 +236,8 @@ export default class RemoteSshPlugin extends Plugin {
     return {
       endpoint: '',
       authToken: '',
+      rpcUsername: '',
+      rpcPassword: '',
     };
   }
 
@@ -532,11 +551,38 @@ export default class RemoteSshPlugin extends Plugin {
       });
       const latencyMs = Date.now() - started;
       const rawText = typeof response.text === 'string' ? response.text : '';
-      const parsed = this.parseRelayConnectBody(rawText);
-      const code = typeof parsed.code === 'string' ? parsed.code : undefined;
-      const message = typeof parsed.message === 'string' ? parsed.message : '';
-      const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
-      const streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
+      let parsed = this.parseRelayConnectBody(rawText);
+      let code = typeof parsed.code === 'string' ? parsed.code : undefined;
+      let message = typeof parsed.message === 'string' ? parsed.message : '';
+      let sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+      let streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
+
+      // iOS runtime sometimes returns 2xx with an empty requestUrl body.
+      // Retry with fetch to recover streamUrl/sessionId before judging result.
+      if (response.status >= 200 && response.status < 300 && !streamUrl) {
+        try {
+          const fetchResponse = await fetch(connectUrl, {
+            method: 'POST',
+            headers,
+            body,
+            cache: 'no-store',
+          });
+          if (fetchResponse.ok) {
+            const fetchText = await fetchResponse.text();
+            const parsedFetch = this.parseRelayConnectBody(fetchText);
+            if (typeof parsedFetch.streamUrl === 'string') {
+              parsed = parsedFetch;
+              code = typeof parsed.code === 'string' ? parsed.code : undefined;
+              message = typeof parsed.message === 'string' ? parsed.message : '';
+              sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+              streamUrl = parsedFetch.streamUrl;
+              this.pushMobilePreviewLog('Relay connect test: recovered streamUrl via fetch body retry');
+            }
+          }
+        } catch {
+          // Keep original requestUrl result when fetch retry is unavailable.
+        }
+      }
 
       let status: 'PASS' | 'WARN' | 'FAIL' = 'FAIL';
       if (response.status >= 200 && response.status < 300) {
@@ -810,6 +856,127 @@ export default class RemoteSshPlugin extends Plugin {
     if (typeof result.latencyMs === 'number') {
       lines.push(`Latency: ${result.latencyMs}ms`);
     }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  async runMobileRelayRpcTest(): Promise<MobileRelayRpcResult> {
+    const timestamp = new Date().toISOString();
+    const note =
+      'Runs relay connect, opens WebSocket stream, waits for session.ready, '
+      + 'then performs JSON-RPC auth/server.info/fs.write/fs.read handshake.';
+
+    const stream = await this.runMobileRelayStreamTest();
+    if (stream.status === 'FAIL') {
+      return {
+        timestamp,
+        status: 'FAIL',
+        endpoint: stream.endpoint,
+        sessionId: stream.sessionId,
+        streamUrl: stream.streamUrl,
+        relayCode: stream.relayCode,
+        latencyMs: stream.latencyMs,
+        detail: `stream test failed before RPC: ${stream.detail}`,
+        note,
+      };
+    }
+    if (!stream.streamUrl) {
+      return {
+        timestamp,
+        status: 'WARN',
+        endpoint: stream.endpoint,
+        detail: 'stream test returned no streamUrl',
+        note,
+      };
+    }
+
+    // Re-open a fresh WebSocket session for the RPC handshake.
+    const endpoint = this.mobileRelayConfig.endpoint.trim();
+    const profile = this.mobileProfiles[0];
+    const rpcUsername = this.mobileRelayConfig.rpcUsername?.trim() || 'admin';
+    const rpcPassword = this.mobileRelayConfig.rpcPassword?.trim() || 'password';
+    const fsPath = `${profile?.remotePath?.trim() || '/vault'}/.relay-rpc-smoke.txt`;
+    const fsContent = `relay-rpc-smoke:${Date.now()}`;
+
+    const started = Date.now();
+    try {
+      const { establishRelayWsConnection } = await import('./transport/RelayWsConnection');
+      const conn = await establishRelayWsConnection({
+        baseUrl: new URL(endpoint).origin,
+        target: {
+          host: profile?.host?.trim() ?? '',
+          port: profile?.port ?? 22,
+          username: rpcUsername,
+          remotePath: profile?.remotePath?.trim() ?? '',
+        },
+        authToken: this.mobileRelayConfig.authToken?.trim(),
+        rpcCredentials: { username: rpcUsername, password: rpcPassword },
+      });
+
+      let serverName: string | undefined;
+      let serverVersion: string | undefined;
+      try {
+        const info = await conn.rpc.call<{ name?: string; version?: string }>('server.info', {});
+        serverName = info.name;
+        serverVersion = info.version;
+
+        await conn.rpc.call('fs.write', { path: fsPath, content: fsContent });
+        const fsRead = await conn.rpc.call<{ path?: string; content?: string }>('fs.read', { path: fsPath });
+        if (typeof fsRead.path !== 'string') {
+          throw new Error('fs.read did not return path');
+        }
+      } finally {
+        conn.close();
+      }
+
+      const latencyMs = Date.now() - started;
+      const result: MobileRelayRpcResult = {
+        timestamp,
+        status: 'PASS',
+        endpoint,
+        sessionId: conn.sessionId,
+        streamUrl: conn.streamUrl,
+        latencyMs,
+        serverName,
+        serverVersion,
+        fsPath,
+        detail: `auth/server.info/fs.write/fs.read ok; server=${serverName ?? '?'} version=${serverVersion ?? '?'}`,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay RPC test: PASS (${endpoint}, latency=${latencyMs}ms, server=${serverName ?? '?'})`,
+      );
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const result: MobileRelayRpcResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        latencyMs,
+        detail: message,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay RPC test: FAIL (${endpoint}) — ${message}`);
+      return result;
+    }
+  }
+
+  formatMobileRelayRpcReport(result: MobileRelayRpcResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay RPC test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (result.relayCode) lines.push(`Relay code: ${result.relayCode}`);
+    if (result.sessionId) lines.push(`Session ID: ${result.sessionId}`);
+    if (result.streamUrl) lines.push(`Stream URL: ${result.streamUrl}`);
+    if (result.serverName) lines.push(`Server name: ${result.serverName}`);
+    if (result.serverVersion) lines.push(`Server version: ${result.serverVersion}`);
+    if (result.fsPath) lines.push(`FS path: ${result.fsPath}`);
+    if (typeof result.latencyMs === 'number') lines.push(`Latency: ${result.latencyMs}ms`);
     lines.push(`Detail: ${result.detail}`);
     lines.push(`Note: ${result.note}`);
     return lines.join('\n');
@@ -1269,6 +1436,8 @@ export default class RemoteSshPlugin extends Plugin {
       ...(saved?.relay ?? {}),
       endpoint: typeof saved?.relay?.endpoint === 'string' ? saved.relay.endpoint : '',
       authToken: typeof saved?.relay?.authToken === 'string' ? saved.relay.authToken : '',
+      rpcUsername: typeof saved?.relay?.rpcUsername === 'string' ? saved.relay.rpcUsername : '',
+      rpcPassword: typeof saved?.relay?.rpcPassword === 'string' ? saved.relay.rpcPassword : '',
     };
 
     if (Platform.isMobileApp) {
