@@ -284,6 +284,22 @@ func run(args []string) (int, error) {
 			_ = conn.Close()
 		}()
 
+		targetConn, err := net.DialTimeout("tcp", session.Target, 5*time.Second)
+		if err != nil {
+			_ = conn.WriteJSON(errorResponse{Error: fmt.Sprintf("failed to connect target %s: %v", session.Target, err)})
+			return
+		}
+		defer func() { _ = targetConn.Close() }()
+
+		streamDone := make(chan struct{})
+		var writeMu sync.Mutex
+		closeOnce := sync.Once{}
+		closeStream := func() {
+			closeOnce.Do(func() {
+				close(streamDone)
+			})
+		}
+
 		ready := streamReadyMessage{
 			Type:      "session.ready",
 			SessionID: sessionID,
@@ -294,12 +310,39 @@ func run(args []string) (int, error) {
 			return
 		}
 
+		go func() {
+			buf := make([]byte, 32*1024)
+			for {
+				n, readErr := targetConn.Read(buf)
+				if n > 0 {
+					writeMu.Lock()
+					writeErr := conn.WriteMessage(websocket.BinaryMessage, append([]byte(nil), buf[:n]...))
+					writeMu.Unlock()
+					if writeErr != nil {
+						closeStream()
+						return
+					}
+				}
+				if readErr != nil {
+					closeStream()
+					return
+				}
+			}
+		}()
+
 		for {
 			messageType, payload, readErr := conn.ReadMessage()
 			if readErr != nil {
 				return
 			}
-			if writeErr := conn.WriteMessage(messageType, payload); writeErr != nil {
+			if messageType == websocket.CloseMessage {
+				return
+			}
+			if messageType == websocket.TextMessage {
+				// Text frames are reserved for future control messages.
+				continue
+			}
+			if _, writeErr := targetConn.Write(payload); writeErr != nil {
 				return
 			}
 		}
