@@ -121,6 +121,18 @@ type MobileRelayConnectResult = {
   note: string;
 };
 
+type MobileRelayStreamResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  sessionId?: string;
+  streamUrl?: string;
+  relayCode?: string;
+  latencyMs?: number;
+  detail: string;
+  note: string;
+};
+
 type RelayConnectApiBody = {
   ok?: boolean;
   code?: string;
@@ -639,6 +651,155 @@ export default class RemoteSshPlugin extends Plugin {
     }
     if (result.code) {
       lines.push(`Relay code: ${result.code}`);
+    }
+    if (result.sessionId) {
+      lines.push(`Session ID: ${result.sessionId}`);
+    }
+    if (result.streamUrl) {
+      lines.push(`Stream URL: ${result.streamUrl}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  async runMobileRelayStreamTest(): Promise<MobileRelayStreamResult> {
+    const timestamp = new Date().toISOString();
+    const note =
+      'Runs relay connect first, then opens websocket stream URL and waits for session.ready. '
+      + 'This validates stream handshake before RPC framing is wired.';
+
+    const connect = await this.runMobileRelayConnectTest();
+    if (connect.status === 'FAIL') {
+      return {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs: connect.latencyMs,
+        detail: `relay connect failed before stream test: ${connect.detail}`,
+        note,
+      };
+    }
+
+    if (!connect.streamUrl) {
+      return {
+        timestamp,
+        status: 'WARN',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs: connect.latencyMs,
+        detail: 'relay connect response did not include streamUrl',
+        note,
+      };
+    }
+
+    const started = Date.now();
+
+    try {
+      const wsResult = await new Promise<{ type: string; message: string }>((resolve, reject) => {
+        const ws = new WebSocket(connect.streamUrl!);
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try {
+            ws.close();
+          } catch {
+            // no-op
+          }
+          reject(new Error('relay stream websocket timed out after 5000ms'));
+        }, 5000);
+
+        ws.onmessage = evt => {
+          if (settled) return;
+          if (typeof evt.data !== 'string') {
+            return;
+          }
+          try {
+            const parsed = JSON.parse(evt.data) as { type?: string; message?: string };
+            if (parsed.type === 'session.ready') {
+              settled = true;
+              clearTimeout(timer);
+              try {
+                ws.close();
+              } catch {
+                // no-op
+              }
+              resolve({ type: parsed.type, message: parsed.message ?? '' });
+            }
+          } catch {
+            // Ignore non-JSON text frames.
+          }
+        };
+
+        ws.onerror = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error('relay stream websocket error'));
+        };
+
+        ws.onclose = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error('relay stream websocket closed before session.ready'));
+        };
+      });
+
+      const latencyMs = Date.now() - started;
+      const result: MobileRelayStreamResult = {
+        timestamp,
+        status: 'PASS',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs,
+        detail: `stream handshake ok (${wsResult.type}${wsResult.message ? `: ${wsResult.message}` : ''})`,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay stream test: PASS (${connect.streamUrl}, latency=${latencyMs}ms, session=${connect.sessionId ?? 'n/a'})`,
+      );
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const result: MobileRelayStreamResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs,
+        detail: message,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay stream test: FAIL (${connect.streamUrl}, latency=${latencyMs}ms) — ${message}`,
+      );
+      return result;
+    }
+  }
+
+  formatMobileRelayStreamReport(result: MobileRelayStreamResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay stream test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (result.relayCode) {
+      lines.push(`Relay code: ${result.relayCode}`);
     }
     if (result.sessionId) {
       lines.push(`Session ID: ${result.sessionId}`);

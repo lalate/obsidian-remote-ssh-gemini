@@ -40,6 +40,9 @@ curl -i -X POST http://localhost:8080/v1/connect \
 # connect のレスポンスに含まれる streamUrl へ WebSocket 接続
 # (例: websocat ws://localhost:8080/v1/stream/<sessionId>)
 
+# 期待される最初のメッセージ例
+# {"type":"session.ready","sessionId":"...","target":"host:22","message":"websocket stream scaffold established"}
+
 # token を設定した場合
 curl -i -H "Authorization: Bearer <token>" http://localhost:8080/healthz
 ```
