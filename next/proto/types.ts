@@ -60,6 +60,8 @@ export interface RelayWelcome {
 export type MethodName =
   | 'auth'
   | 'server.info'
+  | 'extension.schema'
+  | 'extension.invoke'
   | 'fs.stat'
   | 'fs.exists'
   | 'fs.list'
@@ -80,6 +82,67 @@ export type MethodName =
   | 'fs.watch'
   | 'fs.unwatch';
 
+export interface ExtensionArgRule {
+  name: string;
+  required?: boolean;
+  pattern?: string;
+  maxLength?: number;
+}
+
+export interface ExtensionCapability {
+  tool: string;
+  description?: string;
+  command: string;
+  sha256: string;
+  args?: ExtensionArgRule[];
+  allowWorkingDir?: boolean;
+  persistDefault?: boolean;
+  outputMode?: 'batch' | 'single';
+}
+
+export interface ExtensionSchemaResult {
+  version: number;
+  manifestSha256: string;
+  extensions: ExtensionCapability[];
+}
+
+export interface ExtensionInvokeParams {
+  tool: string;
+  args?: Record<string, string>;
+  workingDir?: string;
+  persist?: boolean;
+  resumeFrom?: number;
+}
+
+export interface ExtensionInvokeResult {
+  invocationId: string;
+  accepted: boolean;
+}
+
+export interface CliOutputParams {
+  invocationId: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+  seq?: number;
+}
+
+export interface CliOutputBatchItem {
+  stream: 'stdout' | 'stderr';
+  data: string;
+  seq?: number;
+}
+
+export interface CliOutputBatchParams {
+  invocationId: string;
+  items: CliOutputBatchItem[];
+}
+
+export interface CliDoneParams {
+  invocationId: string;
+  exitCode: number;
+  signal?: string;
+}
+
 export enum ErrorCode {
   ParseError         = -32700,
   InvalidRequest     = -32600,
@@ -96,4 +159,6 @@ export enum ErrorCode {
   PathOutsideVault   = -32031,
   PreconditionFailed = -32040,
   ProtocolVersionTooOld = -32050,
+  ExtensionDenied    = -32060,
+  BinaryHashMismatch = -32061,
 }
