@@ -150,6 +150,8 @@ type MobilePreviewPlugin = Plugin & {
     latencyMs?: number;
     httpStatus?: number;
     code?: string;
+    sessionId?: string;
+    streamUrl?: string;
     detail: string;
     note: string;
   }>;
@@ -160,6 +162,8 @@ type MobilePreviewPlugin = Plugin & {
     latencyMs?: number;
     httpStatus?: number;
     code?: string;
+    sessionId?: string;
+    streamUrl?: string;
     detail: string;
     note: string;
   }) => string;

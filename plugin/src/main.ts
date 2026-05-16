@@ -115,6 +115,8 @@ type MobileRelayConnectResult = {
   latencyMs?: number;
   httpStatus?: number;
   code?: string;
+  sessionId?: string;
+  streamUrl?: string;
   detail: string;
   note: string;
 };
@@ -123,6 +125,8 @@ type RelayConnectApiBody = {
   ok?: boolean;
   code?: string;
   message?: string;
+  sessionId?: string;
+  streamUrl?: string;
 };
 
 export default class RemoteSshPlugin extends Plugin {
@@ -519,6 +523,8 @@ export default class RemoteSshPlugin extends Plugin {
       const parsed = this.parseRelayConnectBody(rawText);
       const code = typeof parsed.code === 'string' ? parsed.code : undefined;
       const message = typeof parsed.message === 'string' ? parsed.message : '';
+      const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+      const streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
 
       let status: 'PASS' | 'WARN' | 'FAIL' = 'FAIL';
       if (response.status >= 200 && response.status < 300) {
@@ -545,6 +551,8 @@ export default class RemoteSshPlugin extends Plugin {
         latencyMs,
         httpStatus: response.status,
         code,
+        sessionId,
+        streamUrl,
         detail,
         note,
       };
@@ -568,6 +576,8 @@ export default class RemoteSshPlugin extends Plugin {
         const parsed = this.parseRelayConnectBody(responseText);
         const code = typeof parsed.code === 'string' ? parsed.code : undefined;
         const message = typeof parsed.message === 'string' ? parsed.message : '';
+        const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+        const streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
 
         const status: 'PASS' | 'WARN' | 'FAIL' = fetchResponse.ok
           ? (code === 'NOT_IMPLEMENTED'
@@ -587,6 +597,8 @@ export default class RemoteSshPlugin extends Plugin {
           latencyMs,
           httpStatus: fetchResponse.status,
           code,
+          sessionId,
+          streamUrl,
           detail,
           note,
         };
@@ -627,6 +639,12 @@ export default class RemoteSshPlugin extends Plugin {
     }
     if (result.code) {
       lines.push(`Relay code: ${result.code}`);
+    }
+    if (result.sessionId) {
+      lines.push(`Session ID: ${result.sessionId}`);
+    }
+    if (result.streamUrl) {
+      lines.push(`Stream URL: ${result.streamUrl}`);
     }
     if (typeof result.latencyMs === 'number') {
       lines.push(`Latency: ${result.latencyMs}ms`);
