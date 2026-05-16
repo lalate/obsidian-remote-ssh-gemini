@@ -12,6 +12,7 @@ SSH/RPCブリッジ本体はまだ未実装ですが、API形と認証導線を�
 - `GET /healthz` で `200` + JSON を返す
 - `GET /v1/capabilities` で利用可能機能を返す
 - `POST /v1/connect` で relayサーバから target `host:port` への TCP到達プリチェック
+- `GET /v1/stream/:sessionId` WebSocket ストリーム土台（接続時 `session.ready` を送信し、以降はecho）
 - 任意の Bearer token 認証 (`RELAY_PROBE_TOKEN`)
 - CORS ヘッダ付与 (`ALLOW_ORIGIN`)
 
@@ -35,6 +36,9 @@ curl -i http://localhost:8080/v1/capabilities
 curl -i -X POST http://localhost:8080/v1/connect \
   -H "Content-Type: application/json" \
   -d '{"requestId":"demo-1","host":"example.com","port":22,"username":"obsidian","remotePath":"/home/obsidian/vault"}'
+
+# connect のレスポンスに含まれる streamUrl へ WebSocket 接続
+# (例: websocat ws://localhost:8080/v1/stream/<sessionId>)
 
 # token を設定した場合
 curl -i -H "Authorization: Bearer <token>" http://localhost:8080/healthz
@@ -60,3 +64,4 @@ curl -i -H "Authorization: Bearer <token>" http://localhost:8080/healthz
 
 - 公開する場合は HTTPS 化してください（Cloudflare Tunnel, Caddy, Nginx など）。
 - `POST /v1/connect` は現時点で TCP 到達プリチェックまでです。SSH/RPCブリッジ本体は次フェーズです。
+- `GET /v1/stream/:sessionId` は現時点で土台（ready通知 + echo）です。次フェーズでRPCフレーム中継を実装します。

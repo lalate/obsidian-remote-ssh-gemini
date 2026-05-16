@@ -157,3 +157,55 @@ func TestAuthorizeRequest(t *testing.T) {
 		t.Fatal("expected mismatched bearer token to fail")
 	}
 }
+
+func TestDeriveStreamURL(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "http://relay.local/v1/connect", nil)
+	req.Host = "relay.local:8080"
+	got := deriveStreamURL(req, "sid-1")
+	if got != "ws://relay.local:8080/v1/stream/sid-1" {
+		t.Fatalf("unexpected ws url: %s", got)
+	}
+
+	reqSecure := httptest.NewRequest(http.MethodPost, "https://relay.local/v1/connect", nil)
+	reqSecure.Host = "relay.local"
+	reqSecure.Header.Set("X-Forwarded-Proto", "https")
+	gotSecure := deriveStreamURL(reqSecure, "sid-2")
+	if gotSecure != "wss://relay.local/v1/stream/sid-2" {
+		t.Fatalf("unexpected wss url: %s", gotSecure)
+	}
+}
+
+func TestRelaySessionStoreExpiry(t *testing.T) {
+	t.Parallel()
+
+	store := newRelaySessionStore(20 * time.Millisecond)
+	store.Put(relaySession{
+		ID:        "sid-x",
+		Target:    "127.0.0.1:22",
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(20 * time.Millisecond),
+	})
+
+	if _, ok := store.Get("sid-x"); !ok {
+		t.Fatal("expected session to exist before expiry")
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if _, ok := store.Get("sid-x"); ok {
+		t.Fatal("expected session to be expired")
+	}
+}
+
+func TestIssueSessionID(t *testing.T) {
+	t.Parallel()
+
+	id, err := issueSessionID()
+	if err != nil {
+		t.Fatalf("issueSessionID error: %v", err)
+	}
+	if len(id) != 32 {
+		t.Fatalf("expected 32-char hex session id, got %d", len(id))
+	}
+}

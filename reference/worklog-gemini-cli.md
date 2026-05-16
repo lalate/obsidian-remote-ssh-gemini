@@ -393,6 +393,12 @@ obsidian-remote-ssh に Gemini CLI 連携を追加する作業の記録。
   - `PRECHECK_OK` を PASS。
   - `TARGET_UNREACHABLE` を FAIL。
 - 次の prerelease は `1.0.48-ios.21`。
+- relay `/v1/connect` 成功時に sessionId を発行し、`streamUrl`（`/v1/stream/:sessionId`）を返すように更新。
+- relay `/v1/stream/:sessionId` WebSocket土台を追加。
+  - 接続時に `session.ready` を送信。
+  - 以降はecho動作（RPC中継実装前の足場）。
+- plugin relay connect report に `Session ID` / `Stream URL` 表示を追加。
+- 次の prerelease は `1.0.48-ios.22`。
 - 実機ログ確認（M4.1）:
   - `Profile added: total=1` / `Profile added: total=2` を確認。
   - `Profile validation: total=2, invalid=1` から `invalid=0` へ改善を確認。

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,7 +16,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Version is replaced at link time via -ldflags "-X main.Version=...".
@@ -55,7 +60,30 @@ type connectResponse struct {
 	RequestID         string         `json:"requestId,omitempty"`
 	Target            string         `json:"target,omitempty"`
 	PrecheckLatencyMs int64          `json:"precheckLatencyMs,omitempty"`
+	SessionID         string         `json:"sessionId,omitempty"`
+	StreamURL         string         `json:"streamUrl,omitempty"`
 	Received          connectRequest `json:"received"`
+}
+
+type relaySession struct {
+	ID         string
+	Target     string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	RequestRef connectRequest
+}
+
+type relaySessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]relaySession
+	ttl      time.Duration
+}
+
+type streamReadyMessage struct {
+	Type      string `json:"type"`
+	SessionID string `json:"sessionId"`
+	Target    string `json:"target"`
+	Message   string `json:"message"`
 }
 
 func main() {
@@ -86,6 +114,10 @@ func run(args []string) (int, error) {
 	tokenValue := strings.TrimSpace(*token)
 	if tokenValue == "" {
 		tokenValue = strings.TrimSpace(os.Getenv("RELAY_PROBE_TOKEN"))
+	}
+	sessionStore := newRelaySessionStore(5 * time.Minute)
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(_ *http.Request) bool { return true },
 	}
 
 	mux := http.NewServeMux()
@@ -139,6 +171,7 @@ func run(args []string) (int, error) {
 			Capabilities: []string{
 				"healthz",
 				"connect.precheck.v1",
+				"stream.ws.stub.v1",
 			},
 		}
 		writeJSON(w, http.StatusOK, resp, false)
@@ -193,6 +226,19 @@ func run(args []string) (int, error) {
 			return
 		}
 
+		sessionID, issueErr := issueSessionID()
+		if issueErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "failed to issue relay session"}, false)
+			return
+		}
+		sessionStore.Put(relaySession{
+			ID:         sessionID,
+			Target:     target,
+			CreatedAt:  time.Now(),
+			ExpiresAt:  time.Now().Add(sessionStore.ttl),
+			RequestRef: req,
+		})
+
 		resp := connectResponse{
 			OK:                true,
 			Code:              "PRECHECK_OK",
@@ -200,9 +246,63 @@ func run(args []string) (int, error) {
 			RequestID:         strings.TrimSpace(req.RequestID),
 			Target:            target,
 			PrecheckLatencyMs: latencyMs,
+			SessionID:         sessionID,
+			StreamURL:         deriveStreamURL(r, sessionID),
 			Received:          req,
 		}
 		writeJSON(w, http.StatusOK, resp, false)
+	})
+
+	mux.HandleFunc("/v1/stream/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"}, false)
+			return
+		}
+		if !authorizeRequest(tokenValue, r) {
+			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"}, false)
+			return
+		}
+
+		sessionID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/v1/stream/"))
+		if sessionID == "" {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: "session not found"}, false)
+			return
+		}
+
+		session, ok := sessionStore.Get(sessionID)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, errorResponse{Error: "session not found or expired"}, false)
+			return
+		}
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() {
+			sessionStore.Delete(sessionID)
+			_ = conn.Close()
+		}()
+
+		ready := streamReadyMessage{
+			Type:      "session.ready",
+			SessionID: sessionID,
+			Target:    session.Target,
+			Message:   "websocket stream scaffold established",
+		}
+		if err := conn.WriteJSON(ready); err != nil {
+			return
+		}
+
+		for {
+			messageType, payload, readErr := conn.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			if writeErr := conn.WriteMessage(messageType, payload); writeErr != nil {
+				return
+			}
+		}
 	})
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +382,59 @@ func precheckTCPTarget(host string, port int, timeout time.Duration) error {
 	}
 	_ = conn.Close()
 	return nil
+}
+
+func issueSessionID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func deriveStreamURL(r *http.Request, sessionID string) string {
+	scheme := "ws"
+	if r.TLS != nil {
+		scheme = "wss"
+	}
+	xfp := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")))
+	if xfp == "https" {
+		scheme = "wss"
+	}
+	return fmt.Sprintf("%s://%s/v1/stream/%s", scheme, r.Host, sessionID)
+}
+
+func newRelaySessionStore(ttl time.Duration) *relaySessionStore {
+	return &relaySessionStore{
+		sessions: make(map[string]relaySession),
+		ttl:      ttl,
+	}
+}
+
+func (s *relaySessionStore) Put(session relaySession) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[session.ID] = session
+}
+
+func (s *relaySessionStore) Get(id string) (relaySession, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[id]
+	if !ok {
+		return relaySession{}, false
+	}
+	if time.Now().After(session.ExpiresAt) {
+		delete(s.sessions, id)
+		return relaySession{}, false
+	}
+	return session, true
+}
+
+func (s *relaySessionStore) Delete(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, id)
 }
 
 func setHeaders(w http.ResponseWriter, allowOrigin string) {
