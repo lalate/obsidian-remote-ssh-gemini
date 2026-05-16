@@ -24,7 +24,11 @@ type MobileProfile = {
   connectTimeoutMs: number;
   keepaliveIntervalMs: number;
   keepaliveCountMax: number;
-  transport?: 'sftp' | 'rpc';
+  transport?: 'sftp' | 'rpc' | 'relay-rpc';
+  relayBaseUrl?: string;
+  relayAuthToken?: string;
+  relayRpcUsername?: string;
+  relayRpcPassword?: string;
   jumpHost?: {
     host: string;
     port: number;
@@ -229,6 +233,33 @@ export default class RemoteSshPlugin extends Plugin {
       keepaliveIntervalMs: 15000,
       keepaliveCountMax: 3,
       transport: 'sftp',
+      relayBaseUrl: '',
+      relayAuthToken: '',
+      relayRpcUsername: '',
+      relayRpcPassword: '',
+    };
+  }
+
+  private getPrimaryMobileProfile(): MobileProfile | undefined {
+    const relayProfile = this.mobileProfiles.find(p => (p.transport ?? 'sftp') === 'relay-rpc');
+    return relayProfile ?? this.mobileProfiles[0];
+  }
+
+  private resolveRelayRuntimeConfig(profile?: MobileProfile): {
+    endpoint: string;
+    authToken?: string;
+    rpcUsername: string;
+    rpcPassword: string;
+  } {
+    const endpoint = profile?.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint.trim();
+    const authToken = profile?.relayAuthToken?.trim() || this.mobileRelayConfig.authToken?.trim() || undefined;
+    const rpcUsername = profile?.relayRpcUsername?.trim() || this.mobileRelayConfig.rpcUsername?.trim() || 'admin';
+    const rpcPassword = profile?.relayRpcPassword?.trim() || this.mobileRelayConfig.rpcPassword?.trim() || 'password';
+    return {
+      endpoint,
+      authToken,
+      rpcUsername,
+      rpcPassword,
     };
   }
 
@@ -462,10 +493,12 @@ export default class RemoteSshPlugin extends Plugin {
 
   async runMobileRelayConnectTest(): Promise<MobileRelayConnectResult> {
     const timestamp = new Date().toISOString();
-    const endpoint = this.mobileRelayConfig.endpoint.trim();
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const endpoint = relayConfig.endpoint;
     const note =
-      'Posts the first mobile profile to relay /v1/connect. '
-      + 'The current relay scaffold may return NOT_IMPLEMENTED until the SSH bridge is wired.';
+      'Posts the active mobile profile to relay /v1/connect using profile transport settings '
+      + '(fallback: global relay settings).';
 
     if (!endpoint) {
       const result: MobileRelayConnectResult = {
@@ -494,7 +527,6 @@ export default class RemoteSshPlugin extends Plugin {
       return result;
     }
 
-    const profile = this.mobileProfiles[0];
     if (!profile) {
       const result: MobileRelayConnectResult = {
         timestamp,
@@ -528,7 +560,7 @@ export default class RemoteSshPlugin extends Plugin {
       'Content-Type': 'application/json',
       'Cache-Control': 'no-store',
     };
-    const token = this.mobileRelayConfig.authToken?.trim();
+    const token = relayConfig.authToken;
     if (token) {
       headers.Authorization = `Bearer ${token}`;
     }
@@ -892,10 +924,11 @@ export default class RemoteSshPlugin extends Plugin {
     }
 
     // Re-open a fresh WebSocket session for the RPC handshake.
-    const endpoint = this.mobileRelayConfig.endpoint.trim();
-    const profile = this.mobileProfiles[0];
-    const rpcUsername = this.mobileRelayConfig.rpcUsername?.trim() || 'admin';
-    const rpcPassword = this.mobileRelayConfig.rpcPassword?.trim() || 'password';
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const endpoint = relayConfig.endpoint;
+    const rpcUsername = relayConfig.rpcUsername;
+    const rpcPassword = relayConfig.rpcPassword;
     const fsPath = `${profile?.remotePath?.trim() || '/vault'}/.relay-rpc-smoke.txt`;
     const fsContent = `relay-rpc-smoke:${Date.now()}`;
 
@@ -907,10 +940,10 @@ export default class RemoteSshPlugin extends Plugin {
         target: {
           host: profile?.host?.trim() ?? '',
           port: profile?.port ?? 22,
-          username: rpcUsername,
+          username: profile?.username?.trim() ?? '',
           remotePath: profile?.remotePath?.trim() ?? '',
         },
-        authToken: this.mobileRelayConfig.authToken?.trim(),
+        authToken: relayConfig.authToken,
         rpcCredentials: { username: rpcUsername, password: rpcPassword },
       });
 
@@ -1055,6 +1088,19 @@ export default class RemoteSshPlugin extends Plugin {
         warnings.push(`${profileName}: remote path has trailing slash (${remotePath})`);
       }
 
+      const transport = p.transport ?? 'sftp';
+      if (transport !== 'relay-rpc') {
+        warnings.push(
+          `${profileName}: transport=${transport}; mobile desktop-equivalent path is relay-rpc (direct SSH can fail by runtime)`,
+        );
+      }
+      if (transport === 'relay-rpc') {
+        const relayEndpoint = p.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint.trim();
+        if (!relayEndpoint) {
+          warnings.push(`${profileName}: transport=relay-rpc but relay endpoint is not configured`);
+        }
+      }
+
       duplicateNames.set(profileName, (duplicateNames.get(profileName) ?? 0) + 1);
       const key = `${username}@${host}:${p.port}:${remotePath}`;
       duplicateKeys.set(key, (duplicateKeys.get(key) ?? 0) + 1);
@@ -1108,6 +1154,23 @@ export default class RemoteSshPlugin extends Plugin {
       lines.push('Issues: none');
     }
     return lines.join('\n');
+  }
+
+  private shouldRetryRelayRpcFailure(detail: string): boolean {
+    const d = detail.toLowerCase();
+    return (
+      d.includes('timed out')
+      || d.includes('timeout')
+      || d.includes('websocket')
+      || d.includes('network')
+      || d.includes('fetch')
+      || d.includes('closed before session.ready')
+      || d.includes('stream test failed before rpc')
+    );
+  }
+
+  private async waitMs(ms: number): Promise<void> {
+    await new Promise<void>(resolve => setTimeout(resolve, ms));
   }
 
   private classifyProbeError(message: string): { outcome: 'WARN' | 'FAIL'; detail: string } {
@@ -1253,22 +1316,40 @@ export default class RemoteSshPlugin extends Plugin {
       keepaliveIntervalMs: profile.keepaliveIntervalMs,
       keepaliveCountMax: profile.keepaliveCountMax,
       transport: profile.transport,
+      relayBaseUrl: profile.relayBaseUrl,
+      relayAuthToken: profile.relayAuthToken,
+      relayRpcUsername: profile.relayRpcUsername,
+      relayRpcPassword: profile.relayRpcPassword,
       jumpHost: profile.jumpHost,
     };
   }
 
   async runMobileSshConnectTest(): Promise<MobileSshConnectResult> {
     const timestamp = new Date().toISOString();
-    const note = 'Attempts a real SSH connect through SftpClient using the first configured mobile profile.';
+    const note = 'Attempts a real SSH connect through SftpClient using the active mobile profile.';
     const attempts: MobileSshConnectAttempt[] = [];
-    const profile = this.mobileProfiles[0];
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const profileTransport = profile?.transport ?? 'sftp';
 
-    // Mobile mainline: when relay endpoint is configured, prefer relay RPC
-    // over direct SSH. iOS cannot reliably provide Node sockets/Buffer in
-    // all environments, while relay path is the production target.
-    const relayEndpoint = this.mobileRelayConfig.endpoint?.trim() ?? '';
-    if (relayEndpoint.length > 0) {
-      const relay = await this.runMobileRelayRpcTest();
+    // Desktop parity on mobile: honor profile transport first.
+    if (profileTransport === 'relay-rpc' || relayConfig.endpoint.length > 0) {
+      const maxRelayAttempts = 3;
+      let relay = await this.runMobileRelayRpcTest();
+      let relayAttempts = 1;
+      while (
+        relay.status === 'FAIL'
+        && relayAttempts < maxRelayAttempts
+        && this.shouldRetryRelayRpcFailure(relay.detail)
+      ) {
+        const backoffMs = 400 * relayAttempts;
+        this.pushMobilePreviewLog(
+          `Relay mainline retry: attempt=${relayAttempts + 1}/${maxRelayAttempts}, backoff=${backoffMs}ms`,
+        );
+        await this.waitMs(backoffMs);
+        relay = await this.runMobileRelayRpcTest();
+        relayAttempts += 1;
+      }
       const mappedStatus: 'PASS' | 'WARN' | 'FAIL' = relay.status;
       const attempt: MobileSshConnectAttempt = {
         profileId: profile?.id ?? '(none)',
@@ -1276,7 +1357,7 @@ export default class RemoteSshPlugin extends Plugin {
         target: relay.endpoint || '(relay endpoint not configured)',
         status: mappedStatus,
         detail:
-          `relay mainline: ${relay.detail}`
+          `relay mainline: ${relay.detail}; attempts=${relayAttempts}`
           + (relay.streamUrl ? ` (stream=${relay.streamUrl})` : ''),
         latencyMs: relay.latencyMs,
       };
@@ -1289,8 +1370,8 @@ export default class RemoteSshPlugin extends Plugin {
         fail: mappedStatus === 'FAIL' ? 1 : 0,
         skip: 0,
         note:
-          'Relay endpoint is configured, so mobile mainline connect test uses relay JSON-RPC '
-          + '(auth/server.info/fs.write/fs.read) instead of direct SSH.',
+          'Transport is relay-rpc (or relay endpoint is configured), so mobile mainline connect test '
+          + `uses relay JSON-RPC (auth/server.info/fs.write/fs.read) instead of direct SSH. retry<=${maxRelayAttempts}.`,
         attempts: [attempt],
       };
     }
@@ -1457,10 +1538,18 @@ export default class RemoteSshPlugin extends Plugin {
           ...v,
           id: typeof v.id === 'string' && v.id.length > 0 ? v.id : this.createDefaultMobileProfile().id,
           port: Number.isFinite(v.port) ? Number(v.port) : 22,
+          transport:
+            v.transport === 'sftp' || v.transport === 'rpc' || v.transport === 'relay-rpc'
+              ? v.transport
+              : 'sftp',
           authMethod:
             v.authMethod === 'privateKey' || v.authMethod === 'agent' || v.authMethod === 'password'
               ? v.authMethod
               : 'password',
+          relayBaseUrl: typeof v.relayBaseUrl === 'string' ? v.relayBaseUrl : '',
+          relayAuthToken: typeof v.relayAuthToken === 'string' ? v.relayAuthToken : '',
+          relayRpcUsername: typeof v.relayRpcUsername === 'string' ? v.relayRpcUsername : '',
+          relayRpcPassword: typeof v.relayRpcPassword === 'string' ? v.relayRpcPassword : '',
         }))
       : [];
     this.mobileRelayConfig = {
