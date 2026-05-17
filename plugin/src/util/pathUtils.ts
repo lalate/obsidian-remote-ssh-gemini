@@ -77,6 +77,10 @@ export function sameRemotePath(a: string | undefined, b: string | undefined): bo
     const t = (s ?? '').trim();
     if (t === '') return '';
     let r = path.posix.normalize(t);
+    // posix.normalize collapses ./../// but PRESERVES a trailing
+    // slash on non-root paths ('/a/b/' → '/a/b/') — strip it here so
+    // '/a/b' and '/a/b/' compare equal. Load-bearing: do not remove
+    // thinking normalize already handled it.
     while (r.length > 1 && r.endsWith('/')) r = r.slice(0, -1);
     return r;
   };

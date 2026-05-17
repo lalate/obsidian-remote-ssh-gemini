@@ -86,14 +86,10 @@ export class ConnectionManager {
     const absTokenPath  = resolveRemotePath(remoteTokenPath,  home);
 
     // Absolute vault root, computed ONCE and used both for the
-    // reuse-validation compare and as the daemon's `--vault-root`.
-    // Passing this absolute form to the daemon (instead of the raw
-    // relative `effectivePath`) removes the daemon's implicit cwd
-    // dependency AND keeps both sides of the sameRemotePath() compare
-    // in the same path space — without that, e.g. remotePath "~"
-    // (→ effectivePath ".") made the client want "/home/u/." while
-    // the daemon's filepath.Abs reported "/home/u", a guaranteed
-    // false-mismatch → kill+redeploy on every connect.
+    // reuse-validation compare and as the daemon's `--vault-root`
+    // (removes the daemon's implicit cwd dependency and keeps both
+    // sides of the compare in the same path space — see the
+    // `sameRemotePath` JSDoc for the normalisation rationale).
     const absVaultRoot = resolveRemotePath(effectivePath, home);
 
     const reused = await tryReuseExistingDaemon(this.client, absSocketPath, absTokenPath);
@@ -111,7 +107,7 @@ export class ConnectionManager {
       if (sameRemotePath(haveRoot, absVaultRoot)) {
         this.rpcConnection = reused;
         logger.info(
-          `startRpcSession: reusing existing daemon for ${effectivePath} ` +
+          `startRpcSession: reusing existing daemon for ${absVaultRoot} ` +
           `(vaultRoot=${haveRoot}, skipped kill+redeploy)`,
         );
         return;
