@@ -261,3 +261,111 @@ describe('FsChangeListener notification + applyChange', () => {
     );
   });
 });
+
+// ─── #341 writer-echo de-dup ─────────────────────────────────────────────────
+
+describe('FsChangeListener — LocalOpRegistry echo de-dup', () => {
+  beforeEach(() => {
+    hoisted.interpretWatchEvent.mockReset();
+    hoisted.onNotification.mockReset();
+    hoisted.onNotification.mockReturnValue(hoisted.disposer);
+    hoisted.call.mockReset();
+    hoisted.call.mockResolvedValue({ subscriptionId: 'sub-1' });
+    hoisted.perfTracer.point.mockReset();
+  });
+
+  function fire(opts: { selfOriginated: boolean }) {
+    const { listener } = makeListener();
+    const dataAdapter = { invalidateRemotePath: vi.fn() };
+    const applyChange = vi
+      .spyOn(
+        listener as unknown as { applyChange: (...a: unknown[]) => Promise<void> },
+        'applyChange',
+      )
+      .mockResolvedValue();
+    hoisted.interpretWatchEvent.mockReturnValue({
+      remotePath: '/remote/a.md',
+      vaultPath: 'a.md',
+    });
+    const localOpRegistry = {
+      record: vi.fn(),
+      isSelfOriginated: vi.fn().mockReturnValue(opts.selfOriginated),
+    };
+    return { listener, dataAdapter, applyChange, localOpRegistry };
+  }
+
+  it('drops the echo of an op the writer already reflected', async () => {
+    const { listener, dataAdapter, applyChange, localOpRegistry } = fire({
+      selfOriginated: true,
+    });
+
+    await listener.subscribe({
+      rpcConnection: makeRpcConnection() as never,
+      dataAdapter: dataAdapter as never,
+      pathMapper: {} as never,
+      localOpRegistry: localOpRegistry as never,
+    });
+    const handler = hoisted.onNotification.mock.calls[0]?.[1] as (p: {
+      event: 'modified'; path: string; subscriptionId: string;
+    }) => void;
+
+    handler({ event: 'modified', path: 'a.md', subscriptionId: 'sub-1' });
+
+    expect(localOpRegistry.isSelfOriginated).toHaveBeenCalledWith('a.md');
+    // Self-op: short-circuit before invalidate + applyChange, so no
+    // second vault.trigger for what the reflector already fired.
+    expect(dataAdapter.invalidateRemotePath).not.toHaveBeenCalled();
+    expect(applyChange).not.toHaveBeenCalled();
+  });
+
+  it('still applies an echo from another client (not self-originated)', async () => {
+    const { listener, dataAdapter, applyChange, localOpRegistry } = fire({
+      selfOriginated: false,
+    });
+
+    await listener.subscribe({
+      rpcConnection: makeRpcConnection() as never,
+      dataAdapter: dataAdapter as never,
+      pathMapper: {} as never,
+      localOpRegistry: localOpRegistry as never,
+    });
+    const handler = hoisted.onNotification.mock.calls[0]?.[1] as (p: {
+      event: 'modified'; path: string; subscriptionId: string;
+    }) => void;
+
+    handler({ event: 'modified', path: 'a.md', subscriptionId: 'sub-1' });
+
+    expect(dataAdapter.invalidateRemotePath).toHaveBeenCalledWith('/remote/a.md');
+    expect(applyChange).toHaveBeenCalledWith('a.md', undefined, 'modified');
+  });
+
+  it('applies every echo when no registry was wired (legacy behaviour)', async () => {
+    const { listener } = makeListener();
+    const dataAdapter = { invalidateRemotePath: vi.fn() };
+    const applyChange = vi
+      .spyOn(
+        listener as unknown as { applyChange: (...a: unknown[]) => Promise<void> },
+        'applyChange',
+      )
+      .mockResolvedValue();
+    hoisted.interpretWatchEvent.mockReturnValue({
+      remotePath: '/remote/a.md',
+      vaultPath: 'a.md',
+    });
+
+    await listener.subscribe({
+      rpcConnection: makeRpcConnection() as never,
+      dataAdapter: dataAdapter as never,
+      pathMapper: {} as never,
+      // no localOpRegistry
+    });
+    const handler = hoisted.onNotification.mock.calls[0]?.[1] as (p: {
+      event: 'modified'; path: string; subscriptionId: string;
+    }) => void;
+
+    handler({ event: 'modified', path: 'a.md', subscriptionId: 'sub-1' });
+
+    expect(dataAdapter.invalidateRemotePath).toHaveBeenCalledWith('/remote/a.md');
+    expect(applyChange).toHaveBeenCalledWith('a.md', undefined, 'modified');
+  });
+});

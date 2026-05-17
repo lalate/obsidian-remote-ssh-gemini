@@ -23,6 +23,7 @@ function isThumbnailEligible(vaultPath: string): boolean {
 }
 import type { RemoteFsClient } from './RemoteFsClient';
 import type { WriterReflector } from './WriterReflector';
+import type { LocalOpRegistry } from './LocalOpRegistry';
 import type { ReadCache } from '../cache/ReadCache';
 import type { DirCache } from '../cache/DirCache';
 import type { PathMapper } from '../path/PathMapper';
@@ -220,6 +221,19 @@ export class SftpDataAdapter {
   }
 
   /**
+   * Echo-dedup registry (#341, RPC). When set, every applied local
+   * mutation records its path(s) here so the RPC `FsChangeListener`
+   * drops the daemon's `fs.watch` echo of our own op instead of
+   * firing a second `vault.trigger`. Null on the SFTP transport
+   * (no daemon, no echo) — recording is then a harmless no-op.
+   */
+  private localOpRegistry: LocalOpRegistry | null = null;
+
+  setLocalOpRegistry(registry: LocalOpRegistry | null): void {
+    this.localOpRegistry = registry;
+  }
+
+  /**
    * Run a writer-side reflect, swallowing + logging any throw. By the
    * time this runs the remote op has already succeeded; a reflector
    * fault (or a vault listener that throws — Obsidian wraps each
@@ -245,6 +259,22 @@ export class SftpDataAdapter {
         `SftpDataAdapter: writer reflect failed [${kind}]: ${errorMessage(e)}`,
       );
     }
+  }
+
+  /**
+   * Post-success bookkeeping for a local mutation that actually hit
+   * the remote: (1) record the affected path(s) so the RPC echo of
+   * our own op is de-duped, then (2) reflect it into the writer's
+   * vault model. Order matters — the record is synchronous and must
+   * land before the daemon's later echo can arrive. Both steps are
+   * best-effort and never surface to the editor as a write failure.
+   *
+   * `echoPaths` is what the daemon's `fs.changed` frame will name
+   * (rename echoes both old + new, possibly as separate events).
+   */
+  private applied(echoPaths: string[], run: (r: WriterReflector) => void): void {
+    this.localOpRegistry?.record(echoPaths);
+    this.reflect(run);
   }
 
   // ─── DataAdapter (read-side) ─────────────────────────────────────────────
@@ -409,7 +439,7 @@ export class SftpDataAdapter {
         const cached = this.readCache.peek(this.toRemote(normalizedPath));
         this.ancestorTracker.remember(normalizedPath, data, cached?.mtime ?? 0);
       }
-      this.reflect(r => r.reflectWrite(normalizedPath));
+      this.applied([normalizedPath], r => r.reflectWrite(normalizedPath));
     } finally {
       perfTracer.end(__t1, { op: 'write', path: normalizedPath, bytes: data.length });
     }
@@ -423,7 +453,7 @@ export class SftpDataAdapter {
         return;
       }
       await this.writeBuffer(normalizedPath, Buffer.from(data), false);
-      this.reflect(r => r.reflectWrite(normalizedPath));
+      this.applied([normalizedPath], r => r.reflectWrite(normalizedPath));
     } finally {
       perfTracer.end(__t1, { op: 'writeBinary', path: normalizedPath, bytes: data.byteLength });
     }
@@ -471,7 +501,7 @@ export class SftpDataAdapter {
       // appendBinary writes through writeBuffer directly (not via
       // this.write/writeBinary), so it must reflect itself or the
       // writer's model misses binary appends (#341).
-      this.reflect(r => r.reflectWrite(normalizedPath));
+      this.applied([normalizedPath], r => r.reflectWrite(normalizedPath));
       void options;
     } finally {
       perfTracer.end(__t1, { op: 'appendBinary', path: normalizedPath, bytes: data.byteLength });
@@ -513,7 +543,7 @@ export class SftpDataAdapter {
     const remote = this.toRemote(normalizedPath);
     await this.client.mkdirp(remote);
     this.dirCache.invalidate(parentDirRemote(remote));
-    this.reflect(r => r.reflectMkdir(normalizedPath));
+    this.applied([normalizedPath], r => r.reflectMkdir(normalizedPath));
   }
 
   async remove(normalizedPath: string): Promise<void> {
@@ -533,7 +563,7 @@ export class SftpDataAdapter {
       // exists remotely, and a failed replay would leave them
       // permanently diverged (the QueueReplayer path does not
       // re-reflect).
-      if (!this.reconnecting) this.reflect(r => r.reflectRemove(normalizedPath));
+      if (!this.reconnecting) this.applied([normalizedPath], r => r.reflectRemove(normalizedPath));
     } finally {
       perfTracer.end(__t1, { op: 'remove', path: normalizedPath });
     }
@@ -552,7 +582,7 @@ export class SftpDataAdapter {
     }
     this.invalidateTree(remote);
     // See `remove`: only mirror once the rmdir actually applied.
-    if (!this.reconnecting) this.reflect(r => r.reflectRemove(normalizedPath));
+    if (!this.reconnecting) this.applied([normalizedPath], r => r.reflectRemove(normalizedPath));
   }
 
   async rename(oldPath: string, newPath: string): Promise<void> {
@@ -574,7 +604,9 @@ export class SftpDataAdapter {
       // file got there.
       this.ancestorTracker?.invalidate(oldPath);
       // See `remove`: only mirror once the rename actually applied.
-      if (!this.reconnecting) this.reflect(r => r.reflectRename(oldPath, newPath));
+      // Echo both paths — some watchers split a rename into
+      // delete(old) + create(new).
+      if (!this.reconnecting) this.applied([oldPath, newPath], r => r.reflectRename(oldPath, newPath));
     } finally {
       perfTracer.end(__t1, { op: 'rename', path: oldPath, newPath });
     }
