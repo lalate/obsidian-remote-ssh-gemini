@@ -644,7 +644,7 @@ describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
       'hotkeys.json':      JSON.stringify({ 'editor:toggle-bold': [] }),
     });
 
-    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+    const { pulled, skipped, errored } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
       reader, '.obsidian', localConfigDir,
     );
 
@@ -652,6 +652,7 @@ describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
       [...ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES].sort(),
     );
     expect(skipped).toEqual([]);
+    expect(errored).toEqual([]);
     expect(JSON.parse(fs.readFileSync(path.join(localConfigDir, 'app.json'), 'utf-8')))
       .toEqual({ useMarkdownLinks: false });
     // Atomic write must not leave a .tmp sibling behind.
@@ -667,20 +668,23 @@ describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
   });
 
   it('skips a file that is absent on the remote without writing it', async () => {
-    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+    const { pulled, skipped, errored } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
       makeReader({ 'appearance.json': '{}' }), '.obsidian', localConfigDir,
     );
     expect(pulled).toEqual(['appearance.json']);
     expect(skipped).toContain('app.json');
+    // Absent-on-remote is a benign skip, NOT an error (no Notice).
+    expect(errored).not.toContain('app.json');
     expect(fs.existsSync(path.join(localConfigDir, 'app.json'))).toBe(false);
   });
 
   it('skips a file whose read throws but still processes the rest', async () => {
-    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+    const { pulled, skipped, errored } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
       makeReader({ 'app.json': 'throw', 'hotkeys.json': '{}' }),
       '.obsidian', localConfigDir,
     );
     expect(skipped).toContain('app.json');
+    expect(errored).toContain('app.json'); // a read throw is an error, surfaces a Notice
     expect(pulled).toContain('hotkeys.json'); // loop didn't abort
   });
 
@@ -689,11 +693,12 @@ describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
     const healthy = JSON.stringify({ theme: 'keepme' });
     fs.writeFileSync(path.join(localConfigDir, 'app.json'), healthy, 'utf-8');
 
-    const { skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+    const { skipped, errored } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
       makeReader({ 'app.json': 'invalid' }), '.obsidian', localConfigDir,
     );
 
     expect(skipped).toContain('app.json');
+    expect(errored).toContain('app.json'); // corrupt remote → surfaces a Notice
     expect(fs.readFileSync(path.join(localConfigDir, 'app.json'), 'utf-8'))
       .toBe(healthy); // NOT clobbered with broken JSON
   });

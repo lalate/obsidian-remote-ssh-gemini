@@ -419,10 +419,19 @@ export class VaultModelBuilder {
       }
       return;
     }
-    this.insertOne(
+    if (!this.insertOne(
       { path, isDirectory: false, ctime: 0, mtime: Date.now(), size: 0 },
       { ensureParents: true },
-    );
+    )) {
+      // insertOne returns null when even ensureParents couldn't
+      // synthesise the chain (catastrophic — root missing). The new
+      // file exists on the remote but not in the writer's model:
+      // File Explorer won't show it until the next full populate.
+      logger.warn(
+        `VaultModelBuilder.reflectWrite: insertOne("${path}") no-op; ` +
+        'new file not reflected into the writer model',
+      );
+    }
   }
 
   /** Reflect a writer-side `adapter.rename`. */
@@ -451,10 +460,15 @@ export class VaultModelBuilder {
   /** Reflect a writer-side `adapter.mkdir` (idempotent if modelled). */
   reflectMkdir(path: string): void {
     if (this.vault.getAbstractFileByPath(path)) return;
-    this.insertOne(
+    if (!this.insertOne(
       { path, isDirectory: true, ctime: 0, mtime: Date.now(), size: 0 },
       { ensureParents: true },
-    );
+    )) {
+      logger.warn(
+        `VaultModelBuilder.reflectMkdir: insertOne("${path}") no-op; ` +
+        'new folder not reflected into the writer model',
+      );
+    }
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

@@ -1456,4 +1456,43 @@ describe('SftpDataAdapter — writer reflect (#341)', () => {
     expect(r.reflectRemove).not.toHaveBeenCalled();
     expect(queue.pending().map(e => e.op.kind)).toContain('remove');
   });
+
+  it('does NOT reflect rmdir / rename that were only queued while reconnecting (#C1)', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-ssh-reflect-q2-'));
+    const queue = await OfflineQueue.open(tmpDir);
+    const fake = makeFakeClient({ dirs: { '/v': [], '/v/d': [] } });
+    const adapter = new SftpDataAdapter(
+      fake.client, '/v', readCache, dirCache, 'v',
+      null, null, null, new AncestorTracker(), queue,
+    );
+    const r = makeReflector();
+    adapter.setWriterReflector(r);
+
+    adapter.setReconnecting(true);
+    await adapter.rmdir('d', true);          // queued, not applied
+    await adapter.rename('a.md', 'b.md');    // queued, not applied
+
+    expect(r.reflectRemove).not.toHaveBeenCalled();
+    expect(r.reflectRename).not.toHaveBeenCalled();
+    const kinds = queue.pending().map(e => e.op.kind);
+    expect(kinds).toContain('rmdir');
+    expect(kinds).toContain('rename');
+  });
+
+  it('a throwing reflector on rename does not surface as a rename failure', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    await adapter.write('a.md', 'x');
+    adapter.setWriterReflector({
+      reflectWrite:  vi.fn(),
+      reflectRename: () => { throw new Error('listener blew up'); },
+      reflectRemove: vi.fn(),
+      reflectMkdir:  vi.fn(),
+    });
+
+    await expect(adapter.rename('a.md', 'b.md')).resolves.toBeUndefined();
+    // The remote rename still happened despite the reflect throw.
+    expect(fake.files['/v/b.md']).toBeDefined();
+    expect(fake.files['/v/a.md']).toBeUndefined();
+  });
 });

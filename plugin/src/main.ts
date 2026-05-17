@@ -488,11 +488,23 @@ export default class RemoteSshPlugin extends Plugin {
     const hostAdapter = this.app.vault.adapter;
     if (da && hostAdapter instanceof FileSystemAdapter) {
       try {
-        await ShadowVaultBootstrap.pullSharedObsidianConfig(
+        const cfg = await ShadowVaultBootstrap.pullSharedObsidianConfig(
           da,
           this.app.vault.configDir,
           path.join(hostAdapter.getBasePath(), this.app.vault.configDir),
         );
+        if (cfg.errored.length > 0) {
+          // The connection is up but some shared-config files the
+          // remote *had* couldn't be pulled (transient SSH error /
+          // corrupt file). Without a signal the user would just see
+          // settings silently not update — the #342 symptom. Absent
+          // files are not errored, so a fresh vault stays quiet.
+          new Notice(
+            `Remote SSH: ${cfg.errored.length} shared-config file` +
+            `${cfg.errored.length === 1 ? '' : 's'} (${cfg.errored.join(', ')}) ` +
+            'could not be synced — settings may be stale until the next connect',
+          );
+        }
       } catch (e) {
         logger.warn(
           `runAutoConnect(${tag}): shared-config pull failed: ${errorMessage(e)}`,

@@ -202,9 +202,16 @@ export class ShadowVaultBootstrap {
    * #342 symptom this method exists to fix). The write is atomic
    * (tmp + rename) so an interrupted pull can't tear the local file.
    *
-   * A file absent on the remote is skipped, not an error (a fresh
-   * remote vault legitimately has none yet). A present-but-corrupt
-   * file is skipped too, leaving the prior local copy intact.
+   * The result distinguishes two kinds of non-pull:
+   *  - `skipped`: every basename not pulled (absent OR errored) — the
+   *    superset, kept for back-compat / logging.
+   *  - `errored`: the subset where the remote *had* the file but it
+   *    couldn't be pulled (read/exists threw, corrupt JSON, write or
+   *    rename failed). A file absent on the remote is NOT errored (a
+   *    fresh remote vault legitimately has none yet). The connect flow
+   *    surfaces a Notice when `errored` is non-empty so a transient
+   *    SSH hiccup doesn't silently leave settings stale — the #342
+   *    symptom this method exists to prevent.
    *
    * Static because both call sites (the connect flow in `main.ts`
    * and the Layer-2 test helper) have a reader + paths but not
@@ -216,9 +223,10 @@ export class ShadowVaultBootstrap {
     remoteConfigDir: string,
     /** Absolute local config dir, i.e. `ShadowVaultLayout.configDir`. */
     localConfigDir: string,
-  ): Promise<{ pulled: string[]; skipped: string[] }> {
+  ): Promise<{ pulled: string[]; skipped: string[]; errored: string[] }> {
     const pulled: string[] = [];
     const skipped: string[] = [];
+    const errored: string[] = [];
 
     fs.mkdirSync(localConfigDir, { recursive: true });
 
@@ -240,29 +248,41 @@ export class ShadowVaultBootstrap {
             'keeping the local copy untouched',
           );
           skipped.push(basename);
+          errored.push(basename);
           continue;
         }
         const dest = path.join(localConfigDir, basename);
         const tmp = `${dest}.${process.pid}.tmp`;
         fs.writeFileSync(tmp, content, 'utf-8');
-        fs.renameSync(tmp, dest);
+        try {
+          fs.renameSync(tmp, dest);
+        } catch (renameErr) {
+          // rename failed (perms / cross-device) — drop the orphan
+          // tmp so it can't accumulate or be mistaken for real data,
+          // then rethrow into the outer catch for the skip+error path.
+          try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+          throw renameErr;
+        }
         pulled.push(basename);
       } catch (e) {
         // Best-effort: a single unreadable file must not abort the
         // others or fail the connect. The stale local copy (if any)
-        // stays; logged so it's diagnosable.
+        // stays; logged so it's diagnosable. The remote *had* the
+        // file (exists() passed or threw) so this counts as errored,
+        // not a benign absence.
         logger.warn(
           `pullSharedObsidianConfig: ${basename} skipped (${errorMessage(e)})`,
         );
         skipped.push(basename);
+        errored.push(basename);
       }
     }
 
     logger.info(
       `pullSharedObsidianConfig: pulled [${pulled.join(', ')}], ` +
-      `skipped [${skipped.join(', ')}]`,
+      `skipped [${skipped.join(', ')}], errored [${errored.join(', ')}]`,
     );
-    return { pulled, skipped };
+    return { pulled, skipped, errored };
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

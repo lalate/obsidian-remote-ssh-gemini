@@ -222,10 +222,17 @@ export class SftpDataAdapter {
   /**
    * Run a writer-side reflect, swallowing + logging any throw. By the
    * time this runs the remote op has already succeeded; a reflector
-   * fault (or a vault listener that throws despite Obsidian's
-   * per-handler isolation) must not surface to the editor as a write
-   * failure and provoke a spurious retry / duplicate remote write.
-   * Centralising the guard also keeps the call sites to one line.
+   * fault (or a vault listener that throws — Obsidian wraps each
+   * `Events.trigger` handler in its own try/catch, but a fault inside
+   * `VaultModelBuilder` itself would still land here) must not surface
+   * to the editor as a write failure and provoke a spurious retry /
+   * duplicate remote write. Centralising the guard also keeps the
+   * call sites to one line.
+   *
+   * The log includes the error's class name so a systematic bug
+   * (`TypeError` from a model-builder defect) is distinguishable in
+   * the log stream from a transient listener fault — the two need
+   * very different triage.
    */
   private reflect(run: (r: WriterReflector) => void): void {
     const r = this.writerReflector;
@@ -233,7 +240,10 @@ export class SftpDataAdapter {
     try {
       run(r);
     } catch (e) {
-      logger.warn(`SftpDataAdapter: writer reflect failed: ${errorMessage(e)}`);
+      const kind = e instanceof Error ? e.name : typeof e;
+      logger.warn(
+        `SftpDataAdapter: writer reflect failed [${kind}]: ${errorMessage(e)}`,
+      );
     }
   }
 

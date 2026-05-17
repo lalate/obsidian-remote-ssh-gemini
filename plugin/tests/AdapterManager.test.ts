@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AdapterManager, PATCHED_METHODS } from '../src/adapter/AdapterManager';
+import { VaultModelBuilder } from '../src/vault/VaultModelBuilder';
 import type { App, PluginManifest } from 'obsidian';
 import type { ConnectionManager } from '../src/ConnectionManager';
 import type { FsChangeListener } from '../src/vault/FsChangeListener';
@@ -161,7 +162,9 @@ describe('AdapterManager.afterSwapClient() — transport reflect policy', () => 
     mgr.afterSwapClient();
 
     expect(setWriterReflector).toHaveBeenCalledTimes(1);
-    expect(setWriterReflector.mock.calls[0][0]).not.toBeNull();
+    // Must be an actual VaultModelBuilder, not merely non-null — a
+    // no-op stub passing here would silently break self-reflect.
+    expect(setWriterReflector.mock.calls[0][0]).toBeInstanceOf(VaultModelBuilder);
   });
 
   it('RPC transport clears the reflector to null (no double-fire with FsChangeListener)', () => {
