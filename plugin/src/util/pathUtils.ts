@@ -55,16 +55,35 @@ export function normalizeRemotePath(p: string): string {
  * killed + redeployed instead of silently serving the wrong/missing
  * tree.
  *
- * Deliberately strict: any non-trivial difference returns false so
- * the caller redeploys. A spurious redeploy is cheap and safe; a
- * false "match" reattaches to a daemon serving the wrong root, which
- * is exactly the field bug (empty vault, every op `no such file`).
+ * Both sides are POSIX-normalised (`.`, `..`, `//`, trailing slash)
+ * before comparison: the client computes the wanted root by string
+ * join (`resolveRemotePath`) while the daemon reports its root via
+ * Go's `filepath.Abs`, which collapses `.`/`..`/`//`. Without
+ * normalisation, remotePath `~` (→ `/home/u/.`) vs the daemon's
+ * `/home/u` is a permanent false-mismatch → kill+redeploy on every
+ * connect. An empty/blank input (older daemon omitting the field,
+ * or `undefined`) never matches a real root — that intentionally
+ * forces a redeploy, which is the safe outcome.
+ *
+ * Still strict otherwise: a false "match" reattaches to a daemon
+ * serving the wrong root (the field bug — empty vault, every op
+ * `no such file`). A spurious redeploy is *safe* but not free — it
+ * costs a full pkill + binary upload + daemon restart (seconds on a
+ * slow link) — so the normalisation above exists to avoid firing it
+ * on legitimately-equal paths, not to make redeploy cheap.
  */
-export function sameRemotePath(a: string, b: string): boolean {
-  const strip = (s: string): string => {
-    let r = s.trim();
+export function sameRemotePath(a: string | undefined, b: string | undefined): boolean {
+  const norm = (s: string | undefined): string => {
+    const t = (s ?? '').trim();
+    if (t === '') return '';
+    let r = path.posix.normalize(t);
     while (r.length > 1 && r.endsWith('/')) r = r.slice(0, -1);
     return r;
   };
-  return strip(a) === strip(b);
+  const na = norm(a);
+  const nb = norm(b);
+  // Empty (missing/blank root) must never count as a match, not even
+  // empty-vs-empty — it always means "can't trust this, redeploy".
+  if (na === '' || nb === '') return false;
+  return na === nb;
 }

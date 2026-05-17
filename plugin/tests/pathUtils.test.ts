@@ -133,4 +133,27 @@ describe('sameRemotePath (RPC daemon vault-root validation)', () => {
     expect(sameRemotePath('/', '/')).toBe(true);
     expect(sameRemotePath('/', '')).toBe(false);
   });
+
+  it('normalises "." — remotePath "~" case that caused the redeploy loop', () => {
+    // resolveRemotePath('.', '/home/souta') = '/home/souta/.'
+    // daemon filepath.Abs('.') reports '/home/souta' → must MATCH now.
+    expect(sameRemotePath('/home/souta/.', '/home/souta')).toBe(true);
+  });
+
+  it('normalises ".." and collapses "//"', () => {
+    expect(sameRemotePath('/home/souta/work/../work', '/home/souta/work')).toBe(true);
+    expect(sameRemotePath('/home//souta/work', '/home/souta/work')).toBe(true);
+  });
+
+  it('empty-vs-empty is NOT a match (missing root always redeploys)', () => {
+    expect(sameRemotePath('', '')).toBe(false);
+    expect(sameRemotePath('   ', '/x')).toBe(false);
+  });
+
+  it('undefined inputs are safe (no throw) and never match', () => {
+    expect(() => sameRemotePath(undefined, '/home/souta/work')).not.toThrow();
+    expect(sameRemotePath(undefined, '/home/souta/work')).toBe(false);
+    expect(sameRemotePath('/home/souta/work', undefined)).toBe(false);
+    expect(sameRemotePath(undefined, undefined)).toBe(false);
+  });
 });

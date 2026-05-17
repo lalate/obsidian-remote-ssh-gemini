@@ -84,6 +84,18 @@ export class ConnectionManager {
     const home = await this.client.getRemoteHome();
     const absSocketPath = resolveRemotePath(remoteSocketPath, home);
     const absTokenPath  = resolveRemotePath(remoteTokenPath,  home);
+
+    // Absolute vault root, computed ONCE and used both for the
+    // reuse-validation compare and as the daemon's `--vault-root`.
+    // Passing this absolute form to the daemon (instead of the raw
+    // relative `effectivePath`) removes the daemon's implicit cwd
+    // dependency AND keeps both sides of the sameRemotePath() compare
+    // in the same path space — without that, e.g. remotePath "~"
+    // (→ effectivePath ".") made the client want "/home/u/." while
+    // the daemon's filepath.Abs reported "/home/u", a guaranteed
+    // false-mismatch → kill+redeploy on every connect.
+    const absVaultRoot = resolveRemotePath(effectivePath, home);
+
     const reused = await tryReuseExistingDaemon(this.client, absSocketPath, absTokenPath);
     if (reused) {
       // A daemon is already running, but its vault-root was fixed at
@@ -92,9 +104,11 @@ export class ConnectionManager {
       // wrong/missing tree → empty vault, every op `no such file`.
       // Validate the root and redeploy automatically on mismatch so
       // the user never has to SSH in and pkill the daemon by hand.
-      const wantRoot = resolveRemotePath(effectivePath, home);
-      const haveRoot = reused.info.vaultRoot;
-      if (sameRemotePath(haveRoot, wantRoot)) {
+      // `vaultRoot` is typed string but an older / third-party daemon
+      // can omit it on the wire → guard with `?? ''` (empty never
+      // matches a real root, so it redeploys, which is correct).
+      const haveRoot = reused.info.vaultRoot ?? '';
+      if (sameRemotePath(haveRoot, absVaultRoot)) {
         this.rpcConnection = reused;
         logger.info(
           `startRpcSession: reusing existing daemon for ${effectivePath} ` +
@@ -104,20 +118,27 @@ export class ConnectionManager {
       }
       logger.warn(
         `startRpcSession: existing daemon serves vaultRoot="${haveRoot}" but this ` +
-        `profile needs "${wantRoot}" — killing + redeploying so the profile's ` +
+        `profile needs "${absVaultRoot}" — killing + redeploying so the profile's ` +
         `remotePath takes effect (no manual pkill needed)`,
       );
-      try { reused.close(); } catch { /* best effort — deploy() pkills it anyway */ }
+      try {
+        reused.close();
+      } catch (e) {
+        // best effort — deploy() pkills + rm's socket/token anyway;
+        // logged (like every other close in this file) so a wedged
+        // transport leaves a trace instead of vanishing.
+        logger.warn(`startRpcSession: reused.close() on mismatch: ${errorMessage(e)}`);
+      }
       // fall through to deploy(): killExisting:true pkills the stale
       // daemon and redeploys at the correct vault-root.
     }
 
-    logger.info(`startRpcSession: deploying daemon to serve ${effectivePath}`);
+    logger.info(`startRpcSession: deploying daemon to serve ${absVaultRoot}`);
     const deployer = new ServerDeployer(this.client);
     const deploy = await deployer.deploy({
       localBinaryPath,
       remoteBinaryPath,
-      remoteVaultRoot: effectivePath,
+      remoteVaultRoot: absVaultRoot,
       remoteSocketPath,
       remoteTokenPath,
     });
