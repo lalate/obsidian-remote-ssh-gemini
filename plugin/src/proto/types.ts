@@ -18,8 +18,16 @@ export interface ServerInfo {
   protocolVersion: number;
   /** Method names the daemon implements, e.g. ["fs.stat", "fs.list", ...]. */
   capabilities: string[];
-  /** Absolute vault root on the remote host (informational; paths are vault-relative). */
-  vaultRoot: string;
+  /**
+   * Absolute vault root on the remote host (informational; paths are
+   * vault-relative). Optional: this field was added after the initial
+   * protocol, so an older or third-party daemon that passes the
+   * protocol-version check can still omit it on the wire. Consumers
+   * MUST treat an absent value as "unknown root" (the connect flow
+   * `?? ''`s it and redeploys). Do not drop the `?` — the runtime can
+   * be `undefined` even though the current daemon always sets it.
+   */
+  vaultRoot?: string;
 }
 
 export interface Stat {
