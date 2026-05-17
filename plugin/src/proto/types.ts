@@ -110,15 +110,21 @@ export interface ListResult { entries: Entry[] }
 
 /**
  * fs.walk — single-RPC alternative to recursively calling fs.list.
- * `maxEntries` caps the response size; the daemon returns
- * `truncated: true` when the budget is exhausted so the caller can
- * fall back to per-folder listing without truncation lying about
- * tree shape.
+ * `maxEntries` caps ONE page; the daemon returns `truncated: true`
+ * when more entries remain.
+ *
+ * `offset` paginates a large tree: the daemon's walk order is
+ * deterministic, so the caller fetches the next page by re-issuing
+ * the call with `offset = total entries already received` and keeps
+ * going while `truncated` is true. This lets a huge remote tree load
+ * fully instead of being discarded at the cap. Mirrors
+ * `server/internal/proto/types.go` WalkParams — keep in sync.
  */
 export interface WalkParams {
   path: string;
   recursive?: boolean;
   maxEntries?: number;
+  offset?: number;
 }
 export interface WalkEntry {
   /** Vault-relative (forward slashes), unlike `Entry.name` which is a basename. */

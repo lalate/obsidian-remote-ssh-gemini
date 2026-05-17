@@ -813,7 +813,7 @@ export default class RemoteSshPlugin extends Plugin {
     const walk = await walker.walk('');
     logger.info(
       `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
-      `in ${walk.walkMs}ms` +
+      `in ${walk.walkMs}ms (pages=${walk.pages})` +
       (walk.fastPathError ? ` (fast-path fallback: ${walk.fastPathError})` : ''),
     );
 
@@ -828,6 +828,23 @@ export default class RemoteSshPlugin extends Plugin {
       logger.warn(
         `populateVaultFromRemote(${label}): first 5 errors: ` +
         JSON.stringify(result.errors.slice(0, 5), null, 2),
+      );
+    }
+
+    // Don't let a failed/clipped populate look like a working-but-empty
+    // vault (the silent "remote files won't open" symptom). Surface it.
+    if (walk.entries.length === 0) {
+      new Notice(
+        'Remote SSH: 0 files found on the remote. Check the profile’s ' +
+        'remotePath actually points at the vault (see console.log).',
+        10_000,
+      );
+    } else if (walk.truncated) {
+      new Notice(
+        `Remote SSH: remote tree is very large — loaded ${walk.entries.length} ` +
+        'entries but it is still incomplete. Point the profile’s remotePath ' +
+        'at the vault folder, not a large parent directory (see console.log).',
+        15_000,
       );
     }
     return summary;
