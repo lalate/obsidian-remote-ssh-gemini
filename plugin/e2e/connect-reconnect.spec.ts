@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import * as net from 'node:net';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import {
@@ -16,6 +15,7 @@ import {
   countLog,
   assertAtMost,
 } from './helpers/log-oracle';
+import { assertSshdReachable, waitForSshdReachable } from './helpers/sshd';
 
 /**
  * Reconnect e2e (Phase 2) — guards "再接続したときに vault が適切に
@@ -41,27 +41,9 @@ import {
  * that silently skips is how the incident shipped green.
  */
 
-const SSHD_HOST = '127.0.0.1';
-const SSHD_PORT = 2222;
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 
 test.setTimeout(360_000);
-
-async function assertSshdReachable(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const sock = net
-      .connect({ host: SSHD_HOST, port: SSHD_PORT })
-      .setTimeout(5_000)
-      .once('connect', () => { sock.destroy(); resolve(); })
-      .once('timeout', () => { sock.destroy(); reject(new Error('timeout')); })
-      .once('error', reject);
-  }).catch((e) => {
-    throw new Error(
-      `docker test sshd not reachable at ${SSHD_HOST}:${SSHD_PORT} ` +
-      `(${(e as Error).message}). Run \`npm run sshd:start\` first.`,
-    );
-  });
-}
 
 function sshd(action: 'start' | 'stop'): void {
   execSync(`npm run sshd:${action}`, { cwd: PLUGIN_ROOT, stdio: 'pipe' });
@@ -106,7 +88,6 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       60_000,
       'initial connect must patch',
     );
-    const baselineOpens = countLog(shadowLog, /SFTP channel open/);
 
     // 2. Drop the remote unexpectedly.
     sshd('stop');
@@ -122,10 +103,26 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       'an unexpected drop must enter a VISIBLE reconnect loop',
     );
 
+    // Capture the baseline open-count HERE, not right after the
+    // initial patch. Reading it earlier races the rolling log buffer:
+    // the initial connect can emit more than one `SFTP channel open`
+    // and a late-flushed one would inflate the baseline OR, worse,
+    // satisfy the `+1` recovery check below from a *pre-drop* open
+    // (false pass). At this point sshd is down and the reconnect-fail
+    // line is logged well after every pre-drop open — so the count is
+    // stable and no new open can appear until we restore.
+    const baselineOpens = countLog(shadowLog, /SFTP channel open/);
+
     // 4. Restore the remote immediately — stay within the retry
     //    budget so a later attempt can succeed.
     sshd('start');
     sshdRestored = true;
+    // `npm run sshd:start` returns the moment `docker compose up -d`
+    // exits — sshd inside the container is NOT accepting connections
+    // yet. Wait for the port to actually come back so a slow/failed
+    // restart fails as a HARNESS fault here, not as a misleading
+    // "reconnect must recover" plugin failure 150s later.
+    await waitForSshdReachable(60_000);
 
     // 5. Recovery: a successful reconnect re-opens the SFTP channel,
     //    so the open-count must grow past the pre-drop baseline.
@@ -146,14 +143,16 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     );
 
     // 7. The vault is usable again — File Explorer still renders.
-    const explorerVisible = await shadowHandle.page
-      .locator('.nav-files-container .nav-file-title')
-      .first()
-      .isVisible({ timeout: 30_000 })
-      .catch(() => false);
-    expect(
-      explorerVisible,
+    //    `expect(...).toBeVisible` auto-waits AND surfaces the real
+    //    Playwright failure (page closed, target crashed, selector
+    //    never matched). The old `.isVisible().catch(() => false)`
+    //    swallowed all of those into a bare `false`, turning a crashed
+    //    page into a context-free "expected true, got false".
+    await expect(
+      shadowHandle.page
+        .locator('.nav-files-container .nav-file-title')
+        .first(),
       'File Explorer should still render after reconnect',
-    ).toBe(true);
+    ).toBeVisible({ timeout: 30_000 });
   });
 });
