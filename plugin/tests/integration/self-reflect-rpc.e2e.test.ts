@@ -10,7 +10,7 @@ import { deployTestDaemon, LOCAL_DAEMON_BINARY, type DeployedDaemon } from './he
 import { buildRpcClient, type RpcClientHandle } from './helpers/multiclientRpc';
 import { TEST_PRIVATE_KEY } from './helpers/makeAdapter';
 import { assertSelfReflect } from './helpers/assertSelfReflect';
-import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
+import { HarnessVault, asArrayBuffer, makeWriterReflector } from './helpers/harnessVault';
 
 /**
  * Layer 1 (extended) — writer self-reflect over **RPC transport**.
@@ -22,16 +22,14 @@ import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
  * the missing reflect — but only if the writer-side wiring exists
  * to translate `fs.changed` notifications into local vault triggers.
  *
- * Today the wiring does NOT exist on the writer side (it exists on
- * reader clients via `handleFsChangedForReader` in
- * `sync.e2e.test.ts`, mirroring main.ts's reader-only wiring), so
- * the bug surfaces on RPC too. The cases below use `it.fails(...)`
- * to document that contract.
- *
- * The production fix that removes `.fails` here should be the same
- * fix that removes `.fails` from the SFTP test — namely, having the
- * adapter fire `vault.trigger` directly after a successful op, so
- * transport choice doesn't matter for self-reflect correctness.
+ * The fix makes self-reflect transport-independent: the adapter
+ * fires `vault.trigger` synchronously after a successful op (via the
+ * wired writer reflector), so RPC no longer depends on the daemon
+ * echo to recover. In production the same op's daemon echo is
+ * de-duped by a shared `LocalOpRegistry` so `FsChangeListener`
+ * doesn't double-fire; this test drives a bare adapter (no listener),
+ * so it just asserts the immediate reflect — exactly as the SFTP
+ * companion does.
  *
  * Runs only when both the test keypair AND the daemon binary are
  * staged (`npm run sshd:start` + `npm run build:server`).
@@ -78,6 +76,12 @@ describe('Layer 1 — writer self-reflect (RPC transport)', () => {
     writerVault = new HarnessVault();
     fakeFE = new FakeFileExplorer();
     detachFE = fakeFE.attach(writerVault as unknown as Vault);
+
+    // #341 fix: wire the writer-side reflector. The adapter now
+    // reflects synchronously regardless of transport — the RPC daemon
+    // echo is irrelevant here (no FsChangeListener in this bare-adapter
+    // setup; production de-dups the echo via LocalOpRegistry).
+    writerAdapter.setWriterReflector(makeWriterReflector(writerVault));
 
     // Pre-create the subdir so each case can write into it. This is
     // a setup write, NOT a tested op — its outcome on the writer's

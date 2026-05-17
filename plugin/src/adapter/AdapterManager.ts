@@ -1,6 +1,7 @@
 import type { App, PluginManifest } from 'obsidian';
 import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
 import { VaultModelBuilder } from '../vault/VaultModelBuilder';
+import { LocalOpRegistry } from './LocalOpRegistry';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
@@ -237,60 +238,35 @@ export class AdapterManager {
       return false;
     }
 
-    // Live-update subscription is only meaningful on the RPC transport;
-    // the SFTP fallback has no notification channel.
+    // Writer self-reflect (#341) — transport-independent. The adapter
+    // mirrors every applied write/rename/remove/mkdir into the
+    // writer's own vault.fileMap + trigger bus *immediately* and
+    // records the op in a LocalOpRegistry. VaultModelBuilder is
+    // stateless (only mutates the live Vault) and the adapter object
+    // outlives a reconnect's swapClient, so wiring once here holds for
+    // the whole patched lifetime — no per-swap re-policy needed.
+    const localOpRegistry = new LocalOpRegistry();
+    this._dataAdapter.setWriterReflector(
+      new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+    );
+    this._dataAdapter.setLocalOpRegistry(localOpRegistry);
+
+    // The live-update subscription is only meaningful on RPC (SFTP has
+    // no notification channel). On RPC the daemon also echoes our own
+    // writes back; the shared registry lets FsChangeListener drop that
+    // echo so it doesn't double-fire what the reflector already did.
+    // Multi-client changes never pass through `record`, so other
+    // clients' echoes still apply.
     if (this.conn.rpcConnection) {
       void this.fsChangeListener.subscribe({
         rpcConnection: this.conn.rpcConnection,
         dataAdapter: this._dataAdapter,
         pathMapper: mapper,
+        localOpRegistry,
       });
     }
-    this.applyWriterReflectPolicy();
 
     return true;
-  }
-
-  /**
-   * Pick the writer-side reflect strategy for the *currently active*
-   * transport (#341). Called at `patch()` time and again after every
-   * transport swap, because a reconnect can flip SFTP↔RPC and the
-   * adapter object outlives the swap.
-   *
-   *  - RPC: the daemon's `fs.watch` echoes our own writes back and
-   *    `FsChangeListener` already turns those into `vault.trigger(...)`
-   *    via its own `VaultModelBuilder`. A writer reflector on top
-   *    would double-fire every event, so it's cleared to null.
-   *  - SFTP: no daemon, no echo, no recovery channel — the writer's
-   *    vault model never learns about its own mutations. Wire a
-   *    `VaultModelBuilder` reflector so adapter write/rename/remove/
-   *    mkdir mirror straight into `vault.fileMap` + the trigger bus.
-   *    `VaultModelBuilder` is stateless (only mutates the live
-   *    `Vault`), so a fresh instance per (re)wire is fine.
-   *
-   * `this.conn.rpcConnection` is authoritative here: on reconnect it
-   * is (re)established before the `swapClient` hook fires (see
-   * `ConnectionManager.reconnect`), so reading it from
-   * `afterSwapClient` reflects the post-swap transport.
-   */
-  private applyWriterReflectPolicy(): void {
-    if (!this._dataAdapter) return;
-    this._dataAdapter.setWriterReflector(
-      this.conn.rpcConnection
-        ? null
-        : new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
-    );
-  }
-
-  /**
-   * Re-evaluate the writer-reflect policy after the reconnect loop
-   * swapped the adapter's transport. Must be called from the
-   * `swapClient` reconnect hook; without it a SFTP→RPC reconnect
-   * keeps a now-double-firing reflector, and RPC→SFTP loses the
-   * reflector entirely (silent #341 regression).
-   */
-  afterSwapClient(): void {
-    this.applyWriterReflectPolicy();
   }
 
   /**

@@ -71,36 +71,13 @@ const FRESH_PATHS = [
 describe('Layer 3 — property-based invariants', () => {
   let pair: Awaited<ReturnType<typeof setupClientPair>>;
   let writer: TestClient;
-  let writerVault: HarnessVault;
-  let writerFE: FakeFileExplorer;
-  let detachFE: (() => void) | null = null;
 
   beforeAll(async () => {
     pair = await setupClientPair({ testLabel: 'prop' });
     writer = pair.a;
-
-    writerVault = new HarnessVault();
-    writerFE = new FakeFileExplorer();
-    detachFE = writerFE.attach(writerVault as unknown as Vault);
-
-    // #341 fix: wire the reflector BEFORE seeding so the seed writes
-    // land in writerVault.fileMap too. The generator treats
-    // SEED_PATHS as live and may rename/remove them, so they must be
-    // modelled for I1/I2 to hold on those ops.
-    writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
-
-    // Seed the live path set on the remote. Use small distinct
-    // payloads so a future hash-equality invariant could discriminate.
-    for (let i = 0; i < SEED_PATHS.length; i++) {
-      await writer.adapter.writeBinary(
-        SEED_PATHS[i],
-        asArrayBuffer(Buffer.from(`seed-${i}`)),
-      );
-    }
   });
 
   afterAll(async () => {
-    try { detachFE?.(); } catch { /* best effort */ }
     if (pair) await pair.cleanup();
   });
 
@@ -114,34 +91,54 @@ describe('Layer 3 — property-based invariants', () => {
           maxOps: 3,
         }),
         async (ops) => {
-          // Fresh context per fast-check run. The seed paths were
-          // pre-created in beforeAll; the SSH-level state persists
-          // across runs, but the assertion looks only at the **last
-          // op's** effect on writerVault/writerFE, so stale state
-          // from prior runs doesn't poison the check.
-          const ctx: InvariantContext = {
-            client: writer,
-            writerVault,
-            writerFE,
-            opsApplied: [],
-          };
+          // Hermetic per fast-check run. fast-check reuses one process
+          // across `numRuns` + shrink reruns, but the generator resets
+          // its liveness model to SEED_PATHS every invocation — so if
+          // run K renamed/removed a seed path, run K+1 would emit an
+          // op against a path that no longer exists on the remote OR
+          // in a shared vault, spuriously failing I1/I2. Each run
+          // therefore gets a fresh vault + FE + reflector AND re-seeds
+          // SEED_PATHS on the remote, so the generator's model, the
+          // remote, and the asserted vault all agree at op 0.
+          const writerVault = new HarnessVault();
+          const writerFE = new FakeFileExplorer();
+          const detach = writerFE.attach(writerVault as unknown as Vault);
+          writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
+          try {
+            for (let i = 0; i < SEED_PATHS.length; i++) {
+              await writer.adapter.writeBinary(
+                SEED_PATHS[i],
+                asArrayBuffer(Buffer.from(`seed-${i}`)),
+              );
+            }
 
-          const report = await runScenario({
-            scenarioName: 'property-driven',
-            ctx,
-            ops,
-            invariants: [
-              INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER,
-              INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER,
-            ],
-            settleMs: 50, // tight; the property runs a lot
-          });
+            const ctx: InvariantContext = {
+              client: writer,
+              writerVault,
+              writerFE,
+              opsApplied: [],
+            };
 
-          if (!report.allOk) {
-            // Throwing from inside fc.asyncProperty triggers
-            // shrinking; the error message reaches the eventual
-            // `it` assertion with the shrunk sequence inlined.
-            throw new Error(formatReport(report));
+            const report = await runScenario({
+              scenarioName: 'property-driven',
+              ctx,
+              ops,
+              invariants: [
+                INV_WRITER_VAULT_FILEMAP_MIRRORS_ADAPTER,
+                INV_ADAPTER_OP_FIRES_MATCHING_TRIGGER,
+              ],
+              settleMs: 50, // tight; the property runs a lot
+            });
+
+            if (!report.allOk) {
+              // Throwing from inside fc.asyncProperty triggers
+              // shrinking; the error message reaches the eventual
+              // `it` assertion with the shrunk sequence inlined.
+              throw new Error(formatReport(report));
+            }
+          } finally {
+            try { detach(); } catch { /* best effort */ }
+            writer.adapter.setWriterReflector(null);
           }
         },
       ),

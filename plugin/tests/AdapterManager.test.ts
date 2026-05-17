@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AdapterManager, PATCHED_METHODS } from '../src/adapter/AdapterManager';
-import { VaultModelBuilder } from '../src/vault/VaultModelBuilder';
 import type { App, PluginManifest } from 'obsidian';
 import type { ConnectionManager } from '../src/ConnectionManager';
 import type { FsChangeListener } from '../src/vault/FsChangeListener';
@@ -14,18 +13,12 @@ import type { PluginSettings } from '../src/types';
  * mocks only need the methods that are called on a fresh (un-patched)
  * instance: FsChangeListener.unsubscribe() and ConnectionManager.rpcConnection.
  */
-function makeManager(opts: {
-  transferTracker?: { clear: () => void };
-  rpcConnection?: unknown;
-} = {}) {
+function makeManager(opts: { transferTracker?: { clear: () => void } } = {}) {
   const unsubscribeSpy = vi.fn();
   const mgr = new AdapterManager(
-    { vault: {} } as unknown as App,
+    {} as App,
     { id: 'remote-ssh' } as unknown as PluginManifest,
-    {
-      rpcConnection: opts.rpcConnection ?? null,
-      activeRemoteBasePath: null,
-    } as unknown as ConnectionManager,
+    { rpcConnection: null, activeRemoteBasePath: null } as unknown as ConnectionManager,
     { subscribe: vi.fn(), unsubscribe: unsubscribeSpy } as unknown as FsChangeListener,
     { startPolling: vi.fn() } as unknown as PendingEditsBar,
     () => ({}) as unknown as PluginSettings,
@@ -142,42 +135,5 @@ describe('AdapterManager.restore()', () => {
     const { mgr } = makeManager({ transferTracker: { clear: clearSpy } });
     mgr.restore();
     expect(clearSpy).toHaveBeenCalledOnce();
-  });
-});
-
-// ─── afterSwapClient — writer-reflect policy (#341) ────────────────────────
-
-describe('AdapterManager.afterSwapClient() — transport reflect policy', () => {
-  /** Inject a fake patched adapter so we can observe setWriterReflector. */
-  function withFakeAdapter(mgr: AdapterManager) {
-    const setWriterReflector = vi.fn();
-    (mgr as unknown as { _dataAdapter: unknown })._dataAdapter = { setWriterReflector };
-    return setWriterReflector;
-  }
-
-  it('SFTP transport wires a (non-null) writer reflector', () => {
-    const { mgr } = makeManager({ rpcConnection: null });
-    const setWriterReflector = withFakeAdapter(mgr);
-
-    mgr.afterSwapClient();
-
-    expect(setWriterReflector).toHaveBeenCalledTimes(1);
-    // Must be an actual VaultModelBuilder, not merely non-null — a
-    // no-op stub passing here would silently break self-reflect.
-    expect(setWriterReflector.mock.calls[0][0]).toBeInstanceOf(VaultModelBuilder);
-  });
-
-  it('RPC transport clears the reflector to null (no double-fire with FsChangeListener)', () => {
-    const { mgr } = makeManager({ rpcConnection: { info: {} } });
-    const setWriterReflector = withFakeAdapter(mgr);
-
-    mgr.afterSwapClient();
-
-    expect(setWriterReflector).toHaveBeenCalledWith(null);
-  });
-
-  it('is a no-op (no throw) when no adapter is patched', () => {
-    const { mgr } = makeManager();
-    expect(() => mgr.afterSwapClient()).not.toThrow();
   });
 });
