@@ -53,6 +53,17 @@ export default class RemoteSshPlugin extends Plugin {
   private statusBar!: StatusBar;
   private state: SyncState = SyncState.IDLE;
   /**
+   * Re-entrancy guard for `openShadowVaultFor`. A spawned shadow
+   * window can take several seconds to surface, during which Obsidian
+   * keeps the source window focused; without this, every impatient
+   * Connect re-click re-bootstraps + re-fires `obsidian://open`,
+   * producing the WindowSpawner churn observed in the field. Held
+   * briefly after each spawn so a double/triple-click can't slip a
+   * second spawn through, then cleared so a genuine retry after a
+   * real failure still works.
+   */
+  private shadowSpawnInFlight = false;
+  /**
    * Status-bar indicator for queued offline edits (E2-β.4). Hidden
    * when the queue is empty; click opens `PendingEditsModal`.
    */
@@ -510,9 +521,17 @@ export default class RemoteSshPlugin extends Plugin {
     await this.connectProfile(profile);
 
     if (this.state !== SyncState.CONNECTED) {
-      // connectProfile already surfaced a Notice on failure — don't
-      // double up; just skip the populate.
+      // A shadow-window auto-connect failed. connectProfile's own
+      // Notice lands in this shadow window, which Obsidian often
+      // hasn't foregrounded yet — so to the user it looks like a
+      // silent hang while the source window keeps re-spawning.
+      // Surface the failure explicitly here (profile + likely cause)
+      // so a bad host/remotePath is diagnosable instead of mysterious.
       logger.warn(`runAutoConnect(${tag}): connect did not reach CONNECTED state; skipping populate`);
+      new Notice(
+        `Remote SSH: auto-connect to "${profile.name}" failed — vault not loaded. ` +
+        `Check the profile's host / remotePath (must exist on the remote); see console.log.`,
+      );
       return;
     }
 
@@ -880,6 +899,16 @@ export default class RemoteSshPlugin extends Plugin {
     }
     const sourcePluginDir = path.join(adapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
 
+    // The spawned window can take several seconds to surface while
+    // Obsidian keeps THIS (source) window focused. Without this guard
+    // an impatient re-click re-bootstraps + re-fires obsidian://open,
+    // and the user just sees more churn — never the new window.
+    if (this.shadowSpawnInFlight) {
+      new Notice('Remote SSH: the remote vault is still opening — give it a moment');
+      return;
+    }
+    this.shadowSpawnInFlight = true;
+
     // Shadow vaults live under ~/.obsidian-remote/vaults/ on every
     // OS. os.homedir() resolves at runtime — no hardcoded user.
     const baseDir = path.join(os.homedir(), '.obsidian-remote', 'vaults');
@@ -902,6 +931,12 @@ export default class RemoteSshPlugin extends Plugin {
       const msg = errorMessage(e);
       logger.error(`openShadowVaultFor: ${msg}`);
       new Notice(`Remote SSH: shadow vault failed — ${msg}`);
+    } finally {
+      // Hold ~15s: long enough that a double/triple-click can't slip
+      // a second spawn through, short enough that a real retry after
+      // a failed spawn still works. `activeWindow.setTimeout` (not
+      // bare setTimeout) for Obsidian popout-window compatibility.
+      activeWindow.setTimeout(() => { this.shadowSpawnInFlight = false; }, 15_000);
     }
   }
 
