@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import * as net from 'node:net';
 import {
   launchObsidian,
   driveConnectFlow,
@@ -13,6 +12,7 @@ import {
   assertAtMost,
   countLog,
 } from './helpers/log-oracle';
+import { assertSshdReachable } from './helpers/sshd';
 
 /**
  * Negative-path connect e2e — guards the ACTUAL field incident.
@@ -38,26 +38,7 @@ import {
  * shipped green.
  */
 
-const SSHD_HOST = '127.0.0.1';
-const SSHD_PORT = 2222;
-
 test.setTimeout(240_000);
-
-async function assertSshdReachable(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const sock = net
-      .connect({ host: SSHD_HOST, port: SSHD_PORT })
-      .setTimeout(5_000)
-      .once('connect', () => { sock.destroy(); resolve(); })
-      .once('timeout', () => { sock.destroy(); reject(new Error('timeout')); })
-      .once('error', reject);
-  }).catch((e) => {
-    throw new Error(
-      `docker test sshd not reachable at ${SSHD_HOST}:${SSHD_PORT} ` +
-      `(${(e as Error).message}). Run \`npm run sshd:start\` first.`,
-    );
-  });
-}
 
 test.describe('connect failure is visible (bad remotePath, SFTP)', () => {
   let scaffold: ScaffoldResult;
