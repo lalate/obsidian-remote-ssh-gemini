@@ -4,7 +4,7 @@ import * as fc from 'fast-check';
 import type { Vault } from 'obsidian';
 import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
-import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
+import { HarnessVault, asArrayBuffer, makeWriterReflector } from './helpers/harnessVault';
 import {
   runScenario,
   formatReport,
@@ -82,6 +82,12 @@ describe('Layer 3 — property-based invariants', () => {
     writerVault = new HarnessVault();
     writerFE = new FakeFileExplorer();
     detachFE = writerFE.attach(writerVault as unknown as Vault);
+
+    // #341 fix: wire the reflector BEFORE seeding so the seed writes
+    // land in writerVault.fileMap too. The generator treats
+    // SEED_PATHS as live and may rename/remove them, so they must be
+    // modelled for I1/I2 to hold on those ops.
+    writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
 
     // Seed the live path set on the remote. Use small distinct
     // payloads so a future hash-equality invariant could discriminate.

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import type { Vault } from 'obsidian';
 import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
-import { HarnessVault, asArrayBuffer } from './helpers/harnessVault';
+import { HarnessVault, asArrayBuffer, makeWriterReflector } from './helpers/harnessVault';
 import {
   runScenario,
   formatReport,
@@ -56,6 +56,13 @@ describe('Layer 3 — invariant scenarios', () => {
     const writerVault = new HarnessVault();
     const writerFE = new FakeFileExplorer();
     detachFE = writerFE.attach(writerVault as unknown as Vault);
+
+    // #341 fix: wire the writer-side reflector so every adapter op
+    // mirrors into writerVault.fileMap + the trigger bus. Without
+    // this, I1 (fileMap mirror) and I2 (matching trigger) both fail
+    // on the very first op — which is exactly the regression the
+    // scenario runner is here to catch.
+    writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
 
     ctx = { client: writer, writerVault, writerFE, opsApplied: [] };
   });

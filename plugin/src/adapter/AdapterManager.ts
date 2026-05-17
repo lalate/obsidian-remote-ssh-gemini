@@ -1,5 +1,6 @@
 import type { App, PluginManifest } from 'obsidian';
-import { FileSystemAdapter, Notice } from 'obsidian';
+import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
+import { VaultModelBuilder } from '../vault/VaultModelBuilder';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
@@ -245,8 +246,51 @@ export class AdapterManager {
         pathMapper: mapper,
       });
     }
+    this.applyWriterReflectPolicy();
 
     return true;
+  }
+
+  /**
+   * Pick the writer-side reflect strategy for the *currently active*
+   * transport (#341). Called at `patch()` time and again after every
+   * transport swap, because a reconnect can flip SFTP↔RPC and the
+   * adapter object outlives the swap.
+   *
+   *  - RPC: the daemon's `fs.watch` echoes our own writes back and
+   *    `FsChangeListener` already turns those into `vault.trigger(...)`
+   *    via its own `VaultModelBuilder`. A writer reflector on top
+   *    would double-fire every event, so it's cleared to null.
+   *  - SFTP: no daemon, no echo, no recovery channel — the writer's
+   *    vault model never learns about its own mutations. Wire a
+   *    `VaultModelBuilder` reflector so adapter write/rename/remove/
+   *    mkdir mirror straight into `vault.fileMap` + the trigger bus.
+   *    `VaultModelBuilder` is stateless (only mutates the live
+   *    `Vault`), so a fresh instance per (re)wire is fine.
+   *
+   * `this.conn.rpcConnection` is authoritative here: on reconnect it
+   * is (re)established before the `swapClient` hook fires (see
+   * `ConnectionManager.reconnect`), so reading it from
+   * `afterSwapClient` reflects the post-swap transport.
+   */
+  private applyWriterReflectPolicy(): void {
+    if (!this._dataAdapter) return;
+    this._dataAdapter.setWriterReflector(
+      this.conn.rpcConnection
+        ? null
+        : new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+    );
+  }
+
+  /**
+   * Re-evaluate the writer-reflect policy after the reconnect loop
+   * swapped the adapter's transport. Must be called from the
+   * `swapClient` reconnect hook; without it a SFTP→RPC reconnect
+   * keeps a now-double-firing reflector, and RPC→SFTP loses the
+   * reflector entirely (silent #341 regression).
+   */
+  afterSwapClient(): void {
+    this.applyWriterReflectPolicy();
   }
 
   /**

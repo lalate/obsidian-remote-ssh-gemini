@@ -1,11 +1,10 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import * as fs from 'node:fs';
 import type { Vault } from 'obsidian';
-import { VaultModelBuilder, type ObsidianClassDeps } from '../../src/vault/VaultModelBuilder';
 import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
 import { assertSelfReflect } from './helpers/assertSelfReflect';
-import { HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer } from './helpers/harnessVault';
+import { HarnessVault, asArrayBuffer, makeWriterReflector } from './helpers/harnessVault';
 
 /**
  * Layer 1 of the sync-test framework — **writer self-reflect**.
@@ -68,7 +67,6 @@ describe('Layer 1 — writer self-reflect (SFTP transport)', () => {
   let writerVault: HarnessVault;
   let fakeFE: FakeFileExplorer;
   let detachFE: (() => void) | null = null;
-  let builder: VaultModelBuilder;
 
   const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -80,15 +78,12 @@ describe('Layer 1 — writer self-reflect (SFTP transport)', () => {
     fakeFE = new FakeFileExplorer();
     detachFE = fakeFE.attach(writerVault as unknown as Vault);
 
-    builder = new VaultModelBuilder(
-      writerVault as unknown as Vault,
-      { TFile: HarnessTFile as unknown as ObsidianClassDeps['TFile'],
-        TFolder: HarnessTFolder as unknown as ObsidianClassDeps['TFolder'] },
-    );
-    // Silence the unused-variable check; builder is held for future
-    // cases that may want to seed state synthetically when a fix
-    // hasn't landed yet.
-    void builder;
+    // #341 fix: wire the writer-side reflector — every
+    // writer.adapter.write/rename/remove/mkdir then mirrors straight
+    // into writerVault.fileMap + the vault.trigger bus the
+    // FakeFileExplorer listens on, exactly as AdapterManager wires it
+    // for the SFTP transport in production.
+    writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
   });
 
   afterAll(async () => {
