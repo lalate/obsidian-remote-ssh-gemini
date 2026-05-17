@@ -22,6 +22,7 @@ function isThumbnailEligible(vaultPath: string): boolean {
   return THUMBNAIL_EXTENSIONS.has(vaultPath.slice(dot + 1).toLowerCase());
 }
 import type { RemoteFsClient } from './RemoteFsClient';
+import type { WriterReflector } from './WriterReflector';
 import type { ReadCache } from '../cache/ReadCache';
 import type { DirCache } from '../cache/DirCache';
 import type { PathMapper } from '../path/PathMapper';
@@ -197,6 +198,25 @@ export class SftpDataAdapter {
     return this.reconnecting;
   }
 
+  /**
+   * Writer-side vault-model reflector (#341). When wired, every
+   * successful local mutation is mirrored into the writer's own
+   * `vault.fileMap` + `vault.trigger(...)` bus so File Explorer,
+   * MetadataCache and open editor tabs follow a title-bar rename
+   * (etc.) instead of staying bound to the stale `TFile`.
+   *
+   * Null by default: the model builder needs the live `Vault`, which
+   * only exists once the shadow window opens, so it's wired via
+   * `setWriterReflector` after construction rather than as a
+   * constructor arg. When null, every reflect call is a no-op — the
+   * legacy behaviour, so non-shadow callers are unaffected.
+   */
+  private writerReflector: WriterReflector | null = null;
+
+  setWriterReflector(reflector: WriterReflector | null): void {
+    this.writerReflector = reflector;
+  }
+
   // ─── DataAdapter (read-side) ─────────────────────────────────────────────
 
   getName(): string {
@@ -359,6 +379,7 @@ export class SftpDataAdapter {
         const cached = this.readCache.peek(this.toRemote(normalizedPath));
         this.ancestorTracker.remember(normalizedPath, data, cached?.mtime ?? 0);
       }
+      this.writerReflector?.reflectWrite(normalizedPath);
     } finally {
       perfTracer.end(__t1, { op: 'write', path: normalizedPath, bytes: data.length });
     }
@@ -372,6 +393,7 @@ export class SftpDataAdapter {
         return;
       }
       await this.writeBuffer(normalizedPath, Buffer.from(data), false);
+      this.writerReflector?.reflectWrite(normalizedPath);
     } finally {
       perfTracer.end(__t1, { op: 'writeBinary', path: normalizedPath, bytes: data.byteLength });
     }
@@ -457,6 +479,7 @@ export class SftpDataAdapter {
     const remote = this.toRemote(normalizedPath);
     await this.client.mkdirp(remote);
     this.dirCache.invalidate(parentDirRemote(remote));
+    this.writerReflector?.reflectMkdir(normalizedPath);
   }
 
   async remove(normalizedPath: string): Promise<void> {
@@ -470,6 +493,7 @@ export class SftpDataAdapter {
       }
       this.invalidatePath(remote);
       this.ancestorTracker?.invalidate(normalizedPath);
+      this.writerReflector?.reflectRemove(normalizedPath);
     } finally {
       perfTracer.end(__t1, { op: 'remove', path: normalizedPath });
     }
@@ -487,6 +511,7 @@ export class SftpDataAdapter {
       // them out. Cheap to add later if it ever matters.
     }
     this.invalidateTree(remote);
+    this.writerReflector?.reflectRemove(normalizedPath);
   }
 
   async rename(oldPath: string, newPath: string): Promise<void> {
@@ -507,6 +532,7 @@ export class SftpDataAdapter {
       // whatever they last read at that path, regardless of how the
       // file got there.
       this.ancestorTracker?.invalidate(oldPath);
+      this.writerReflector?.reflectRename(oldPath, newPath);
     } finally {
       perfTracer.end(__t1, { op: 'rename', path: oldPath, newPath });
     }

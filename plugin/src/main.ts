@@ -478,6 +478,28 @@ export default class RemoteSshPlugin extends Plugin {
       return;
     }
 
+    // Pull the shared Obsidian config (app.json / appearance.json /
+    // core-plugins.json / hotkeys.json) from the remote onto the
+    // local shadow disk *before* the populate, so the next time this
+    // window restarts Obsidian reads fresh settings instead of the
+    // stale local copy (#342). Best-effort: a failure here must not
+    // block rendering the vault.
+    const da = this.adapterMgr.dataAdapter;
+    const hostAdapter = this.app.vault.adapter;
+    if (da && hostAdapter instanceof FileSystemAdapter) {
+      try {
+        await ShadowVaultBootstrap.pullSharedObsidianConfig(
+          da,
+          this.app.vault.configDir,
+          path.join(hostAdapter.getBasePath(), this.app.vault.configDir),
+        );
+      } catch (e) {
+        logger.warn(
+          `runAutoConnect(${tag}): shared-config pull failed: ${errorMessage(e)}`,
+        );
+      }
+    }
+
     // Adapter is patched; build the file model so File Explorer
     // renders the remote tree.
     let summary: string;

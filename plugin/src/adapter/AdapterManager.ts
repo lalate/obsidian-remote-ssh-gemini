@@ -1,5 +1,6 @@
 import type { App, PluginManifest } from 'obsidian';
-import { FileSystemAdapter, Notice } from 'obsidian';
+import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
+import { VaultModelBuilder } from '../vault/VaultModelBuilder';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
@@ -238,12 +239,34 @@ export class AdapterManager {
 
     // Live-update subscription is only meaningful on the RPC transport;
     // the SFTP fallback has no notification channel.
+    //
+    // The two transports get *different* writer-side reflect paths
+    // (#341):
+    //
+    //  - RPC: the daemon's fs.watch echoes our own writes back, and
+    //    FsChangeListener already turns those into vault.trigger(...)
+    //    via its own VaultModelBuilder. Wiring a writer reflector too
+    //    would double-fire every event. Leave the reflector null and
+    //    keep relying on the echo (de-duping the echo so the reflect
+    //    is immediate is tracked separately — see the RPC self-reflect
+    //    suite, still red by design).
+    //
+    //  - SFTP: no daemon, no echo, no recovery channel — the writer's
+    //    vault model never learns about its own mutations. Wire a
+    //    VaultModelBuilder as the reflector so adapter.write/rename/
+    //    remove/mkdir mirror straight into vault.fileMap + the trigger
+    //    bus. VaultModelBuilder is stateless (it only mutates the live
+    //    Vault), so a single instance for the patched lifetime is fine.
     if (this.conn.rpcConnection) {
       void this.fsChangeListener.subscribe({
         rpcConnection: this.conn.rpcConnection,
         dataAdapter: this._dataAdapter,
         pathMapper: mapper,
       });
+    } else {
+      this._dataAdapter.setWriterReflector(
+        new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+      );
     }
 
     return true;

@@ -369,6 +369,55 @@ export class VaultModelBuilder {
     return true;
   }
 
+  // ─── writer self-reflect (#341) ─────────────────────────────────────────
+  //
+  // These four methods structurally satisfy `adapter/WriterReflector`.
+  // `SftpDataAdapter` calls them after a local-originated mutation so
+  // the writer's own vault model stays in sync without waiting for a
+  // remote `FsChangeListener` echo (which never arrives on the SFTP
+  // transport — no daemon). No `implements` clause: matching by shape
+  // keeps the dependency edge adapter → (structural) → vault only.
+
+  /**
+   * Reflect a writer-side `adapter.write` / `writeBinary`. Inserts the
+   * file (firing `create`) when the path is new, otherwise bumps it
+   * (firing `modify`). Missing parent folders are synthesised so a
+   * write into a not-yet-modelled subtree still lands.
+   */
+  reflectWrite(path: string): void {
+    const existing = this.vault.getAbstractFileByPath(path);
+    if (existing) {
+      // A folder already occupying the path is pathological (the
+      // adapter wrote a file there); leave the model alone rather
+      // than firing a misleading `modify` for a TFolder.
+      if (!isFolder(existing)) this.modifyOne(path);
+      return;
+    }
+    this.insertOne(
+      { path, isDirectory: false, ctime: 0, mtime: Date.now(), size: 0 },
+      { ensureParents: true },
+    );
+  }
+
+  /** Reflect a writer-side `adapter.rename`. */
+  reflectRename(oldPath: string, newPath: string): void {
+    this.renameOne(oldPath, newPath);
+  }
+
+  /** Reflect a writer-side `adapter.remove` / `rmdir`. */
+  reflectRemove(path: string): void {
+    this.removeOne(path);
+  }
+
+  /** Reflect a writer-side `adapter.mkdir` (idempotent if modelled). */
+  reflectMkdir(path: string): void {
+    if (this.vault.getAbstractFileByPath(path)) return;
+    this.insertOne(
+      { path, isDirectory: true, ctime: 0, mtime: Date.now(), size: 0 },
+      { ensureParents: true },
+    );
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   private insertFile(entry: RemoteEntry, parent: TFolder): TFile {

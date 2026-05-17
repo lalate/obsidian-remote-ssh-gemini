@@ -30,6 +30,18 @@ export interface BootstrapResult {
 }
 
 /**
+ * The narrow read surface `pullSharedObsidianConfig` needs from the
+ * remote. `SftpDataAdapter` satisfies this structurally (it has both
+ * `exists` and a string-returning `read`), so the connect flow and
+ * the Layer-2 test helper pass the patched adapter directly. Kept
+ * minimal so `shadow/` gains no dependency on `adapter/`.
+ */
+export interface SharedConfigReader {
+  exists(normalizedPath: string): Promise<boolean>;
+  read(normalizedPath: string): Promise<string>;
+}
+
+/**
  * Materialises the on-disk shadow vault for a profile so a separate
  * Obsidian window can open it as if it were any other local vault.
  *
@@ -155,6 +167,80 @@ export class ShadowVaultBootstrap {
     const pluginDir = path.join(configDir, 'plugins', 'remote-ssh');
     const pluginDataFile = path.join(pluginDir, 'data.json');
     return { vaultDir, configDir, pluginDir, pluginDataFile };
+  }
+
+  // ─── shared-config round-trip (#342) ────────────────────────────────────
+
+  /**
+   * Shared (non per-client) Obsidian config files. `PathMapper`
+   * leaves these unmapped on purpose so every machine on the vault
+   * sees the same `app.json` / theme / enabled-core-plugins /
+   * hotkeys. The sharing was one-way though: edits in one session
+   * push to the remote, but the local shadow disk never pulled them
+   * back, so the *next* Obsidian startup read a stale local copy and
+   * the settings appeared to evaporate (#342).
+   *
+   * `workspace.json` is deliberately NOT here — it's per-client UI
+   * state that `PathMapper` already redirects into a private subtree.
+   */
+  static readonly SHARED_OBSIDIAN_CONFIG_FILES: readonly string[] = [
+    'app.json',
+    'appearance.json',
+    'core-plugins.json',
+    'hotkeys.json',
+  ];
+
+  /**
+   * Pull the shared-config allowlist from the remote into the local
+   * shadow vault's config dir, closing the #342 round-trip gap.
+   *
+   * Bytes are copied verbatim — no JSON parse/re-serialise — so key
+   * order and formatting survive exactly as Obsidian wrote them.
+   * A file absent on the remote is skipped, not treated as an error
+   * (a fresh remote vault legitimately has none of these yet).
+   *
+   * Static because both call sites (the connect flow in `main.ts`
+   * and the Layer-2 test helper) have a reader + paths but not
+   * necessarily a constructed `ShadowVaultBootstrap` to hand.
+   */
+  static async pullSharedObsidianConfig(
+    reader: SharedConfigReader,
+    /** Vault-relative config dir, e.g. `.obsidian` (`app.vault.configDir`). */
+    remoteConfigDir: string,
+    /** Absolute local config dir, i.e. `ShadowVaultLayout.configDir`. */
+    localConfigDir: string,
+  ): Promise<{ pulled: string[]; skipped: string[] }> {
+    const pulled: string[] = [];
+    const skipped: string[] = [];
+
+    fs.mkdirSync(localConfigDir, { recursive: true });
+
+    for (const basename of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+      const remoteRel = `${remoteConfigDir}/${basename}`;
+      try {
+        if (!(await reader.exists(remoteRel))) {
+          skipped.push(basename);
+          continue;
+        }
+        const content = await reader.read(remoteRel);
+        fs.writeFileSync(path.join(localConfigDir, basename), content, 'utf-8');
+        pulled.push(basename);
+      } catch (e) {
+        // Best-effort: a single unreadable file must not abort the
+        // others or fail the connect. The stale local copy (if any)
+        // stays; logged so it's diagnosable.
+        logger.warn(
+          `pullSharedObsidianConfig: ${basename} skipped (${errorMessage(e)})`,
+        );
+        skipped.push(basename);
+      }
+    }
+
+    logger.info(
+      `pullSharedObsidianConfig: pulled [${pulled.join(', ')}], ` +
+      `skipped [${skipped.join(', ')}]`,
+    );
+    return { pulled, skipped };
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

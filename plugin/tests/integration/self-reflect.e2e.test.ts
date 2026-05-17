@@ -85,10 +85,14 @@ describe('Layer 1 — writer self-reflect (SFTP transport)', () => {
       { TFile: HarnessTFile as unknown as ObsidianClassDeps['TFile'],
         TFolder: HarnessTFolder as unknown as ObsidianClassDeps['TFolder'] },
     );
-    // Silence the unused-variable check; builder is held for future
-    // cases that may want to seed state synthetically when a fix
-    // hasn't landed yet.
-    void builder;
+    // #341 fix: wire the builder as the adapter's writer-side
+    // reflector. From here every writer.adapter.write/rename/remove/
+    // mkdir mirrors straight into writerVault.fileMap + the
+    // vault.trigger bus the FakeFileExplorer listens on — the exact
+    // production wiring AdapterManager does for the SFTP transport.
+    // VaultModelBuilder structurally satisfies WriterReflector, so no
+    // cast is needed.
+    writer.adapter.setWriterReflector(builder);
   });
 
   afterAll(async () => {

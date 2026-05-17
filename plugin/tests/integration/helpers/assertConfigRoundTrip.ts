@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { ShadowVaultBootstrap, ShadowVaultLayout } from '../../../src/shadow/ShadowVaultBootstrap';
+import { ShadowVaultBootstrap, type ShadowVaultLayout } from '../../../src/shadow/ShadowVaultBootstrap';
 import type { SshProfile } from '../../../src/types';
 import type { TestClient } from './makeAdapter';
 
@@ -83,12 +83,22 @@ export async function assertConfigRoundTrip(
   await remoteClient.adapter.mkdir(remoteConfigDir);
   await remoteClient.adapter.write(remoteRelPath, JSON.stringify(remoteContent));
 
-  // ── 2. Run bootstrap ───────────────────────────────────────────────
+  // ── 2. Run bootstrap, then pull shared config ──────────────────────
   //
-  // Today this is purely-local: it creates the shadow vault directory
-  // structure and seeds `community-plugins.json` + `data.json`. It does
-  // NOT touch `<configDir>/<configBasename>`. That's the gap.
+  // `bootstrap()` is purely-local: it creates the shadow vault dir
+  // structure and seeds `community-plugins.json` + `data.json`. The
+  // remote→local pull for the shared-config allowlist is a separate
+  // async step (it needs the connected adapter, which bootstrap has
+  // no handle on). The production connect flow runs the exact same
+  // call right before `populateVaultFromRemote`; this mirrors it so
+  // the test exercises the real round-trip path. Closing this gap is
+  // the #342 fix.
   const result = await bootstrap.bootstrap(profile, allProfiles);
+  await ShadowVaultBootstrap.pullSharedObsidianConfig(
+    remoteClient.adapter,
+    remoteConfigDir,
+    result.layout.configDir,
+  );
 
   // ── 3. Compare local ↔ remote ─────────────────────────────────────
   const localAbsPath = path.join(result.layout.configDir, configBasename);
