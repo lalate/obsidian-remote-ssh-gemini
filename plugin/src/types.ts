@@ -61,6 +61,19 @@ export interface SshProfile {
    * `.obsidian-remote/token`.
    */
   rpcTokenPath?: string;
+  /**
+   * Directory names to skip when walking the remote tree into the
+   * vault model. A match is by exact basename anywhere in the tree
+   * (e.g. `node_modules`, `.git`) — the whole subtree is pruned, so
+   * it is never transferred over SSH nor indexed by Obsidian. This is
+   * what makes a large shared remote root (e.g. `~/work` with a
+   * git/node_modules-heavy work dir) usable at all.
+   *
+   * When omitted (older profiles), the walk falls back to
+   * `DEFAULT_WALK_IGNORE_DIRS`. New profiles are pre-filled with that
+   * list via `DEFAULT_PROFILE`.
+   */
+  walkIgnoreDirs?: string[];
 }
 
 export interface PluginSettings {

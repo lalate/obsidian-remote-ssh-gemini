@@ -125,6 +125,14 @@ export interface WalkParams {
   recursive?: boolean;
   maxEntries?: number;
   offset?: number;
+  /**
+   * Directory basenames to prune entirely (e.g. `node_modules`,
+   * `.git`). A pruned subtree is never walked, transferred, or
+   * counted toward pagination. Must be sent identically on every
+   * page so the deterministic order / offset stays stable. Mirrors
+   * `server/internal/proto/types.go` WalkParams.Ignore.
+   */
+  ignore?: string[];
 }
 export interface WalkEntry {
   /** Vault-relative (forward slashes), unlike `Entry.name` which is a basename. */

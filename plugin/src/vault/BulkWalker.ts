@@ -36,6 +36,13 @@ export interface BulkWalkerDeps {
    * "truncated → fall back" branch without needing a real big vault.
    */
   maxEntries?: number;
+  /**
+   * Directory basenames to prune from the walk (e.g. `node_modules`,
+   * `.git`). Passed straight through to `fs.walk`'s `ignore` so the
+   * daemon never descends/transfers them. Only the fast path honours
+   * this; the per-folder fallback (SFTP / no daemon) does not yet.
+   */
+  ignoreDirs?: string[];
 }
 
 /** Outcome telemetry from a single `walk()` call. */
@@ -163,6 +170,7 @@ export class BulkWalker {
       const params: WalkParams = { path: rootPath, recursive: true };
       if (this.deps.maxEntries != null) params.maxEntries = this.deps.maxEntries;
       if (offset > 0) params.offset = offset;
+      if (this.deps.ignoreDirs?.length) params.ignore = this.deps.ignoreDirs;
       const page = await this.deps.rpcConnection.rpc.call('fs.walk', params);
       for (const e of page.entries) {
         all.push({

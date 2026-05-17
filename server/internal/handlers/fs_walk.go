@@ -52,6 +52,18 @@ func FsWalk(vaultRoot string) rpc.Handler {
 		if offset < 0 {
 			offset = 0
 		}
+		// Directory basenames to prune entirely. Pruned subtrees are
+		// never emitted, never counted toward pagination, and never
+		// descended into — so a git/node_modules-heavy work dir does
+		// not blow up the walk. The same list is passed on every page
+		// so the deterministic order (and offset accounting) stays
+		// stable across pages.
+		ignore := make(map[string]struct{}, len(p.Ignore))
+		for _, name := range p.Ignore {
+			if name != "" {
+				ignore[name] = struct{}{}
+			}
+		}
 
 		abs, e := resolveOrErr(vaultRoot, p.Path)
 		if e != nil {
@@ -95,6 +107,14 @@ func FsWalk(vaultRoot string) rpc.Handler {
 			// itself). Skip but keep descending.
 			if path == abs {
 				return nil
+			}
+			// Prune ignored directory subtrees BEFORE counting/emitting
+			// so the dir itself and everything under it is invisible to
+			// pagination and the client. Match is by exact basename.
+			if d.IsDir() {
+				if _, skip := ignore[d.Name()]; skip {
+					return fs.SkipDir
+				}
 			}
 			einfo, err := d.Info()
 			if err != nil {
