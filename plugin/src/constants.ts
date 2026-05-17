@@ -2,6 +2,22 @@ import type { PluginSettings, SshProfile } from './types';
 
 export const PLUGIN_ID = 'remote-ssh';
 
+/**
+ * Directory basenames pruned from the remote tree walk by default.
+ * VCS, dependency, build, cache and editor-metadata dirs that are
+ * never Obsidian content but dominate a real work directory (a
+ * git/node_modules-heavy `~/work` can be hundreds of thousands of
+ * files of pure noise). Pruning them server-side keeps a large
+ * shared remote root usable. `.obsidian` is deliberately NOT here —
+ * it is the vault config and must be walked.
+ */
+export const DEFAULT_WALK_IGNORE_DIRS: readonly string[] = [
+  '.git', 'node_modules', '.svn', '.hg',
+  '__pycache__', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache',
+  'target', 'dist', 'build', '.next', '.nuxt', '.cache', '.gradle',
+  '.idea', 'vendor', '.terraform',
+];
+
 export const DEFAULT_PROFILE: Omit<SshProfile, 'id' | 'name'> = {
   host: '',
   port: 22,
@@ -12,6 +28,7 @@ export const DEFAULT_PROFILE: Omit<SshProfile, 'id' | 'name'> = {
   keepaliveIntervalMs: 10000,
   keepaliveCountMax: 3,
   transport: 'sftp',
+  walkIgnoreDirs: [...DEFAULT_WALK_IGNORE_DIRS],
 };
 
 export const DEFAULT_SETTINGS: PluginSettings = {

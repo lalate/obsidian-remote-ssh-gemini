@@ -180,11 +180,19 @@ type CopyParams struct {
 // concurrent mutation between pages can drift the boundary by a few
 // entries; tolerable for the cold-open populate (a reconnect
 // re-walks from scratch).
+//
+// `Ignore` prunes directory subtrees by exact basename (e.g.
+// "node_modules", ".git"). A pruned dir is never emitted, never
+// descended into, and never counted toward pagination — this is what
+// keeps a large shared remote root (a git/deps-heavy work dir) from
+// blowing up the walk. The same list must be sent on every page so
+// the deterministic order / offset accounting stays stable.
 type WalkParams struct {
-	Path       string `json:"path"`
-	Recursive  bool   `json:"recursive,omitempty"`
-	MaxEntries int    `json:"maxEntries,omitempty"`
-	Offset     int    `json:"offset,omitempty"`
+	Path       string   `json:"path"`
+	Recursive  bool     `json:"recursive,omitempty"`
+	MaxEntries int      `json:"maxEntries,omitempty"`
+	Offset     int      `json:"offset,omitempty"`
+	Ignore     []string `json:"ignore,omitempty"`
 }
 
 // WalkEntry is one row in fs.walk's flat output. Unlike fs.list's

@@ -1,7 +1,7 @@
 import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
-import { DEFAULT_SETTINGS } from './constants';
+import { DEFAULT_SETTINGS, DEFAULT_WALK_IGNORE_DIRS } from './constants';
 import { SftpClient } from './ssh/SftpClient';
 import { AuthResolver } from './ssh/AuthResolver';
 import { HostKeyStore } from './ssh/HostKeyStore';
@@ -809,6 +809,12 @@ export default class RemoteSshPlugin extends Plugin {
     const walker = new BulkWalker({
       adapter: this.app.vault.adapter,
       rpcConnection: this.conn.rpcConnection ?? undefined,
+      // Older profiles have no walkIgnoreDirs → fall back to the
+      // sensible defaults so existing users immediately benefit. An
+      // explicit empty array (user cleared it) means "ignore nothing"
+      // and is respected (?? only fills null/undefined).
+      ignoreDirs: this.conn.activeProfile?.walkIgnoreDirs
+        ?? [...DEFAULT_WALK_IGNORE_DIRS],
     });
     const walk = await walker.walk('');
     logger.info(

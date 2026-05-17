@@ -83,6 +83,38 @@ describe('BulkWalker', () => {
     expect(callSpy).toHaveBeenCalledWith('fs.walk', { path: '', recursive: true, maxEntries: 7 });
   });
 
+  it('passes ignoreDirs through to fs.walk as `ignore`', async () => {
+    const adapter = makeAdapter({});
+    const callSpy = vi.fn(async () => ({ entries: [], truncated: false } as WalkResult));
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: callSpy as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({
+      adapter, rpcConnection: rpc, ignoreDirs: ['node_modules', '.git'],
+    });
+
+    await walker.walk('');
+
+    expect(callSpy).toHaveBeenCalledWith('fs.walk', {
+      path: '', recursive: true, ignore: ['node_modules', '.git'],
+    });
+  });
+
+  it('omits `ignore` when ignoreDirs is empty or unset', async () => {
+    const adapter = makeAdapter({});
+    const callSpy = vi.fn(async () => ({ entries: [], truncated: false } as WalkResult));
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: callSpy as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({ adapter, rpcConnection: rpc, ignoreDirs: [] });
+
+    await walker.walk('');
+
+    expect(callSpy).toHaveBeenCalledWith('fs.walk', { path: '', recursive: true });
+  });
+
   // ─── fast path pagination + fallback-on-error ───────────────────────────
 
   it('paginates: drains every page with an increasing offset, no fallback', async () => {
