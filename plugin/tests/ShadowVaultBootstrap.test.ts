@@ -703,3 +703,83 @@ describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
       .toBe(healthy); // NOT clobbered with broken JSON
   });
 });
+
+// ─── pushSharedObsidianConfig (#342 round-trip: local → remote) ───────────────
+
+describe('ShadowVaultBootstrap.pushSharedObsidianConfig', () => {
+  let localConfigDir: string;
+
+  beforeEach(() => {
+    localConfigDir = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-push-')),
+      '.obsidian',
+    );
+    fs.mkdirSync(localConfigDir, { recursive: true });
+  });
+  afterEach(() => {
+    try { fs.rmSync(path.dirname(localConfigDir), { recursive: true, force: true }); }
+    catch { /* best effort */ }
+  });
+
+  /** Writer that records calls; `failOn` rejects for that basename. */
+  function makeWriter(failOn?: string) {
+    const writes: Record<string, string> = {};
+    return {
+      writes,
+      write: vi.fn(async (p: string, content: string) => {
+        const base = p.slice(p.lastIndexOf('/') + 1);
+        if (base === failOn) throw new Error('SSH write failed');
+        writes[base] = content;
+      }),
+    };
+  }
+
+  it('pushes every present & valid local file verbatim', async () => {
+    const appBody = JSON.stringify({ useMarkdownLinks: false });
+    fs.writeFileSync(path.join(localConfigDir, 'app.json'), appBody, 'utf-8');
+    fs.writeFileSync(path.join(localConfigDir, 'hotkeys.json'), '{}', 'utf-8');
+    const w = makeWriter();
+
+    const { pushed, skipped, errored } =
+      await ShadowVaultBootstrap.pushSharedObsidianConfig(w, '.obsidian', localConfigDir);
+
+    expect(pushed.sort()).toEqual(['app.json', 'hotkeys.json']);
+    expect(errored).toEqual([]);
+    expect(skipped.sort()).toEqual(['appearance.json', 'core-plugins.json']); // absent locally
+    expect(w.writes['app.json']).toBe(appBody); // verbatim, not re-serialised
+    expect(w.write).toHaveBeenCalledWith('.obsidian/app.json', appBody);
+  });
+
+  it('skips files absent locally (fresh vault — not an error)', async () => {
+    const w = makeWriter();
+    const { pushed, errored } =
+      await ShadowVaultBootstrap.pushSharedObsidianConfig(w, '.obsidian', localConfigDir);
+    expect(pushed).toEqual([]);
+    expect(errored).toEqual([]);
+    expect(w.write).not.toHaveBeenCalled();
+  });
+
+  it('does NOT push a half-written (invalid JSON) local file', async () => {
+    fs.writeFileSync(path.join(localConfigDir, 'app.json'), '{ not json', 'utf-8');
+    const w = makeWriter();
+
+    const { pushed, skipped, errored } =
+      await ShadowVaultBootstrap.pushSharedObsidianConfig(w, '.obsidian', localConfigDir);
+
+    expect(pushed).not.toContain('app.json');
+    expect(skipped).toContain('app.json');
+    expect(errored).toContain('app.json'); // surfaces — settings not silently lost
+    expect(w.write).not.toHaveBeenCalledWith('.obsidian/app.json', expect.anything());
+  });
+
+  it('reports a failed remote write as errored (not silently dropped)', async () => {
+    fs.writeFileSync(path.join(localConfigDir, 'app.json'), '{"a":1}', 'utf-8');
+    const w = makeWriter('app.json');
+
+    const { pushed, errored } =
+      await ShadowVaultBootstrap.pushSharedObsidianConfig(w, '.obsidian', localConfigDir);
+
+    expect(pushed).not.toContain('app.json');
+    expect(errored).toContain('app.json');
+  });
+});

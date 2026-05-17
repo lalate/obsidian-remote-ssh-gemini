@@ -42,6 +42,16 @@ export interface SharedConfigReader {
 }
 
 /**
+ * The narrow write surface `pushSharedObsidianConfig` needs — the
+ * other half of the #342 round-trip. `SftpDataAdapter.write`
+ * satisfies it structurally, so the connect flow passes the patched
+ * adapter directly (symmetric with `SharedConfigReader`).
+ */
+export interface SharedConfigWriter {
+  write(normalizedPath: string, content: string): Promise<void>;
+}
+
+/**
  * Materialises the on-disk shadow vault for a profile so a separate
  * Obsidian window can open it as if it were any other local vault.
  *
@@ -283,6 +293,79 @@ export class ShadowVaultBootstrap {
       `skipped [${skipped.join(', ')}], errored [${errored.join(', ')}]`,
     );
     return { pulled, skipped, errored };
+  }
+
+  /**
+   * Push the local shadow vault's shared-config files to the remote —
+   * the other half of the #342 round-trip. Without this, a settings
+   * change made in the shadow window only ever lives on the local
+   * shadow disk: the next session's `pullSharedObsidianConfig` finds
+   * nothing new on the remote and the change "evaporates".
+   *
+   * Symmetric with the pull: each local file is `JSON.parse`-validated
+   * before it is sent, so a half-written local file (Obsidian saving
+   * mid-flush) never clobbers a healthy remote copy. Absent local
+   * files are skipped (not an error — a fresh vault legitimately has
+   * none yet); a remote write that throws is `errored` so the caller
+   * can surface it instead of silently losing settings again.
+   *
+   * Static for the same reason as the pull: callers have a writer +
+   * paths but not necessarily a constructed instance.
+   */
+  static async pushSharedObsidianConfig(
+    writer: SharedConfigWriter,
+    /** Vault-relative config dir, e.g. `.obsidian` (`app.vault.configDir`). */
+    remoteConfigDir: string,
+    /** Absolute local config dir, i.e. `ShadowVaultLayout.configDir`. */
+    localConfigDir: string,
+  ): Promise<{ pushed: string[]; skipped: string[]; errored: string[] }> {
+    const pushed: string[] = [];
+    const skipped: string[] = [];
+    const errored: string[] = [];
+
+    for (const basename of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+      const localPath = path.join(localConfigDir, basename);
+      let content: string;
+      try {
+        content = fs.readFileSync(localPath, 'utf-8');
+      } catch {
+        // Absent locally — nothing to push (fresh vault). Not an error.
+        skipped.push(basename);
+        continue;
+      }
+      try {
+        JSON.parse(content);
+      } catch {
+        // Obsidian caught mid-save, or a corrupt local file — do NOT
+        // push broken JSON over a healthy remote copy.
+        logger.warn(
+          `pushSharedObsidianConfig: local ${basename} is not valid JSON; ` +
+          'not pushing (keeping remote copy untouched)',
+        );
+        skipped.push(basename);
+        errored.push(basename);
+        continue;
+      }
+      try {
+        await writer.write(`${remoteConfigDir}/${basename}`, content);
+        pushed.push(basename);
+      } catch (e) {
+        // A transient SSH error must not abort the rest or lose the
+        // change silently — surface it (errored) so the caller can
+        // Notice and the next connect retries.
+        logger.warn(
+          `pushSharedObsidianConfig: ${basename} push failed (${errorMessage(e)})`,
+        );
+        skipped.push(basename);
+        errored.push(basename);
+      }
+    }
+
+    logger.info(
+      `pushSharedObsidianConfig: pushed [${pushed.join(', ')}], ` +
+      `skipped [${skipped.join(', ')}], errored [${errored.join(', ')}]`,
+    );
+    return { pushed, skipped, errored };
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

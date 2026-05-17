@@ -27,6 +27,7 @@ import { BulkWalker } from './vault/BulkWalker';
 import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
+import { SharedConfigWatcher } from './shadow/SharedConfigWatcher';
 import { ShadowVaultManager } from './shadow/ShadowVaultManager';
 import { WindowSpawner } from './shadow/WindowSpawner';
 import { ShadowStartupCoordinator } from './shadow/ShadowStartupCoordinator';
@@ -65,6 +66,13 @@ export default class RemoteSshPlugin extends Plugin {
   private largeTransferBar: LargeTransferBar | null = null;
   /** Owns the daemon fs.watch subscription + notification dispatch. */
   private fsChangeListener!: FsChangeListener;
+  /**
+   * #342 push half: watches the shadow vault's local config dir and
+   * pushes shared-config edits to the remote. Lives only for the
+   * duration of a connected session (started after the connect pull,
+   * stopped on disconnect/unload).
+   */
+  private sharedConfigWatcher: SharedConfigWatcher | null = null;
   private observability: ObservabilityInstaller | null = null;
   /**
    * #149 — re-entrant guard for `openRemoteTerminal()`. The
@@ -517,11 +525,13 @@ export default class RemoteSshPlugin extends Plugin {
     const da = this.adapterMgr.dataAdapter;
     const hostAdapter = this.app.vault.adapter;
     if (da && hostAdapter instanceof FileSystemAdapter) {
+      const localConfigDir = path.join(
+        hostAdapter.getBasePath(), this.app.vault.configDir,
+      );
+      const remoteConfigDir = this.app.vault.configDir;
       try {
         const cfg = await ShadowVaultBootstrap.pullSharedObsidianConfig(
-          da,
-          this.app.vault.configDir,
-          path.join(hostAdapter.getBasePath(), this.app.vault.configDir),
+          da, remoteConfigDir, localConfigDir,
         );
         if (cfg.errored.length > 0) {
           // The connection is up but some shared-config files the
@@ -540,6 +550,52 @@ export default class RemoteSshPlugin extends Plugin {
           `runAutoConnect(${tag}): shared-config pull failed: ${errorMessage(e)}`,
         );
       }
+
+      // #342 push half: pull only brought remote→local. Without this,
+      // a settings change made HERE never reaches the remote, so the
+      // next session's pull finds nothing and the change evaporates.
+      // Watch the local config dir and push divergent shared files.
+      this.sharedConfigWatcher?.stop();
+      const watcher = new SharedConfigWatcher({
+        watch: (onChange) => {
+          const w = fs.watch(
+            localConfigDir, { persistent: false },
+            (_evt, filename) => onChange(filename ? String(filename) : null),
+          );
+          return { close: () => w.close() };
+        },
+        readLocal: (b) => {
+          try { return fs.readFileSync(path.join(localConfigDir, b), 'utf-8'); }
+          catch { return null; }
+        },
+        flush: async () => {
+          const r = await ShadowVaultBootstrap.pushSharedObsidianConfig(
+            da, remoteConfigDir, localConfigDir,
+          );
+          if (r.errored.length > 0) {
+            new Notice(
+              `Remote SSH: ${r.errored.length} shared-config file` +
+              `${r.errored.length === 1 ? '' : 's'} (${r.errored.join(', ')}) ` +
+              'could not be pushed — settings change not yet saved remotely',
+            );
+          }
+        },
+        debounceMs: 1500,
+        setTimer: (cb, ms) => activeWindow.setTimeout(cb, ms),
+        clearTimer: (h) => activeWindow.clearTimeout(h as number),
+      });
+      // Seed the just-pulled bytes as the synced baseline so the
+      // pull's own writes (and Obsidian re-saving an identical file
+      // on open) don't immediately echo back to the remote.
+      for (const base of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+        try {
+          watcher.markSynced(
+            base, fs.readFileSync(path.join(localConfigDir, base), 'utf-8'),
+          );
+        } catch { /* absent locally — nothing to baseline */ }
+      }
+      watcher.start();
+      this.sharedConfigWatcher = watcher;
     }
 
     // Adapter is patched; build the file model so File Explorer
@@ -631,6 +687,8 @@ export default class RemoteSshPlugin extends Plugin {
       // back to local file:// reads instead of blocking forever on a
       // dead transport. restore() clears dataAdapter so the
       // setReconnecting flag goes with it.
+      this.sharedConfigWatcher?.stop();
+      this.sharedConfigWatcher = null;
       this.adapterMgr.restore();
       this.setState(SyncState.ERROR);
       // s.reason is a string from ReconnectManager; wrap into Error
@@ -665,6 +723,10 @@ export default class RemoteSshPlugin extends Plugin {
     // session down so the shell channel close fires while the ssh2
     // Client is still around (cleaner teardown logs).
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_REMOTE_TERMINAL);
+    // Stop the #342 config watcher before the transport goes — its
+    // flush pushes through the (about-to-be-restored) adapter.
+    this.sharedConfigWatcher?.stop();
+    this.sharedConfigWatcher = null;
     this.adapterMgr.restore();
     await this.conn.disconnectTransport();
     this.setState(SyncState.IDLE);
