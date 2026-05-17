@@ -18,6 +18,16 @@ export interface ScaffoldResult {
   cleanup: () => void;
 }
 
+export interface ScaffoldOptions {
+  /**
+   * Transport for the seeded test profile. Defaults to `'rpc'` so
+   * existing specs (smoke/sync/reflect/demo) are unaffected. The
+   * connect-lifecycle spec passes `'sftp'` — the transport the
+   * production connect-stall incident was reported on.
+   */
+  transport?: 'sftp' | 'rpc';
+}
+
 /**
  * Create a temporary Obsidian vault with the remote-ssh plugin
  * pre-installed and a test SSH profile pre-configured.
@@ -26,7 +36,8 @@ export interface ScaffoldResult {
  * auto-connect on launch if `autoConnectProfileId` is set in
  * `data.json`.
  */
-export function scaffoldTestVault(): ScaffoldResult {
+export function scaffoldTestVault(opts: ScaffoldOptions = {}): ScaffoldResult {
+  const transport = opts.transport ?? 'rpc';
   const pluginRoot = path.resolve(__dirname, '..', '..');
   const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-vault-'));
 
@@ -77,7 +88,7 @@ export function scaffoldTestVault(): ScaffoldResult {
         authMethod: 'privateKey',
         privateKeyPath,
         remotePath: TEST_VAULT_REMOTE,
-        transport: 'rpc',
+        transport,
         connectTimeoutMs: 30_000,
         keepaliveIntervalMs: 10_000,
         keepaliveCountMax: 3,
