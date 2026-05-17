@@ -783,3 +783,119 @@ describe('ShadowVaultBootstrap.pushSharedObsidianConfig', () => {
     expect(errored).toContain('app.json');
   });
 });
+
+// ─── first-run state seeding (first-open deadlock fix) ───────────────────────
+
+describe('ShadowVaultBootstrap — seedObsidianFirstRunState', () => {
+  let scratch: ReturnType<typeof makeScratch>;
+  beforeEach(() => { scratch = makeScratch(); });
+  afterEach(() => { scratch.cleanup(); });
+
+  it('first bootstrap writes a NON-EMPTY app.json + core-plugins.json', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    const appRaw = fs.readFileSync(appPath, 'utf-8');
+    // Non-empty is the whole point — an empty app.json is what made
+    // Obsidian open the shadow vault in first-run/Restricted mode.
+    expect(appRaw.trim().length).toBeGreaterThan(0);
+    expect(JSON.parse(appRaw)).toEqual({ promptDelete: false });
+
+    const core = JSON.parse(
+      fs.readFileSync(path.join(result.layout.configDir, 'core-plugins.json'), 'utf-8'),
+    );
+    expect(Array.isArray(core)).toBe(true);
+    expect(core).toContain('file-explorer');
+  });
+
+  it('re-seeds an EMPTY app.json (the field-observed deadlock state)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.writeFileSync(appPath, '', 'utf-8'); // simulate the zero-byte app.json seen in the field
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap
+    expect(fs.readFileSync(appPath, 'utf-8').trim().length).toBeGreaterThan(0);
+    expect(JSON.parse(fs.readFileSync(appPath, 'utf-8'))).toEqual({ promptDelete: false });
+  });
+
+  it('re-seeds a "{}" app.json — Obsidian\'s ACTUAL first-run content', async () => {
+    // The field deadlock state is NOT a zero-byte file: Obsidian
+    // writes the literal `{}`. The old `.trim() === ''` check passed
+    // `{}` through as "configured" and left the deadlock — this test
+    // fails on that code and guards the fix.
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.writeFileSync(appPath, '{}', 'utf-8'); // the real first-run placeholder
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap
+    expect(JSON.parse(fs.readFileSync(appPath, 'utf-8'))).toEqual({ promptDelete: false });
+  });
+
+  it('re-seeds an empty "[]" core-plugins.json (was asymmetric with app.json)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const corePath = path.join(result.layout.configDir, 'core-plugins.json');
+    fs.writeFileSync(corePath, '[]', 'utf-8'); // empty array still deadlocks
+
+    await r.bootstrap(profile, [profile]);
+    const core = JSON.parse(fs.readFileSync(corePath, 'utf-8'));
+    expect(Array.isArray(core)).toBe(true);
+    expect(core).toContain('file-explorer');
+  });
+
+  it('does NOT swallow a non-ENOENT read error as "needs seed"', async () => {
+    // A file that exists but cannot be read (here: app.json is a
+    // DIRECTORY → EISDIR) must NOT be silently treated as absent and
+    // overwritten — the old bare `catch { appNeedsSeed = true }` did
+    // exactly that. It must surface, not clobber.
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.rmSync(appPath, { force: true });
+    fs.mkdirSync(appPath); // reading this throws EISDIR, not ENOENT
+
+    // bootstrap() is `Promise.resolve(bootstrapSync())` — a non-ENOENT
+    // read throws SYNCHRONOUSLY, before the promise is constructed.
+    expect(() => r.bootstrap(profile, [profile])).toThrow(/EISDIR/);
+    // and it must NOT have replaced the directory with a seeded file
+    expect(fs.statSync(appPath).isDirectory()).toBe(true);
+  });
+
+  it('does NOT clobber a real app.json (left by pullSharedObsidianConfig / Obsidian)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    const real = JSON.stringify({ theme: 'obsidian', baseFontSize: 16 });
+    fs.writeFileSync(appPath, real, 'utf-8');
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap must preserve it
+    expect(fs.readFileSync(appPath, 'utf-8')).toBe(real);
+  });
+
+  it('does NOT clobber an existing core-plugins.json', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const corePath = path.join(result.layout.configDir, 'core-plugins.json');
+    const custom = JSON.stringify(['file-explorer', 'graph']);
+    fs.writeFileSync(corePath, custom, 'utf-8');
+
+    await r.bootstrap(profile, [profile]);
+    expect(fs.readFileSync(corePath, 'utf-8')).toBe(custom);
+  });
+});
