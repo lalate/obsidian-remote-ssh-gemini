@@ -1351,3 +1351,109 @@ describe('SftpDataAdapter: readBuffer stat-after-read failure', () => {
     expect(cached?.mtime).toBe(0);
   });
 });
+
+// ─── writer reflect wiring (#341) ────────────────────────────────────────────
+
+describe('SftpDataAdapter — writer reflect (#341)', () => {
+  let readCache: ReadCache;
+  let dirCache: DirCache;
+
+  beforeEach(() => {
+    readCache = new ReadCache();
+    dirCache = new DirCache();
+  });
+
+  function makeReflector() {
+    return {
+      reflectWrite:  vi.fn(),
+      reflectRename: vi.fn(),
+      reflectRemove: vi.fn(),
+      reflectMkdir:  vi.fn(),
+    };
+  }
+
+  it('write / writeBinary / appendBinary call reflectWrite with the vault path', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    const r = makeReflector();
+    adapter.setWriterReflector(r);
+
+    await adapter.write('note.md', 'hello');
+    await adapter.writeBinary('blob.bin', new ArrayBuffer(2));
+    await adapter.appendBinary('log.bin', new ArrayBuffer(1));
+
+    expect(r.reflectWrite.mock.calls.map(c => c[0]))
+      .toEqual(['note.md', 'blob.bin', 'log.bin']);
+  });
+
+  it('mkdir → reflectMkdir, remove → reflectRemove, rmdir → reflectRemove', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    const r = makeReflector();
+    adapter.setWriterReflector(r);
+
+    await adapter.mkdir('dir');
+    await adapter.write('dir/f.md', 'x');
+    await adapter.remove('dir/f.md');
+    await adapter.rmdir('dir', true);
+
+    expect(r.reflectMkdir).toHaveBeenCalledWith('dir');
+    expect(r.reflectRemove.mock.calls.map(c => c[0])).toEqual(['dir/f.md', 'dir']);
+  });
+
+  it('rename calls reflectRename(old, new); copy reflects nothing', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    const r = makeReflector();
+    adapter.setWriterReflector(r);
+
+    await adapter.write('a.md', 'x');
+    await adapter.rename('a.md', 'b.md');
+    await adapter.copy('b.md', 'c.md');
+
+    expect(r.reflectRename).toHaveBeenCalledWith('a.md', 'b.md');
+    // copy has no writer-reflect by design — none of the hooks fire for it.
+    expect(r.reflectRename).toHaveBeenCalledTimes(1);
+    expect(r.reflectWrite).toHaveBeenCalledTimes(1); // only the seed write
+  });
+
+  it('a throwing reflector does not surface as a write failure', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    adapter.setWriterReflector({
+      reflectWrite:  () => { throw new Error('listener blew up'); },
+      reflectRename: vi.fn(),
+      reflectRemove: vi.fn(),
+      reflectMkdir:  vi.fn(),
+    });
+
+    await expect(adapter.write('note.md', 'hello')).resolves.toBeUndefined();
+    // The remote write still happened despite the reflect throw.
+    expect(fake.files['/v/note.md'].data.toString('utf8')).toBe('hello');
+  });
+
+  it('a null reflector is a safe no-op', async () => {
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(fake.client, '/v', readCache, dirCache, 'v');
+    adapter.setWriterReflector(null);
+    await expect(adapter.write('note.md', 'hi')).resolves.toBeUndefined();
+  });
+
+  it('does NOT reflect a remove that was only queued while reconnecting (#C1)', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'remote-ssh-reflect-q-'));
+    const queue = await OfflineQueue.open(tmpDir);
+    const fake = makeFakeClient({ dirs: { '/v': [] } });
+    const adapter = new SftpDataAdapter(
+      fake.client, '/v', readCache, dirCache, 'v',
+      null, null, null, new AncestorTracker(), queue,
+    );
+    const r = makeReflector();
+    adapter.setWriterReflector(r);
+
+    adapter.setReconnecting(true);
+    await adapter.remove('note.md'); // queued, NOT applied to remote
+
+    expect(r.reflectRemove).not.toHaveBeenCalled();
+    expect(queue.pending().map(e => e.op.kind)).toContain('remove');
+  });
+});

@@ -239,37 +239,58 @@ export class AdapterManager {
 
     // Live-update subscription is only meaningful on the RPC transport;
     // the SFTP fallback has no notification channel.
-    //
-    // The two transports get *different* writer-side reflect paths
-    // (#341):
-    //
-    //  - RPC: the daemon's fs.watch echoes our own writes back, and
-    //    FsChangeListener already turns those into vault.trigger(...)
-    //    via its own VaultModelBuilder. Wiring a writer reflector too
-    //    would double-fire every event. Leave the reflector null and
-    //    keep relying on the echo (de-duping the echo so the reflect
-    //    is immediate is tracked separately — see the RPC self-reflect
-    //    suite, still red by design).
-    //
-    //  - SFTP: no daemon, no echo, no recovery channel — the writer's
-    //    vault model never learns about its own mutations. Wire a
-    //    VaultModelBuilder as the reflector so adapter.write/rename/
-    //    remove/mkdir mirror straight into vault.fileMap + the trigger
-    //    bus. VaultModelBuilder is stateless (it only mutates the live
-    //    Vault), so a single instance for the patched lifetime is fine.
     if (this.conn.rpcConnection) {
       void this.fsChangeListener.subscribe({
         rpcConnection: this.conn.rpcConnection,
         dataAdapter: this._dataAdapter,
         pathMapper: mapper,
       });
-    } else {
-      this._dataAdapter.setWriterReflector(
-        new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
-      );
     }
+    this.applyWriterReflectPolicy();
 
     return true;
+  }
+
+  /**
+   * Pick the writer-side reflect strategy for the *currently active*
+   * transport (#341). Called at `patch()` time and again after every
+   * transport swap, because a reconnect can flip SFTP↔RPC and the
+   * adapter object outlives the swap.
+   *
+   *  - RPC: the daemon's `fs.watch` echoes our own writes back and
+   *    `FsChangeListener` already turns those into `vault.trigger(...)`
+   *    via its own `VaultModelBuilder`. A writer reflector on top
+   *    would double-fire every event, so it's cleared to null.
+   *  - SFTP: no daemon, no echo, no recovery channel — the writer's
+   *    vault model never learns about its own mutations. Wire a
+   *    `VaultModelBuilder` reflector so adapter write/rename/remove/
+   *    mkdir mirror straight into `vault.fileMap` + the trigger bus.
+   *    `VaultModelBuilder` is stateless (only mutates the live
+   *    `Vault`), so a fresh instance per (re)wire is fine.
+   *
+   * `this.conn.rpcConnection` is authoritative here: on reconnect it
+   * is (re)established before the `swapClient` hook fires (see
+   * `ConnectionManager.reconnect`), so reading it from
+   * `afterSwapClient` reflects the post-swap transport.
+   */
+  private applyWriterReflectPolicy(): void {
+    if (!this._dataAdapter) return;
+    this._dataAdapter.setWriterReflector(
+      this.conn.rpcConnection
+        ? null
+        : new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+    );
+  }
+
+  /**
+   * Re-evaluate the writer-reflect policy after the reconnect loop
+   * swapped the adapter's transport. Must be called from the
+   * `swapClient` reconnect hook; without it a SFTP→RPC reconnect
+   * keeps a now-double-firing reflector, and RPC→SFTP loses the
+   * reflector entirely (silent #341 regression).
+   */
+  afterSwapClient(): void {
+    this.applyWriterReflectPolicy();
   }
 
   /**

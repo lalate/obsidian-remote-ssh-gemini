@@ -183,21 +183,28 @@ export class ShadowVaultBootstrap {
    * `workspace.json` is deliberately NOT here — it's per-client UI
    * state that `PathMapper` already redirects into a private subtree.
    */
-  static readonly SHARED_OBSIDIAN_CONFIG_FILES: readonly string[] = [
+  static readonly SHARED_OBSIDIAN_CONFIG_FILES = [
     'app.json',
     'appearance.json',
     'core-plugins.json',
     'hotkeys.json',
-  ];
+  ] as const satisfies readonly string[];
 
   /**
    * Pull the shared-config allowlist from the remote into the local
    * shadow vault's config dir, closing the #342 round-trip gap.
    *
-   * Bytes are copied verbatim — no JSON parse/re-serialise — so key
-   * order and formatting survive exactly as Obsidian wrote them.
-   * A file absent on the remote is skipped, not treated as an error
-   * (a fresh remote vault legitimately has none of these yet).
+   * The remote bytes are written **verbatim** (no re-serialise, so
+   * key order / formatting survive), but only after `JSON.parse`
+   * confirms they're well-formed: a truncated or half-written remote
+   * file must not clobber a healthy local copy and leave Obsidian
+   * unable to read its own settings on next start (which is the very
+   * #342 symptom this method exists to fix). The write is atomic
+   * (tmp + rename) so an interrupted pull can't tear the local file.
+   *
+   * A file absent on the remote is skipped, not an error (a fresh
+   * remote vault legitimately has none yet). A present-but-corrupt
+   * file is skipped too, leaving the prior local copy intact.
    *
    * Static because both call sites (the connect flow in `main.ts`
    * and the Layer-2 test helper) have a reader + paths but not
@@ -223,7 +230,22 @@ export class ShadowVaultBootstrap {
           continue;
         }
         const content = await reader.read(remoteRel);
-        fs.writeFileSync(path.join(localConfigDir, basename), content, 'utf-8');
+        try {
+          JSON.parse(content);
+        } catch {
+          // Corrupt/partial remote file — do NOT overwrite the
+          // (possibly healthy) local copy with broken JSON.
+          logger.warn(
+            `pullSharedObsidianConfig: ${basename} on remote is not valid JSON; ` +
+            'keeping the local copy untouched',
+          );
+          skipped.push(basename);
+          continue;
+        }
+        const dest = path.join(localConfigDir, basename);
+        const tmp = `${dest}.${process.pid}.tmp`;
+        fs.writeFileSync(tmp, content, 'utf-8');
+        fs.renameSync(tmp, dest);
         pulled.push(basename);
       } catch (e) {
         // Best-effort: a single unreadable file must not abort the

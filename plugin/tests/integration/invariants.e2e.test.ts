@@ -1,10 +1,9 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import * as fs from 'node:fs';
 import type { Vault } from 'obsidian';
-import { VaultModelBuilder, type ObsidianClassDeps } from '../../src/vault/VaultModelBuilder';
 import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
-import { HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer } from './helpers/harnessVault';
+import { HarnessVault, asArrayBuffer, makeWriterReflector } from './helpers/harnessVault';
 import {
   runScenario,
   formatReport,
@@ -63,12 +62,7 @@ describe('Layer 3 — invariant scenarios', () => {
     // this, I1 (fileMap mirror) and I2 (matching trigger) both fail
     // on the very first op — which is exactly the regression the
     // scenario runner is here to catch.
-    const builder = new VaultModelBuilder(
-      writerVault as unknown as Vault,
-      { TFile: HarnessTFile as unknown as ObsidianClassDeps['TFile'],
-        TFolder: HarnessTFolder as unknown as ObsidianClassDeps['TFolder'] },
-    );
-    writer.adapter.setWriterReflector(builder);
+    writer.adapter.setWriterReflector(makeWriterReflector(writerVault));
 
     ctx = { client: writer, writerVault, writerFE, opsApplied: [] };
   });

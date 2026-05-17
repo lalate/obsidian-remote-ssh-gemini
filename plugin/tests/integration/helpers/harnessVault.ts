@@ -1,4 +1,5 @@
-import type { EventRef } from 'obsidian';
+import type { EventRef, Vault } from 'obsidian';
+import { VaultModelBuilder, type ObsidianClassDeps } from '../../../src/vault/VaultModelBuilder';
 
 /**
  * Shared in-process Vault test double for integration suites.
@@ -86,4 +87,23 @@ export class HarnessVault {
 /** Convert a Node Buffer to an ArrayBuffer view suitable for adapter.writeBinary. */
 export function asArrayBuffer(buf: Buffer): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+/**
+ * Build the writer-side reflector (#341) for a `HarnessVault`.
+ *
+ * Centralises the `VaultModelBuilder` construction + the two
+ * `as unknown as` casts that bridge the Harness stubs to Obsidian's
+ * `Vault` / `ObsidianClassDeps` types, so the self-reflect /
+ * invariants / property suites can't drift apart. Wire the result
+ * with `adapter.setWriterReflector(...)`.
+ */
+export function makeWriterReflector(vault: HarnessVault): VaultModelBuilder {
+  return new VaultModelBuilder(
+    vault as unknown as Vault,
+    {
+      TFile: HarnessTFile as unknown as ObsidianClassDeps['TFile'],
+      TFolder: HarnessTFolder as unknown as ObsidianClassDeps['TFolder'],
+    },
+  );
 }

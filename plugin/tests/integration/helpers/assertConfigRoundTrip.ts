@@ -18,12 +18,13 @@ import type { TestClient } from './makeAdapter';
  * whose remote already carries `<configDir>/app.json` (etc.), the
  * local file must equal the remote.
  *
- * Today the assertion **fails** because `ShadowVaultBootstrap` does
- * not have a remote-pull step for these shared files — see the
- * "Obsidian fills the rest on first open and leaves our pre-created
- * files alone" comment in `ShadowVaultBootstrap.bootstrapSync`. The
- * suite documents the missing contract via `it.fails(...)`. Removing
- * the `.fails` marker is part of whatever PR adds the pull step.
+ * The remote-pull step is `ShadowVaultBootstrap.pullSharedObsidianConfig`
+ * (#342 fix): `bootstrap()` itself is still purely-local, so this
+ * helper runs the pull right after it — the same sequence the
+ * production connect flow uses (`runAutoConnect` → pull → populate).
+ * The assertion passes once that pull lands the remote bytes on the
+ * local shadow disk; it fails (with the #342-gap message below) if a
+ * regression drops the pull.
  *
  * Why this is its own helper (vs. inlined in the test): the round-trip
  * setup has three independent moving parts (seed remote, run bootstrap,

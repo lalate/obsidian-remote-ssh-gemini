@@ -1,4 +1,5 @@
 import type { TAbstractFile, TFile, TFolder, Vault } from 'obsidian';
+import type { WriterReflector } from '../adapter/WriterReflector';
 import { logger } from '../util/logger';
 import { perfTracer } from '../util/PerfTracer';
 import { errorMessage } from "../util/errorMessage";
@@ -375,8 +376,19 @@ export class VaultModelBuilder {
   // `SftpDataAdapter` calls them after a local-originated mutation so
   // the writer's own vault model stays in sync without waiting for a
   // remote `FsChangeListener` echo (which never arrives on the SFTP
-  // transport — no daemon). No `implements` clause: matching by shape
-  // keeps the dependency edge adapter → (structural) → vault only.
+  // transport — no daemon). There is no `implements WriterReflector`
+  // clause: that would force a runtime `vault → adapter` import for a
+  // value the class never references. Conformance is instead pinned
+  // at build time by the type-only `satisfies`-style anchor at the
+  // bottom of this file (tsconfig compiles only `src/**`, so the test
+  // wiring is *not* a typecheck — without the anchor a `reflect*`
+  // signature drift would ship green).
+  //
+  // The underlying `*One` mutators return `false` when the model
+  // couldn't be updated (path not modelled, destination parent
+  // missing). For a writer reflect that `false` means the writer's
+  // own vault model just diverged from the remote — the exact #341
+  // symptom — so it is logged rather than silently dropped.
 
   /**
    * Reflect a writer-side `adapter.write` / `writeBinary`. Inserts the
@@ -387,10 +399,24 @@ export class VaultModelBuilder {
   reflectWrite(path: string): void {
     const existing = this.vault.getAbstractFileByPath(path);
     if (existing) {
-      // A folder already occupying the path is pathological (the
-      // adapter wrote a file there); leave the model alone rather
-      // than firing a misleading `modify` for a TFolder.
-      if (!isFolder(existing)) this.modifyOne(path);
+      if (isFolder(existing)) {
+        // A folder occupies the path the adapter just wrote a file
+        // to (a folder→file swap raced our model). Firing `modify`
+        // for a TFolder would mislead File Explorer; not firing
+        // leaves the model wrong. Neither is recoverable here — log
+        // so the divergence is diagnosable.
+        logger.warn(
+          `VaultModelBuilder.reflectWrite: "${path}" is modelled as a folder; ` +
+          'model diverged from remote (file written over a folder)',
+        );
+        return;
+      }
+      if (!this.modifyOne(path)) {
+        logger.warn(
+          `VaultModelBuilder.reflectWrite: modifyOne("${path}") no-op; ` +
+          'writer model may be stale for this path',
+        );
+      }
       return;
     }
     this.insertOne(
@@ -401,10 +427,23 @@ export class VaultModelBuilder {
 
   /** Reflect a writer-side `adapter.rename`. */
   reflectRename(oldPath: string, newPath: string): void {
-    this.renameOne(oldPath, newPath);
+    if (!this.renameOne(oldPath, newPath)) {
+      // The open editor tab stays bound to the stale TFile — this is
+      // the core #341 failure. renameOne already warns with the
+      // specific cause; add the reflect context.
+      logger.warn(
+        `VaultModelBuilder.reflectRename: "${oldPath}" → "${newPath}" not reflected; ` +
+        'writer vault model is stale (editor may still point at the old path)',
+      );
+    }
   }
 
-  /** Reflect a writer-side `adapter.remove` / `rmdir`. */
+  /**
+   * Reflect a writer-side `adapter.remove` / `rmdir`. A `false` from
+   * `removeOne` (path was never modelled) is benign for a delete —
+   * the desired end state (absent) already holds — so it is not
+   * logged.
+   */
   reflectRemove(path: string): void {
     this.removeOne(path);
   }
@@ -517,3 +556,16 @@ function insertIntoFileMap(vault: Vault, path: string, entry: TAbstractFile): vo
   const map = (vault as unknown as { fileMap: Record<string, TAbstractFile> }).fileMap;
   map[path] = entry;
 }
+
+// Build-time proof that VaultModelBuilder structurally satisfies
+// WriterReflector. `tsconfig.json` compiles only `src/**`, so the
+// test wiring (`adapter.setWriterReflector(builder)`) is never
+// typechecked — without this anchor a `reflect*` rename or signature
+// drift would ship green and silently no-op behind the adapter's
+// optional chaining. Type-only: zero runtime, no `vault → adapter`
+// import edge. `Exact extends true` forces a compile error the moment
+// conformance breaks.
+type _Assert<T extends true> = T;
+type _WriterReflectorConformance = _Assert<
+  VaultModelBuilder extends WriterReflector ? true : false
+>;

@@ -541,7 +541,13 @@ export default class RemoteSshPlugin extends Plugin {
       setAdapterReconnecting: (on) => this.adapterMgr.dataAdapter?.setReconnecting(on),
       onState: (s) => this.onReconnectStateChange(s),
       hooks: {
-        swapClient: (c) => this.adapterMgr.dataAdapter?.swapClient(c),
+        swapClient: (c) => {
+          this.adapterMgr.dataAdapter?.swapClient(c);
+          // The reconnect may have flipped SFTP↔RPC; re-pick the
+          // writer-reflect policy so we don't double-fire (RPC) or
+          // silently lose self-reflect (SFTP) — #341.
+          this.adapterMgr.afterSwapClient();
+        },
         prepareListenerForReconnect: () => this.fsChangeListener.prepareForReconnect(),
         resumeListenerAfterReconnect: async (rpc) => {
           const da = this.adapterMgr.dataAdapter;

@@ -600,3 +600,101 @@ describe('ShadowVaultBootstrap: installPlugin symlink fallback', () => {
     expect(fs.existsSync(path.join(result.layout.pluginDir, 'manifest.json'))).toBe(true);
   });
 });
+
+// ─── pullSharedObsidianConfig (#342 shared-config round-trip) ─────────────────
+
+describe('ShadowVaultBootstrap.pullSharedObsidianConfig', () => {
+  let localConfigDir: string;
+
+  beforeEach(() => {
+    localConfigDir = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-pull-')),
+      '.obsidian',
+    );
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(path.dirname(localConfigDir), { recursive: true, force: true }); }
+    catch { /* best effort */ }
+  });
+
+  /**
+   * Build a fake SharedConfigReader from a per-basename spec.
+   * `content` → readable & valid; `'throw'` → read rejects;
+   * `'invalid'` → readable but not JSON; absent key → exists()=false.
+   */
+  function makeReader(spec: Record<string, string | 'throw' | 'invalid'>) {
+    const resolve = (p: string) => p.slice(p.lastIndexOf('/') + 1);
+    return {
+      exists: vi.fn(async (p: string) => resolve(p) in spec),
+      read: vi.fn(async (p: string) => {
+        const v = spec[resolve(p)];
+        if (v === 'throw') throw new Error('SSH read failed');
+        if (v === 'invalid') return '{ not json';
+        return v;
+      }),
+    };
+  }
+
+  it('pulls every present & valid file verbatim and reports them', async () => {
+    const reader = makeReader({
+      'app.json':          JSON.stringify({ useMarkdownLinks: false }),
+      'appearance.json':   JSON.stringify({ theme: 'obsidian' }),
+      'core-plugins.json': JSON.stringify(['file-explorer', 'search']),
+      'hotkeys.json':      JSON.stringify({ 'editor:toggle-bold': [] }),
+    });
+
+    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+      reader, '.obsidian', localConfigDir,
+    );
+
+    expect(pulled.sort()).toEqual(
+      [...ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES].sort(),
+    );
+    expect(skipped).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(localConfigDir, 'app.json'), 'utf-8')))
+      .toEqual({ useMarkdownLinks: false });
+    // Atomic write must not leave a .tmp sibling behind.
+    expect(fs.readdirSync(localConfigDir).some(f => f.endsWith('.tmp'))).toBe(false);
+  });
+
+  it('creates localConfigDir when it does not exist yet', async () => {
+    expect(fs.existsSync(localConfigDir)).toBe(false);
+    await ShadowVaultBootstrap.pullSharedObsidianConfig(
+      makeReader({ 'app.json': '{}' }), '.obsidian', localConfigDir,
+    );
+    expect(fs.existsSync(localConfigDir)).toBe(true);
+  });
+
+  it('skips a file that is absent on the remote without writing it', async () => {
+    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+      makeReader({ 'appearance.json': '{}' }), '.obsidian', localConfigDir,
+    );
+    expect(pulled).toEqual(['appearance.json']);
+    expect(skipped).toContain('app.json');
+    expect(fs.existsSync(path.join(localConfigDir, 'app.json'))).toBe(false);
+  });
+
+  it('skips a file whose read throws but still processes the rest', async () => {
+    const { pulled, skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+      makeReader({ 'app.json': 'throw', 'hotkeys.json': '{}' }),
+      '.obsidian', localConfigDir,
+    );
+    expect(skipped).toContain('app.json');
+    expect(pulled).toContain('hotkeys.json'); // loop didn't abort
+  });
+
+  it('skips a corrupt remote file and leaves the prior local copy intact', async () => {
+    fs.mkdirSync(localConfigDir, { recursive: true });
+    const healthy = JSON.stringify({ theme: 'keepme' });
+    fs.writeFileSync(path.join(localConfigDir, 'app.json'), healthy, 'utf-8');
+
+    const { skipped } = await ShadowVaultBootstrap.pullSharedObsidianConfig(
+      makeReader({ 'app.json': 'invalid' }), '.obsidian', localConfigDir,
+    );
+
+    expect(skipped).toContain('app.json');
+    expect(fs.readFileSync(path.join(localConfigDir, 'app.json'), 'utf-8'))
+      .toBe(healthy); // NOT clobbered with broken JSON
+  });
+});
