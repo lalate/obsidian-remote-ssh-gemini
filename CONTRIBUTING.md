@@ -197,3 +197,10 @@ Tagged releases (`X.Y.Z` format) trigger `.github/workflows/release.yml`:
 You don't usually create releases by hand; `release.yml` watches both branches and selects channel by version shape — every merge to `next` publishes a `vX.Y.Z-beta.N` prerelease, every merge to `main` publishes a `vX.Y.Z` stable. See [Branching model](#branching-model--next-beta--main-stable) for the promotion flow.
 
 Thanks again — and welcome.
+
+## コミットルール・作業ログ管理
+* 機能実装・テスト・本体コードと、作業ログ・一時ファイル（例: reference/worklog-, HANDOVER_, BRANCH_SPLIT_* など）は必ずコミットを分けてください。
+* 作業ログ・検証メモは docs(log): update worklog-gemini-cli.md などの専用コミットでまとめてください。
+* PRやcherry-pick前に、worklog系コミットが分離されているか確認してください。
+本家PRにはworklog系コミットを含めないでください（必要なら自社用ブランチで管理）。
+* PR作成時のチェックリストに「作業ログ・一時ファイルが本体コミットに混入していないか」を追加してください。
