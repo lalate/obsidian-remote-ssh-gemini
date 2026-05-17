@@ -45,3 +45,26 @@ export function normalizeRemotePath(p: string): string {
   while (r.length > 1 && r.endsWith('/')) r = r.slice(0, -1);
   return r;
 }
+
+/**
+ * Compare two ABSOLUTE remote (POSIX) paths for equality, tolerant of
+ * a trailing slash. Used to decide whether a reused RPC daemon's
+ * `ServerInfo.vaultRoot` matches the vault root the current profile
+ * needs — if it doesn't, the daemon is stale (the profile's
+ * remotePath changed, or the old root was deleted) and must be
+ * killed + redeployed instead of silently serving the wrong/missing
+ * tree.
+ *
+ * Deliberately strict: any non-trivial difference returns false so
+ * the caller redeploys. A spurious redeploy is cheap and safe; a
+ * false "match" reattaches to a daemon serving the wrong root, which
+ * is exactly the field bug (empty vault, every op `no such file`).
+ */
+export function sameRemotePath(a: string, b: string): boolean {
+  const strip = (s: string): string => {
+    let r = s.trim();
+    while (r.length > 1 && r.endsWith('/')) r = r.slice(0, -1);
+    return r;
+  };
+  return strip(a) === strip(b);
+}

@@ -9,7 +9,7 @@ import { DEFAULT_BACKOFF } from './transport/Backoff';
 import { ServerDeployer, resolveRemotePath } from './transport/ServerDeployer';
 import { tryReuseExistingDaemon } from './transport/DaemonProbe';
 import { establishRpcConnection } from './transport/RpcConnection';
-import { normalizeRemotePath } from './util/pathUtils';
+import { normalizeRemotePath, sameRemotePath } from './util/pathUtils';
 import { logger } from './util/logger';
 import { errorMessage } from './util/errorMessage';
 import { sanitizeClientId, defaultClientId, defaultUserName } from './path/PathMapper';
@@ -86,12 +86,30 @@ export class ConnectionManager {
     const absTokenPath  = resolveRemotePath(remoteTokenPath,  home);
     const reused = await tryReuseExistingDaemon(this.client, absSocketPath, absTokenPath);
     if (reused) {
-      this.rpcConnection = reused;
-      logger.info(
-        `startRpcSession: reusing existing daemon for ${effectivePath} ` +
-        `(skipped kill+redeploy)`,
+      // A daemon is already running, but its vault-root was fixed at
+      // its deploy time. If the profile's remotePath changed (or the
+      // old root was deleted), reusing it would silently serve the
+      // wrong/missing tree → empty vault, every op `no such file`.
+      // Validate the root and redeploy automatically on mismatch so
+      // the user never has to SSH in and pkill the daemon by hand.
+      const wantRoot = resolveRemotePath(effectivePath, home);
+      const haveRoot = reused.info.vaultRoot;
+      if (sameRemotePath(haveRoot, wantRoot)) {
+        this.rpcConnection = reused;
+        logger.info(
+          `startRpcSession: reusing existing daemon for ${effectivePath} ` +
+          `(vaultRoot=${haveRoot}, skipped kill+redeploy)`,
+        );
+        return;
+      }
+      logger.warn(
+        `startRpcSession: existing daemon serves vaultRoot="${haveRoot}" but this ` +
+        `profile needs "${wantRoot}" — killing + redeploying so the profile's ` +
+        `remotePath takes effect (no manual pkill needed)`,
       );
-      return;
+      try { reused.close(); } catch { /* best effort — deploy() pkills it anyway */ }
+      // fall through to deploy(): killExisting:true pkills the stale
+      // daemon and redeploys at the correct vault-root.
     }
 
     logger.info(`startRpcSession: deploying daemon to serve ${effectivePath}`);

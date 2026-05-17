@@ -6,6 +6,7 @@ import {
   normalizeRemotePath,
   posixJoin,
   relativeTo,
+  sameRemotePath,
   toLocalPath,
   toRemotePath,
 } from '../src/util/pathUtils';
@@ -99,5 +100,37 @@ describe('path utility helpers', () => {
 
   it('expandHome leaves non-tilde paths unchanged', () => {
     expect(expandHome('/srv/vault')).toBe('/srv/vault');
+  });
+});
+
+describe('sameRemotePath (RPC daemon vault-root validation)', () => {
+  it('equal paths match', () => {
+    expect(sameRemotePath('/home/souta/work', '/home/souta/work')).toBe(true);
+  });
+
+  it('trailing slash is ignored on either side', () => {
+    expect(sameRemotePath('/home/souta/work/', '/home/souta/work')).toBe(true);
+    expect(sameRemotePath('/home/souta/work', '/home/souta/work/')).toBe(true);
+    expect(sameRemotePath('/home/souta/work//', '/home/souta/work')).toBe(true);
+  });
+
+  it('surrounding whitespace is ignored', () => {
+    expect(sameRemotePath('  /home/souta/work  ', '/home/souta/work')).toBe(true);
+  });
+
+  it('a deeper/old root does NOT match the wanted root (the field bug)', () => {
+    // Stale daemon rooted at the deleted VaultDev vs profile now
+    // pointing at ~/work → must NOT reuse, must redeploy.
+    expect(sameRemotePath('/home/souta/work/VaultDev', '/home/souta/work')).toBe(false);
+  });
+
+  it('different paths do not match', () => {
+    expect(sameRemotePath('/home/souta/a', '/home/souta/b')).toBe(false);
+    expect(sameRemotePath('', '/home/souta/work')).toBe(false);
+  });
+
+  it('root path "/" is preserved (not stripped to empty)', () => {
+    expect(sameRemotePath('/', '/')).toBe(true);
+    expect(sameRemotePath('/', '')).toBe(false);
   });
 });
