@@ -166,13 +166,25 @@ type CopyParams struct {
 }
 
 // WalkParams are the inputs to fs.walk — a single-RPC alternative to
-// recursively calling fs.list. `MaxEntries` caps the response size so
-// pathological vaults don't OOM the client; the daemon halts and sets
-// `Truncated: true` so the caller can fall back to per-folder listing.
+// recursively calling fs.list. `MaxEntries` caps one page so a
+// pathological vault doesn't OOM the client; the daemon halts and
+// sets `Truncated: true` when more remain.
+//
+// `Offset` paginates a large tree. The walk order is deterministic
+// (filepath.WalkDir = per-directory lexical, depth-first), so the
+// client fetches the next page by sending `Offset = total entries
+// already received`; the daemon skips that many emittable entries
+// before filling the next page. Stateless (no daemon-side cursor to
+// leak) at the cost of re-walking skipped entries — cheap, since it
+// is a local-FS traversal on the remote, not network I/O. A
+// concurrent mutation between pages can drift the boundary by a few
+// entries; tolerable for the cold-open populate (a reconnect
+// re-walks from scratch).
 type WalkParams struct {
 	Path       string `json:"path"`
 	Recursive  bool   `json:"recursive,omitempty"`
 	MaxEntries int    `json:"maxEntries,omitempty"`
+	Offset     int    `json:"offset,omitempty"`
 }
 
 // WalkEntry is one row in fs.walk's flat output. Unlike fs.list's
