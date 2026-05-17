@@ -522,3 +522,96 @@ describe('VaultModelBuilder.renameOne', () => {
     expect(triggers).toEqual([]);
   });
 });
+
+// ─── writer self-reflect (#341) ──────────────────────────────────────────────
+
+describe('VaultModelBuilder.reflect* (#341 writer self-reflect)', () => {
+  it('reflectWrite on a new path inserts a file and fires create', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectWrite('Notes.md');
+
+    expect(fileMap['Notes.md']).toBeInstanceOf(FakeTFile);
+    expect(triggers.map(t => t.event)).toEqual(['create']);
+  });
+
+  it('reflectWrite on an existing file fires modify, does not re-insert', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectWrite('Notes.md');           // create
+    const inserted = fileMap['Notes.md'];
+    builder.reflectWrite('Notes.md');           // modify
+
+    expect(fileMap['Notes.md']).toBe(inserted); // same object, not replaced
+    expect(triggers.map(t => t.event)).toEqual(['create', 'modify']);
+  });
+
+  it('reflectWrite is a no-op (no trigger) when a folder occupies the path', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectMkdir('shared');             // folder at "shared"
+    const folder = fileMap['shared'];
+    expect(folder).toBeInstanceOf(FakeTFolder);
+
+    builder.reflectWrite('shared');             // pathological folder→file
+
+    // Folder untouched; no misleading modify/create fired for it.
+    expect(fileMap['shared']).toBe(folder);
+    expect(triggers.map(t => t.event)).toEqual(['create']); // only the mkdir
+  });
+
+  it('reflectMkdir on an absent path inserts a folder and fires create', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectMkdir('dir');
+
+    expect(fileMap['dir']).toBeInstanceOf(FakeTFolder);
+    expect(triggers.map(t => t.event)).toEqual(['create']);
+  });
+
+  it('reflectMkdir is idempotent when the folder is already modelled', () => {
+    const { vault, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectMkdir('dir');
+    builder.reflectMkdir('dir'); // second call must not re-fire create
+
+    expect(triggers.map(t => t.event)).toEqual(['create']);
+  });
+
+  it('reflectRename moves the fileMap entry and fires rename(old)', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectWrite('a.md');
+    builder.reflectRename('a.md', 'b.md');
+
+    expect(fileMap['b.md']).toBeInstanceOf(FakeTFile);
+    expect(fileMap['a.md']).toBeUndefined();
+    const renameEvt = triggers.find(t => t.event === 'rename');
+    expect(renameEvt?.args[1]).toBe('a.md'); // oldPath passed through
+  });
+
+  it('reflectRemove drops the fileMap entry and fires delete', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectWrite('gone.md');
+    builder.reflectRemove('gone.md');
+
+    expect(fileMap['gone.md']).toBeUndefined();
+    expect(triggers.map(t => t.event)).toEqual(['create', 'delete']);
+  });
+
+  it('reflectRemove on an unmodelled path is a benign no-op', () => {
+    const { vault, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    expect(() => builder.reflectRemove('never-seen.md')).not.toThrow();
+    expect(triggers).toEqual([]);
+  });
+});
