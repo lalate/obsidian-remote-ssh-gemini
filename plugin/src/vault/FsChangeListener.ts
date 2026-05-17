@@ -1,5 +1,6 @@
 import { App, TFile, TFolder } from 'obsidian';
 import type { SftpDataAdapter } from '../adapter/SftpDataAdapter';
+import type { LocalOpRegistry } from '../adapter/LocalOpRegistry';
 import type { PathMapper } from '../path/PathMapper';
 import type { RpcConnection } from '../transport/RpcConnection';
 import type { FsChangedParams } from '../proto/types';
@@ -46,6 +47,14 @@ export class FsChangeListener {
    * use it to resume against a fresh rpc/adapter pair.
    */
   private lastPathMapper: PathMapper | null = null;
+  /**
+   * Echo-dedup registry shared with the writer's `SftpDataAdapter`
+   * (#341). Captured at subscribe() like `lastPathMapper` so a
+   * reconnect resumes against the same instance the adapter is still
+   * recording into. Null when the wiring didn't supply one — then
+   * every echo applies as before.
+   */
+  private lastLocalOpRegistry: LocalOpRegistry | null = null;
 
   constructor(private readonly app: App) {}
 
@@ -64,10 +73,18 @@ export class FsChangeListener {
     rpcConnection: RpcConnection;
     dataAdapter: SftpDataAdapter;
     pathMapper: PathMapper;
+    /**
+     * Shared with the writer adapter so the daemon's echo of an op we
+     * already reflected synchronously is dropped instead of
+     * double-firing `vault.trigger` (#341). Optional: omitting it
+     * preserves the legacy "apply every echo" behaviour.
+     */
+    localOpRegistry?: LocalOpRegistry;
   }): Promise<void> {
     if (this.subscriptionId) return;
 
     this.lastPathMapper = opts.pathMapper;
+    this.lastLocalOpRegistry = opts.localOpRegistry ?? null;
     const rpc = opts.rpcConnection.rpc;
     const handler = (params: FsChangedParams) =>
       this.handleNotification(params, opts.dataAdapter, opts.pathMapper);
@@ -112,6 +129,7 @@ export class FsChangeListener {
       rpcConnection: opts.rpcConnection,
       dataAdapter: opts.dataAdapter,
       pathMapper: this.lastPathMapper,
+      localOpRegistry: this.lastLocalOpRegistry ?? undefined,
     });
   }
 
@@ -124,6 +142,7 @@ export class FsChangeListener {
     const id = this.subscriptionId;
     this.subscriptionId = null;
     this.lastPathMapper = null;
+    this.lastLocalOpRegistry = null;
 
     if (id && rpcConnection) {
       // Best-effort: if the daemon-side subscription is already gone
@@ -166,6 +185,21 @@ export class FsChangeListener {
 
     const action = interpretWatchEvent(params.path, pathMapper);
     if (!action) return;
+
+    // #341 echo de-dup: the writer adapter records every op it
+    // applied (rename records both old + new), then reflects it
+    // synchronously. The daemon's fs.watch echo of that same op
+    // arrives here later — drop it so we don't fire a second
+    // vault.trigger for a change already reflected. The adapter
+    // already invalidated its own caches for a self-op, so skipping
+    // the whole handler (incl. invalidate) is correct. A single op
+    // can echo as >1 event (some watchers split rename into
+    // delete+create); checking action.vaultPath covers them all
+    // because both old and new were recorded. Other clients' changes
+    // never hit `record`, so their echoes still apply.
+    if (this.lastLocalOpRegistry?.isSelfOriginated(action.vaultPath)) {
+      return;
+    }
 
     dataAdapter.invalidateRemotePath(action.remotePath);
 

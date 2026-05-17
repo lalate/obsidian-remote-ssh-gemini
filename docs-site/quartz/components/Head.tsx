@@ -23,6 +23,14 @@ export default (() => {
 
     const { css, js, additionalHead } = externalResources
 
+    // Declared once here, before the SEO blocks below (BreadcrumbList,
+    // WebSite, hreflang) read it. The original Quartz Head declared
+    // `slug` lower down; the SEO additions reference it earlier, so a
+    // late `const` produced a temporal-dead-zone crash ("Cannot access
+    // 'slug' before initialization") that aborted the whole build at
+    // the first emitter to render Head (404Page). Hoisting fixes it.
+    const slug = fileData.slug ?? ""
+
     const url = new URL(`https://${cfg.baseUrl ?? "example.com"}`)
     const path = url.pathname as FullSlug
     const baseDir = fileData.slug === "404" ? path : pathToRoot(fileData.slug!)
@@ -266,7 +274,8 @@ export default (() => {
     // Pages outside the per-language subtree (e.g. `index`, `tags/*`,
     // `404`) get no hreflang — correct, since they have no language
     // siblings to disambiguate against.
-    const slug = fileData.slug ?? ""
+    // `slug` is declared once near the top of this component (see the
+    // TDZ note there); reuse it rather than re-declaring.
     const langTwinMatch = slug.match(/^(en|ja)\/(.+)$/)
     const hreflangAlternates: Array<{ hrefLang: string; href: string }> = []
     if (langTwinMatch) {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
-import type { EventRef, Vault } from 'obsidian';
+import type { Vault } from 'obsidian';
 import { perfTracer } from '../../src/util/PerfTracer';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -19,6 +19,7 @@ import { TEST_PRIVATE_KEY, TEST_VAULT } from './helpers/makeAdapter';
 import { buildRpcClient, type RpcClientHandle } from './helpers/multiclientRpc';
 import { FakeFileExplorer } from '../helpers/FakeFileExplorer';
 import { assertSyncReflect } from './helpers/assertSyncReflect';
+import { HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer } from './helpers/harnessVault';
 
 /**
  * Phase C M9 — sync-reflect E2E matrix (foundational slice).
@@ -601,86 +602,6 @@ function handleFsChangedForReader(
   })();
 }
 
-// ── HarnessVault: combined VaultModelBuilder target + Events emitter ───
-
-class HarnessTFile {
-  vault!: unknown;
-  path!: string;
-  name!: string;
-  basename!: string;
-  extension!: string;
-  parent!: HarnessTFolder | null;
-  stat!: { ctime: number; mtime: number; size: number };
-  constructor(vault: unknown, path: string) { this.vault = vault; this.path = path; }
-}
-
-class HarnessTFolder {
-  vault!: unknown;
-  path: string = '';
-  name: string = '';
-  parent: HarnessTFolder | null = null;
-  children: Array<HarnessTFile | HarnessTFolder> = [];
-  constructor(vault?: unknown, path?: string) {
-    if (vault !== undefined) this.vault = vault;
-    if (path !== undefined) this.path = path;
-  }
-}
-
-interface HarnessRef { name: string; cb: (...args: unknown[]) => void }
-
-/**
- * A FakeVault that satisfies BOTH:
- *   - the slice of `obsidian.Vault` VaultModelBuilder needs
- *     (`fileMap`, `getRoot`, `getAbstractFileByPath`, `trigger`)
- *   - FakeFileExplorer's `VaultLike` (`on` / `offref`)
- *
- * Built inline rather than reused from VaultModelBuilder.test.ts /
- * FakeFileExplorer.test.ts — those FakeVaults each cover only half
- * the surface, and unifying them at this stage would invite churn.
- * If a third caller appears, extract.
- */
-class HarnessVault {
-  fileMap: Record<string, HarnessTFile | HarnessTFolder> = {};
-  private readonly root = new HarnessTFolder(undefined, '');
-  private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
-  private readonly refs = new Map<symbol, HarnessRef>();
-
-  getRoot(): HarnessTFolder { return this.root; }
-  getAbstractFileByPath(p: string): HarnessTFile | HarnessTFolder | null {
-    return this.fileMap[p] ?? null;
-  }
-
-  on(name: string, cb: (...args: unknown[]) => unknown): EventRef {
-    const set = this.listeners.get(name) ?? new Set();
-    set.add(cb as (...args: unknown[]) => void);
-    this.listeners.set(name, set);
-    const sym = Symbol(name);
-    this.refs.set(sym, { name, cb: cb as (...args: unknown[]) => void });
-    return sym as unknown as EventRef;
-  }
-
-  offref(ref: EventRef): void {
-    const sym = ref as unknown as symbol;
-    const r = this.refs.get(sym);
-    if (!r) return;
-    this.listeners.get(r.name)?.delete(r.cb);
-    this.refs.delete(sym);
-  }
-
-  trigger(name: string, ...args: unknown[]): void {
-    const set = this.listeners.get(name);
-    if (!set) return;
-    for (const cb of [...set]) {
-      try { cb(...args); } catch { /* listener crash must not break vault */ }
-    }
-  }
-
-  // VaultModelBuilder reads `fileMap` directly via a private cast in
-  // the production code; we only need to expose the field. No-op.
-}
-
-// ── tiny helpers ──────────────────────────────────────────────────────
-
-function asArrayBuffer(buf: Buffer): ArrayBuffer {
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-}
+// HarnessVault, HarnessTFile, HarnessTFolder, asArrayBuffer extracted
+// to ./helpers/harnessVault for reuse by the self-reflect / restart /
+// invariant E2E suites. See that file for the contract.

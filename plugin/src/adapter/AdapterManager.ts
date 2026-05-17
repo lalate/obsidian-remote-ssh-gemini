@@ -1,5 +1,7 @@
 import type { App, PluginManifest } from 'obsidian';
-import { FileSystemAdapter, Notice } from 'obsidian';
+import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
+import { VaultModelBuilder } from '../vault/VaultModelBuilder';
+import { LocalOpRegistry } from './LocalOpRegistry';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
@@ -236,13 +238,31 @@ export class AdapterManager {
       return false;
     }
 
-    // Live-update subscription is only meaningful on the RPC transport;
-    // the SFTP fallback has no notification channel.
+    // Writer self-reflect (#341) — transport-independent. The adapter
+    // mirrors every applied write/rename/remove/mkdir into the
+    // writer's own vault.fileMap + trigger bus *immediately* and
+    // records the op in a LocalOpRegistry. VaultModelBuilder is
+    // stateless (only mutates the live Vault) and the adapter object
+    // outlives a reconnect's swapClient, so wiring once here holds for
+    // the whole patched lifetime — no per-swap re-policy needed.
+    const localOpRegistry = new LocalOpRegistry();
+    this._dataAdapter.setWriterReflector(
+      new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+    );
+    this._dataAdapter.setLocalOpRegistry(localOpRegistry);
+
+    // The live-update subscription is only meaningful on RPC (SFTP has
+    // no notification channel). On RPC the daemon also echoes our own
+    // writes back; the shared registry lets FsChangeListener drop that
+    // echo so it doesn't double-fire what the reflector already did.
+    // Multi-client changes never pass through `record`, so other
+    // clients' echoes still apply.
     if (this.conn.rpcConnection) {
       void this.fsChangeListener.subscribe({
         rpcConnection: this.conn.rpcConnection,
         dataAdapter: this._dataAdapter,
         pathMapper: mapper,
+        localOpRegistry,
       });
     }
 
