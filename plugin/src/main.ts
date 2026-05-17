@@ -24,6 +24,7 @@ import { classifyToNotice } from './transport/errorTaxonomy';
 import { VaultModelBuilder } from './vault/VaultModelBuilder';
 import { FsChangeListener } from './vault/FsChangeListener';
 import { BulkWalker } from './vault/BulkWalker';
+import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
 import { ShadowVaultManager } from './shadow/ShadowVaultManager';
@@ -138,6 +139,35 @@ export default class RemoteSshPlugin extends Plugin {
       this.pendingEditsBar,
       () => this.settings,
       this.transferTracker,
+    );
+
+    // #341 follow-up: a writer rename reflects into the model fine,
+    // but Obsidian's own post-adapter `Vault.rename` reconcile crashes
+    // on this build and orphans the open tab. Own the editor-follow:
+    // if the file was open and Obsidian dropped it, re-open it. Gated
+    // by `isPatched` so an unconnected local vault is untouched.
+    const renameFollower = new RenameLeafFollower(
+      {
+        isPathOpen: (p) =>
+          this.app.workspace
+            .getLeavesOfType('markdown')
+            .some(
+              (l) =>
+                (l.view as unknown as { file?: { path?: string } } | undefined)
+                  ?.file?.path === p,
+            ),
+        reopen: (p) => {
+          const af = this.app.vault.getAbstractFileByPath(p);
+          if (af instanceof TFile) {
+            void this.app.workspace.getLeaf('tab').openFile(af);
+          }
+        },
+      },
+      () => this.adapterMgr.isPatched(),
+      (cb) => { activeWindow.setTimeout(cb, 0); },
+    );
+    this.registerEvent(
+      this.app.vault.on('rename', (file) => renameFollower.handleRename(file)),
     );
 
     this.addCommand({
