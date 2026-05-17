@@ -5,6 +5,21 @@ import type { SshProfile, PendingPluginSuggestion } from '../types';
 import type { ObsidianRegistry } from './ObsidianRegistry';
 import { errorMessage } from "../util/errorMessage";
 
+/** A configured app.json is a plain object with at least one key. */
+function isNonEmptyObject(v: unknown): boolean {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.keys(v).length > 0
+  );
+}
+
+/** A configured core-plugins.json is a non-empty array. */
+function isNonEmptyArray(v: unknown): boolean {
+  return Array.isArray(v) && v.length > 0;
+}
+
 /**
  * Where the shadow vault for a given profile lives on disk.
  */
@@ -424,26 +439,24 @@ export class ShadowVaultBootstrap {
    * configured" forever (observed in the field: a brand-new shadow
    * vault with an empty app.json and zero plugin log).
    *
-   * Idempotent and non-destructive — only writes a file that is
-   * absent or empty. A real app.json / core-plugins.json (written
-   * later by pullSharedObsidianConfig, or by Obsidian itself once the
-   * vault has been used) is never clobbered. The e2e scaffold
+   * Idempotent and non-destructive — only writes a file that is a
+   * first-run placeholder: absent, blank, unparseable, or the literal
+   * empty `{}` / `[]` Obsidian itself writes on first run. A real
+   * app.json / core-plugins.json (written later by
+   * pullSharedObsidianConfig, or by Obsidian once the vault has been
+   * used) has ≥1 key/element and is never clobbered. The e2e scaffold
    * (`e2e/helpers/vault-scaffold.ts`) has always pre-written exactly
    * this; the production bootstrap was the one missing it — which is
    * also why the connect e2e never reproduced the failure.
    */
   private seedObsidianFirstRunState(configDir: string): void {
     const appPath = path.join(configDir, 'app.json');
-    // `fs.existsSync` is true for a zero-byte file, and an empty
-    // (or `{}`) app.json is still treated as "never configured" by
-    // some Obsidian builds — so re-seed when empty too.
-    let appNeedsSeed = true;
-    try {
-      appNeedsSeed = fs.readFileSync(appPath, 'utf-8').trim() === '';
-    } catch {
-      appNeedsSeed = true; // absent
-    }
-    if (appNeedsSeed) {
+    // Obsidian's actual first-run app.json is the literal `{}` — NOT a
+    // zero-byte file. A `.trim() === ''` check misses that and leaves
+    // the deadlock in place (the field symptom). Seed when the file is
+    // absent, blank, unparseable, or an empty object; a real app.json
+    // (≥1 key) is left untouched.
+    if (this.needsFirstRunSeed(appPath, isNonEmptyObject)) {
       fs.writeFileSync(
         appPath,
         JSON.stringify({ promptDelete: false }, null, 2) + '\n',
@@ -451,8 +464,10 @@ export class ShadowVaultBootstrap {
       );
     }
 
+    // Same rule for core-plugins.json — `!existsSync` alone left a
+    // zero-byte / `[]` file as a deadlock (asymmetric with app.json).
     const corePath = path.join(configDir, 'core-plugins.json');
-    if (!fs.existsSync(corePath)) {
+    if (this.needsFirstRunSeed(corePath, isNonEmptyArray)) {
       fs.writeFileSync(
         corePath,
         JSON.stringify([
@@ -465,6 +480,36 @@ export class ShadowVaultBootstrap {
         'utf-8',
       );
     }
+  }
+
+  /**
+   * True when `filePath` is a first-run placeholder that must be
+   * (re)seeded: absent, blank, unparseable, or parses to a value the
+   * `isConfigured` predicate rejects (e.g. `{}` / `[]`).
+   *
+   * A non-ENOENT read error (EACCES, EISDIR, …) is NOT "absent" — it
+   * is rethrown rather than silently treated as "needs seed", which
+   * would clobber a file we merely failed to read.
+   */
+  private needsFirstRunSeed(
+    filePath: string,
+    isConfigured: (parsed: unknown) => boolean,
+  ): boolean {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      throw e;
+    }
+    if (raw.trim() === '') return true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return true; // corrupt/partial → treat as placeholder, reseed
+    }
+    return !isConfigured(parsed);
   }
 
   /**

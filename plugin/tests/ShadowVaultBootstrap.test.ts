@@ -823,6 +823,56 @@ describe('ShadowVaultBootstrap — seedObsidianFirstRunState', () => {
     expect(JSON.parse(fs.readFileSync(appPath, 'utf-8'))).toEqual({ promptDelete: false });
   });
 
+  it('re-seeds a "{}" app.json — Obsidian\'s ACTUAL first-run content', async () => {
+    // The field deadlock state is NOT a zero-byte file: Obsidian
+    // writes the literal `{}`. The old `.trim() === ''` check passed
+    // `{}` through as "configured" and left the deadlock — this test
+    // fails on that code and guards the fix.
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.writeFileSync(appPath, '{}', 'utf-8'); // the real first-run placeholder
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap
+    expect(JSON.parse(fs.readFileSync(appPath, 'utf-8'))).toEqual({ promptDelete: false });
+  });
+
+  it('re-seeds an empty "[]" core-plugins.json (was asymmetric with app.json)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const corePath = path.join(result.layout.configDir, 'core-plugins.json');
+    fs.writeFileSync(corePath, '[]', 'utf-8'); // empty array still deadlocks
+
+    await r.bootstrap(profile, [profile]);
+    const core = JSON.parse(fs.readFileSync(corePath, 'utf-8'));
+    expect(Array.isArray(core)).toBe(true);
+    expect(core).toContain('file-explorer');
+  });
+
+  it('does NOT swallow a non-ENOENT read error as "needs seed"', async () => {
+    // A file that exists but cannot be read (here: app.json is a
+    // DIRECTORY → EISDIR) must NOT be silently treated as absent and
+    // overwritten — the old bare `catch { appNeedsSeed = true }` did
+    // exactly that. It must surface, not clobber.
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.rmSync(appPath, { force: true });
+    fs.mkdirSync(appPath); // reading this throws EISDIR, not ENOENT
+
+    // bootstrap() is `Promise.resolve(bootstrapSync())` — a non-ENOENT
+    // read throws SYNCHRONOUSLY, before the promise is constructed.
+    expect(() => r.bootstrap(profile, [profile])).toThrow(/EISDIR/);
+    // and it must NOT have replaced the directory with a seeded file
+    expect(fs.statSync(appPath).isDirectory()).toBe(true);
+  });
+
   it('does NOT clobber a real app.json (left by pullSharedObsidianConfig / Obsidian)', async () => {
     const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
     const profile = makeProfile({ id: 'p1' });
