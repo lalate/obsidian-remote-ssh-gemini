@@ -783,3 +783,69 @@ describe('ShadowVaultBootstrap.pushSharedObsidianConfig', () => {
     expect(errored).toContain('app.json');
   });
 });
+
+// ─── first-run state seeding (first-open deadlock fix) ───────────────────────
+
+describe('ShadowVaultBootstrap — seedObsidianFirstRunState', () => {
+  let scratch: ReturnType<typeof makeScratch>;
+  beforeEach(() => { scratch = makeScratch(); });
+  afterEach(() => { scratch.cleanup(); });
+
+  it('first bootstrap writes a NON-EMPTY app.json + core-plugins.json', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    const appRaw = fs.readFileSync(appPath, 'utf-8');
+    // Non-empty is the whole point — an empty app.json is what made
+    // Obsidian open the shadow vault in first-run/Restricted mode.
+    expect(appRaw.trim().length).toBeGreaterThan(0);
+    expect(JSON.parse(appRaw)).toEqual({ promptDelete: false });
+
+    const core = JSON.parse(
+      fs.readFileSync(path.join(result.layout.configDir, 'core-plugins.json'), 'utf-8'),
+    );
+    expect(Array.isArray(core)).toBe(true);
+    expect(core).toContain('file-explorer');
+  });
+
+  it('re-seeds an EMPTY app.json (the field-observed deadlock state)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    fs.writeFileSync(appPath, '', 'utf-8'); // simulate the zero-byte app.json seen in the field
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap
+    expect(fs.readFileSync(appPath, 'utf-8').trim().length).toBeGreaterThan(0);
+    expect(JSON.parse(fs.readFileSync(appPath, 'utf-8'))).toEqual({ promptDelete: false });
+  });
+
+  it('does NOT clobber a real app.json (left by pullSharedObsidianConfig / Obsidian)', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const appPath = path.join(result.layout.configDir, 'app.json');
+    const real = JSON.stringify({ theme: 'obsidian', baseFontSize: 16 });
+    fs.writeFileSync(appPath, real, 'utf-8');
+
+    await r.bootstrap(profile, [profile]); // re-bootstrap must preserve it
+    expect(fs.readFileSync(appPath, 'utf-8')).toBe(real);
+  });
+
+  it('does NOT clobber an existing core-plugins.json', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1' });
+    const result = await r.bootstrap(profile, [profile]);
+
+    const corePath = path.join(result.layout.configDir, 'core-plugins.json');
+    const custom = JSON.stringify(['file-explorer', 'graph']);
+    fs.writeFileSync(corePath, custom, 'utf-8');
+
+    await r.bootstrap(profile, [profile]);
+    expect(fs.readFileSync(corePath, 'utf-8')).toBe(custom);
+  });
+});

@@ -114,6 +114,14 @@ export class ShadowVaultBootstrap {
     // below) and the install only happens for what they tick.
     this.seedCommunityPlugins(layout.configDir);
 
+    // Without this, a freshly-bootstrapped shadow vault has an empty
+    // app.json → Obsidian treats it as "never configured", opens it
+    // in first-run / Restricted mode, and never loads remote-ssh — so
+    // runAutoConnect (and the pullSharedObsidianConfig that would
+    // populate the real app.json) never run. Deadlock: the very first
+    // connect to any new profile silently does nothing.
+    this.seedObsidianFirstRunState(layout.configDir);
+
     // Install our own plugin source (symlink preferred so dev
     // iterations appear immediately; copy as a Windows fallback).
     // Per-file install means data.json stays per-vault.
@@ -403,6 +411,60 @@ export class ShadowVaultBootstrap {
     }
 
     fs.writeFileSync(shadowPath, JSON.stringify(['remote-ssh']) + '\n', 'utf-8');
+  }
+
+  /**
+   * Seed the minimal `.obsidian/` state Obsidian needs to treat a
+   * freshly-created shadow vault as *already configured*, so it loads
+   * community plugins (incl. remote-ssh) on first open instead of
+   * coming up in first-run / Restricted mode. Without this the very
+   * first connect to a new profile deadlocks: the plugin never loads
+   * → runAutoConnect never runs → pullSharedObsidianConfig never runs
+   * → the real app.json is never pulled → the vault stays "never
+   * configured" forever (observed in the field: a brand-new shadow
+   * vault with an empty app.json and zero plugin log).
+   *
+   * Idempotent and non-destructive — only writes a file that is
+   * absent or empty. A real app.json / core-plugins.json (written
+   * later by pullSharedObsidianConfig, or by Obsidian itself once the
+   * vault has been used) is never clobbered. The e2e scaffold
+   * (`e2e/helpers/vault-scaffold.ts`) has always pre-written exactly
+   * this; the production bootstrap was the one missing it — which is
+   * also why the connect e2e never reproduced the failure.
+   */
+  private seedObsidianFirstRunState(configDir: string): void {
+    const appPath = path.join(configDir, 'app.json');
+    // `fs.existsSync` is true for a zero-byte file, and an empty
+    // (or `{}`) app.json is still treated as "never configured" by
+    // some Obsidian builds — so re-seed when empty too.
+    let appNeedsSeed = true;
+    try {
+      appNeedsSeed = fs.readFileSync(appPath, 'utf-8').trim() === '';
+    } catch {
+      appNeedsSeed = true; // absent
+    }
+    if (appNeedsSeed) {
+      fs.writeFileSync(
+        appPath,
+        JSON.stringify({ promptDelete: false }, null, 2) + '\n',
+        'utf-8',
+      );
+    }
+
+    const corePath = path.join(configDir, 'core-plugins.json');
+    if (!fs.existsSync(corePath)) {
+      fs.writeFileSync(
+        corePath,
+        JSON.stringify([
+          'file-explorer', 'global-search', 'switcher', 'graph', 'backlink',
+          'canvas', 'outgoing-link', 'tag-pane', 'page-preview', 'daily-notes',
+          'templates', 'note-composer', 'command-palette', 'editor-status',
+          'bookmarks', 'markdown-importer', 'outline', 'word-count',
+          'file-recovery',
+        ]) + '\n',
+        'utf-8',
+      );
+    }
   }
 
   /**
