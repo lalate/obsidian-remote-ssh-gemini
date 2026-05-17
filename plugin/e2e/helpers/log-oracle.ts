@@ -52,7 +52,13 @@ export function readLogEntries(logPath: string): LogEntry[] {
     const s = line.trim();
     if (!s) continue;
     try {
-      out.push(JSON.parse(s) as LogEntry);
+      const parsed: unknown = JSON.parse(s);
+      // A log line is a JSON *object*; `JSON.parse` also accepts bare
+      // scalars (`123`, `"x"`, `null`) — casting those to LogEntry
+      // would be a lie that silently yields `{msg: undefined}` rows.
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        out.push(parsed as LogEntry);
+      }
     } catch {
       // partial / non-JSON line — skip
     }

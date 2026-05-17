@@ -1,5 +1,4 @@
 import { test, expect } from '@playwright/test';
-import * as net from 'node:net';
 import {
   launchObsidian,
   driveConnectFlow,
@@ -8,6 +7,7 @@ import {
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
 import { logPathFor, waitForLog, assertAtMost } from './helpers/log-oracle';
+import { assertSshdReachable } from './helpers/sshd';
 
 /**
  * Connect-lifecycle e2e — the coverage that was missing while a
@@ -35,28 +35,7 @@ import { logPathFor, waitForLog, assertAtMost } from './helpers/log-oracle';
  * point — the test proves the fix, and guards the regression.
  */
 
-const SSHD_HOST = '127.0.0.1';
-const SSHD_PORT = 2222;
-
 test.setTimeout(240_000);
-
-async function assertSshdReachable(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const sock = net
-      .connect({ host: SSHD_HOST, port: SSHD_PORT })
-      .setTimeout(5_000)
-      .once('connect', () => { sock.destroy(); resolve(); })
-      .once('timeout', () => { sock.destroy(); reject(new Error('timeout')); })
-      .once('error', reject);
-  }).catch((e) => {
-    throw new Error(
-      `docker test sshd not reachable at ${SSHD_HOST}:${SSHD_PORT} ` +
-      `(${(e as Error).message}). Run \`npm run sshd:start\` first. ` +
-      `This spec HARD-FAILS instead of skipping — a broken connect ` +
-      `must not pass CI green (that is how 1.0.49 shipped broken).`,
-    );
-  });
-}
 
 test.describe('connect lifecycle (SFTP)', () => {
   let scaffold: ScaffoldResult;
@@ -116,13 +95,25 @@ test.describe('connect lifecycle (SFTP)', () => {
       60_000,
       'adapter must patch after SFTP open (absent in the incident)',
     );
-    //    c) the remote tree was actually walked into the vault model
-    await waitForLog(
+    //    c) the remote tree was actually walked into the vault model.
+    //    A partial / empty populate STILL logs this line ("0 entries")
+    //    — the literal production symptom (SFTP open, then an empty
+    //    vault). Asserting the line appeared is not enough; assert the
+    //    walk yielded a non-empty tree.
+    const populateEntry = await waitForLog(
       shadowLog,
-      /populateVaultFromRemote\(shadow-[^)]*\):.*entries/,
+      /populateVaultFromRemote\(shadow-[^)]*\):.*?\d+ entries/,
       90_000,
       'vault must populate from remote (absent in the incident)',
     );
+    const populatedCount = Number(
+      /(\d+) entries/.exec(populateEntry.msg ?? '')?.[1] ?? '0',
+    );
+    expect(
+      populatedCount,
+      'populate must walk a non-empty remote tree — 0 entries is the ' +
+      'empty-vault incident the line-only assertion would pass',
+    ).toBeGreaterThan(0);
 
     // 6. And the shadow window must not itself be loop-spawning.
     assertAtMost(
