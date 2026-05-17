@@ -46,18 +46,36 @@ jobs:
       - name: Check docs wikilinks + anchors
         run: node scripts/check-docs-links.mjs
 
-      # ── Stable build (main → root of gh-pages) ───────────────────────────
-      - name: Build docs — stable
-        if: github.ref == 'refs/heads/main'
+      # ── Resolve channel + base URL ───────────────────────────────────────
+      # One build path for every trigger. The base URL is the only
+      # thing that differs between channels, so compute it once:
+      #   - stable  : push main      OR PR whose base is main
+      #   - dev     : push next      OR PR whose base is next (or any
+      #               other PR — build-only, never deployed, so the
+      #               exact URL doesn't matter, just that it builds)
+      - name: Resolve docs channel
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_name }}" == "main" ]] \
+             || [[ "${{ github.event_name }}" == "pull_request" && "${{ github.base_ref }}" == "main" ]]; then
+            echo "QUARTZ_BASE_URL=codes.sota-shimozono.com/obsidian-remote-ssh"     >> "$GITHUB_ENV"
+            echo "DOCS_CHANNEL=stable" >> "$GITHUB_ENV"
+          else
+            echo "QUARTZ_BASE_URL=codes.sota-shimozono.com/obsidian-remote-ssh/dev" >> "$GITHUB_ENV"
+            echo "DOCS_CHANNEL=dev" >> "$GITHUB_ENV"
+          fi
+
+      # ── Build (ALWAYS — incl. PRs, so a docs break is caught pre-merge
+      #    instead of turning main/next red post-merge) ──────────────────
+      - name: Build docs (${{ env.DOCS_CHANNEL }})
         working-directory: docs-site
-        env:
-          QUARTZ_BASE_URL: codes.sota-shimozono.com/obsidian-remote-ssh
         # Invoke via node directly — bypasses bin-shim/exec-bit issues
         # (npx fell back to a non-executable shim on the main-branch run).
+        # QUARTZ_BASE_URL comes from the resolve step via $GITHUB_ENV.
         run: node ./quartz/bootstrap-cli.mjs build -d ../docs
 
+      # ── Deploy (push to a release branch only — never on PRs) ────────────
       - name: Deploy — stable → gh-pages root
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: docs-site/public
@@ -67,18 +85,8 @@ jobs:
           clean-exclude: |
             dev/
 
-      # ── Dev build (next → /dev/ on gh-pages) ─────────────────────────────
-      - name: Build docs — dev
-        if: github.ref == 'refs/heads/next'
-        working-directory: docs-site
-        env:
-          QUARTZ_BASE_URL: codes.sota-shimozono.com/obsidian-remote-ssh/dev
-        # Invoke via node directly — bypasses bin-shim/exec-bit issues
-        # (npx fell back to a non-executable shim on the main-branch run).
-        run: node ./quartz/bootstrap-cli.mjs build -d ../docs
-
       - name: Deploy — dev → gh-pages /dev/
-        if: github.ref == 'refs/heads/next'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/next'
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: docs-site/public
