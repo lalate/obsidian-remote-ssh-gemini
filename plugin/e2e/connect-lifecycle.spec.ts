@@ -150,8 +150,16 @@ test.describe('connect lifecycle (SFTP)', () => {
     //    in-page model + leaf state + shadow log so the cause is
     //    conclusive (model unbuilt vs view-missed-events vs hidden
     //    sidebar) instead of a context-free "element not found".
+    // Scope to the file-explorer LEAF, not `.nav-files-container`.
+    // run 26015295742's diagnostic proved the model builds and the
+    // leaf renders `.nav-file-title` items (navTitles:6, visible,
+    // 300x717) — but `.nav-files-container .nav-file-title` matched
+    // zero, i.e. in Obsidian 1.8.9 the titles are NOT descendants of
+    // `.nav-files-container`. This leaf-scoped selector is what the
+    // passing rpc specs (smoke/reflect) effectively assert and what
+    // the diagnostic counts, so it tracks the real DOM.
     const navTitle = shadowHandle.page
-      .locator('.nav-files-container .nav-file-title')
+      .locator('.workspace-leaf-content[data-type="file-explorer"] .nav-file-title')
       .first();
     try {
       await navTitle.waitFor({ state: 'visible', timeout: 30_000 });

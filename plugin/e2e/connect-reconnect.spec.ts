@@ -1,4 +1,4 @@
-import { test } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import {
@@ -94,7 +94,19 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     shadowHandle = await launchObsidian(shadowVaultPath);
     const shadowLog = logPathFor(shadowVaultPath);
 
-    // 1. Establish a healthy connection first.
+    // 1. Establish a healthy connection first — and let the INITIAL
+    //    populate finish before dropping sshd. The old gate only
+    //    waited for `Adapter patched via SFTP`, but `runAutoConnect`
+    //    does shared-config pull + `populateVaultFromRemote` AFTER the
+    //    patch. Stopping sshd the instant the patch logged raced that
+    //    populate: the `adapter.list('')` ran on a socket the test
+    //    had just killed and returned 0 entries (24ms, silent), so
+    //    the model was empty and the post-recover File Explorer
+    //    assertion failed — diagnosed in run 26015295742 as a TEST
+    //    ordering bug, not a product fault (the connect itself logs
+    //    SSH ready + SFTP channel open + patch every time). The model
+    //    is in-memory, so once it is built it survives the drop and
+    //    the recovery assertion is meaningful.
     await waitForLog(shadowLog, /SFTP channel open/, 60_000, 'initial SFTP open', since);
     await waitForLog(
       shadowLog,
@@ -103,6 +115,25 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       'initial connect must patch',
       since,
     );
+    const populated = await waitForLog(
+      shadowLog,
+      /populateVaultFromRemote\(shadow-[^)]*\):.*?\d+ entries/,
+      60_000,
+      'initial populate must COMPLETE before the drop (else the drop ' +
+      'races an in-flight list and the vault is spuriously empty)',
+      since,
+    );
+    expect(
+      Number(/(\d+) entries/.exec(populated.msg ?? '')?.[1] ?? '0'),
+      'initial populate must walk a non-empty tree before the drop',
+    ).toBeGreaterThan(0);
+    // And the File Explorer must have actually rendered the tree, so
+    // the post-recover assertion is verifying "survived the drop",
+    // not "was never built".
+    await shadowHandle.page
+      .locator('.workspace-leaf-content[data-type="file-explorer"] .nav-file-title')
+      .first()
+      .waitFor({ state: 'visible', timeout: 30_000 });
 
     // 2. Drop the remote unexpectedly.
     sshd('stop');
@@ -166,8 +197,13 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     //    cause is conclusive (model unbuilt vs view-missed-events vs
     //    hidden sidebar) rather than a context-free "element not
     //    found".
+    // Leaf-scoped selector — see the connect-lifecycle note: in
+    // Obsidian 1.8.9 `.nav-file-title` is not a descendant of
+    // `.nav-files-container`. The model was built+rendered before the
+    // drop (asserted in step 1) and is in-memory, so it must survive
+    // the reconnect.
     const navTitle = shadowHandle.page
-      .locator('.nav-files-container .nav-file-title')
+      .locator('.workspace-leaf-content[data-type="file-explorer"] .nav-file-title')
       .first();
     try {
       await navTitle.waitFor({ state: 'visible', timeout: 30_000 });
