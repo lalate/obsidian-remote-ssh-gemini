@@ -21,8 +21,8 @@ type LogStore struct {
 	dir string
 }
 
-func NewLogStore(home string) (*LogStore, error) {
-	dir := filepath.Join(home, ".gemini-cli", "logs")
+func NewLogStore(stateDir string) (*LogStore, error) {
+	dir := filepath.Join(stateDir, "logs", "extensions")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir log dir: %w", err)
 	}
