@@ -173,6 +173,10 @@ type WalkParams struct {
 	Path       string `json:"path"`
 	Recursive  bool   `json:"recursive,omitempty"`
 	MaxEntries int    `json:"maxEntries,omitempty"`
+	// Offset skips the first N walk results. Useful for paging.
+	Offset int `json:"offset,omitempty"`
+	// Ignore is a list of path prefixes (vault-relative) to skip.
+	Ignore []string `json:"ignore,omitempty"`
 }
 
 // WalkEntry is one row in fs.walk's flat output. Unlike fs.list's
