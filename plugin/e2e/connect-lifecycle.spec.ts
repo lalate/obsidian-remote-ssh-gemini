@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   launchObsidian,
   connectAndWaitForShadowVault,
+  dumpShadowState,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -141,14 +142,25 @@ test.describe('connect lifecycle (SFTP)', () => {
 
     // 7. Observable end state: File Explorer shows remote content.
     //    (The remote docker vault is the integration fixture tree.)
-    const fileExplorerHasEntries = await shadowHandle.page
+    //    `locator.isVisible()` is a NON-waiting probe — its `timeout`
+    //    option is ignored, so the old `.isVisible({timeout:30_000})`
+    //    sampled the DOM once, right after the populate log line, and
+    //    false-failed before the File Explorer could paint. Use the
+    //    auto-waiting `waitFor` and, on real failure, attach the
+    //    in-page model + leaf state + shadow log so the cause is
+    //    conclusive (model unbuilt vs view-missed-events vs hidden
+    //    sidebar) instead of a context-free "element not found".
+    const navTitle = shadowHandle.page
       .locator('.nav-files-container .nav-file-title')
-      .first()
-      .isVisible({ timeout: 30_000 })
-      .catch(() => false);
-    expect(
-      fileExplorerHasEntries,
-      'File Explorer should render remote files after populate',
-    ).toBe(true);
+      .first();
+    try {
+      await navTitle.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch {
+      throw new Error(
+        'File Explorer should render remote files after populate — ' +
+        'populate logged a non-empty walk but the tree never rendered.\n' +
+        (await dumpShadowState(shadowHandle.page, shadowLog)),
+      );
+    }
   });
 });

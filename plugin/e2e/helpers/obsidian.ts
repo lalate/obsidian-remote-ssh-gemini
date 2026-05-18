@@ -545,3 +545,84 @@ async function waitForCDP(url: string, timeoutMs: number): Promise<void> {
   }
   throw new Error(`CDP endpoint at ${url} did not become ready within ${timeoutMs}ms`);
 }
+
+/**
+ * Diagnostic snapshot for the "File Explorer empty after a successful
+ * SFTP connect+populate" failure. The bare Playwright "element(s) not
+ * found" can't distinguish three very different root causes:
+ *
+ *   1. `VaultModelBuilder.build` inserted nothing (walk produced
+ *      entries but every insert errored) — `fileMapKeys` ≈ 0.
+ *   2. Model built but the File Explorer view never picked the
+ *      `create` events up — `fileMapKeys` large, `navTitles` 0.
+ *   3. Model built AND rendered, but the file-explorer leaf is in a
+ *      collapsed/hidden sidebar — `navTitles` > 0, `display:none`.
+ *
+ * Captures the in-page vault model + every file-explorer leaf's
+ * computed visibility, plus the tail of the shadow window's
+ * structured log (where `VaultModelBuilder: built Nf + Md` / its
+ * per-entry errors land), so one CI round is conclusive instead of
+ * speculative. Read-only.
+ */
+export async function dumpShadowState(
+  page: Page,
+  shadowLogPath: string,
+): Promise<string> {
+  let model: string;
+  try {
+    model = await page.evaluate(() => {
+      const app = (window as unknown as { app?: Record<string, unknown> }).app;
+      const v = (app as { vault?: Record<string, unknown> } | undefined)?.vault as
+        | {
+            fileMap?: Record<string, unknown>;
+            getRoot?: () => { children?: unknown[] };
+            getAllLoadedFiles?: () => unknown[];
+            getMarkdownFiles?: () => unknown[];
+          }
+        | undefined;
+      const ws = (app as { workspace?: { getLeavesOfType?: (t: string) => unknown[] } } | undefined)
+        ?.workspace;
+      const leaves = ws?.getLeavesOfType?.('file-explorer') ?? [];
+      const leafInfo = leaves.map((l) => {
+        const el = (l as { containerEl?: HTMLElement }).containerEl;
+        const navTitles = el?.querySelectorAll?.('.nav-file-title').length ?? -1;
+        const cs = el ? getComputedStyle(el) : null;
+        const rect = el?.getBoundingClientRect?.();
+        return {
+          navTitles,
+          display: cs?.display ?? '?',
+          visibility: cs?.visibility ?? '?',
+          w: rect ? Math.round(rect.width) : -1,
+          h: rect ? Math.round(rect.height) : -1,
+        };
+      });
+      return JSON.stringify({
+        fileMapKeys: Object.keys(v?.fileMap ?? {}).length,
+        rootChildren: v?.getRoot?.()?.children?.length ?? -1,
+        loadedFiles: v?.getAllLoadedFiles?.().length ?? -1,
+        markdownFiles: v?.getMarkdownFiles?.().length ?? -1,
+        fileExplorerLeaves: leaves.length,
+        leaves: leafInfo,
+      });
+    });
+  } catch (e) {
+    model = `evaluate-failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
+  let logTail = '(shadow console.log absent)';
+  try {
+    const raw = fs.readFileSync(shadowLogPath, 'utf8').replace(/\0/g, '');
+    logTail = raw
+      .trim()
+      .split('\n')
+      .slice(-30)
+      .join('\n');
+  } catch {
+    /* absent / mid-write — keep the placeholder */
+  }
+
+  return (
+    `shadow vault model: ${model}\n` +
+    `--- ${shadowLogPath} (last 30 lines) ---\n${logTail}`
+  );
+}

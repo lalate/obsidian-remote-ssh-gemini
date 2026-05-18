@@ -1,9 +1,10 @@
-import { test, expect } from '@playwright/test';
+import { test } from '@playwright/test';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   launchObsidian,
   connectAndWaitForShadowVault,
+  dumpShadowState,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -160,16 +161,22 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     );
 
     // 7. The vault is usable again — File Explorer still renders.
-    //    `expect(...).toBeVisible` auto-waits AND surfaces the real
-    //    Playwright failure (page closed, target crashed, selector
-    //    never matched). The old `.isVisible().catch(() => false)`
-    //    swallowed all of those into a bare `false`, turning a crashed
-    //    page into a context-free "expected true, got false".
-    await expect(
-      shadowHandle.page
-        .locator('.nav-files-container .nav-file-title')
-        .first(),
-      'File Explorer should still render after reconnect',
-    ).toBeVisible({ timeout: 30_000 });
+    //    Auto-wait for the tree; on real failure attach the in-page
+    //    vault model + file-explorer leaf state + shadow log so the
+    //    cause is conclusive (model unbuilt vs view-missed-events vs
+    //    hidden sidebar) rather than a context-free "element not
+    //    found".
+    const navTitle = shadowHandle.page
+      .locator('.nav-files-container .nav-file-title')
+      .first();
+    try {
+      await navTitle.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch {
+      throw new Error(
+        'File Explorer should still render after reconnect — the ' +
+        'drop→recover cycle completed but the tree is not rendered.\n' +
+        (await dumpShadowState(shadowHandle.page, shadowLog)),
+      );
+    }
   });
 });
