@@ -610,13 +610,36 @@ export async function runCommandViaPalette(
  * per-entry errors land), so one CI round is conclusive instead of
  * speculative. Read-only.
  */
-export async function dumpShadowState(
+export interface ShadowModelSnapshot {
+  /** Entries in `vault.fileMap` (folders + files + the shadow .obsidian). */
+  fileMapKeys: number;
+  rootChildren: number;
+  loadedFiles: number;
+  /** `vault.getMarkdownFiles().length` — the remote `.md` the populate built. */
+  markdownFiles: number;
+  fileExplorerLeaves: number;
+  leaves: Array<{
+    navTitles: number;
+    display: string;
+    visibility: string;
+    w: number;
+    h: number;
+  }>;
+}
+
+/**
+ * Read the shadow window's in-page vault model + file-explorer leaf
+ * geometry. This is the GROUND TRUTH for "did the remote vault load":
+ * `vault.getMarkdownFiles()` / `fileMap` are what the product builds
+ * from the remote walk, independent of whether headless Obsidian has
+ * painted the File Explorer tree yet (the DOM `.nav-file-title`
+ * visibility is a virtualised/lazy render that races in Xvfb). Read-only.
+ */
+async function readShadowModel(
   page: Page,
-  shadowLogPath: string,
-): Promise<string> {
-  let model: string;
+): Promise<ShadowModelSnapshot | { error: string }> {
   try {
-    model = await page.evaluate(() => {
+    return await page.evaluate(() => {
       const app = (window as unknown as { app?: Record<string, unknown> }).app;
       const v = (app as { vault?: Record<string, unknown> } | undefined)?.vault as
         | {
@@ -642,18 +665,32 @@ export async function dumpShadowState(
           h: rect ? Math.round(rect.height) : -1,
         };
       });
-      return JSON.stringify({
+      return {
         fileMapKeys: Object.keys(v?.fileMap ?? {}).length,
         rootChildren: v?.getRoot?.()?.children?.length ?? -1,
         loadedFiles: v?.getAllLoadedFiles?.().length ?? -1,
         markdownFiles: v?.getMarkdownFiles?.().length ?? -1,
         fileExplorerLeaves: leaves.length,
         leaves: leafInfo,
-      });
+      };
     });
   } catch (e) {
-    model = `evaluate-failed: ${e instanceof Error ? e.message : String(e)}`;
+    return { error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/**
+ * Diagnostic snapshot string: the in-page model + the shadow window's
+ * structured-log tail (where `VaultModelBuilder: built Nf + Md` / its
+ * per-entry errors land). Attached to assertion failures so a red
+ * run is conclusive.
+ */
+export async function dumpShadowState(
+  page: Page,
+  shadowLogPath: string,
+): Promise<string> {
+  const m = await readShadowModel(page);
+  const model = 'error' in m ? `evaluate-failed: ${m.error}` : JSON.stringify(m);
 
   let logTail = '(shadow console.log absent)';
   try {
@@ -670,5 +707,43 @@ export async function dumpShadowState(
   return (
     `shadow vault model: ${model}\n` +
     `--- ${shadowLogPath} (last 30 lines) ---\n${logTail}`
+  );
+}
+
+/**
+ * Wait until the shadow window has actually LOADED the remote vault —
+ * the user-facing outcome the field report ("vault won't load") is
+ * about. Asserts on the product's own model (`getMarkdownFiles() >= 1`
+ * AND a file-explorer leaf exists), NOT on DOM `.nav-file-title`
+ * visibility: the docker fixture vault always has `remote_demo*.md`,
+ * so the populate building ≥1 markdown file into `vault.fileMap` is
+ * the exact "the remote tree loaded" signal, and it is immune to
+ * headless Obsidian's lazy/virtualised File Explorer paint (which
+ * races under Xvfb and produced false reds even though the model and
+ * the leaf were correct — diagnosed across runs 26015295742 /
+ * 26016246390). Throws with the full diagnostic on timeout.
+ */
+export async function waitForShadowVaultLoaded(
+  page: Page,
+  shadowLogPath: string,
+  timeoutMs = 30_000,
+): Promise<ShadowModelSnapshot> {
+  const deadline = Date.now() + timeoutMs;
+  let last: ShadowModelSnapshot | { error: string } | null = null;
+  while (Date.now() < deadline) {
+    last = await readShadowModel(page);
+    if (
+      !('error' in last) &&
+      last.markdownFiles >= 1 &&
+      last.fileExplorerLeaves >= 1
+    ) {
+      return last;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    'shadow vault did not load the remote tree ' +
+    `(need getMarkdownFiles()>=1 AND a file-explorer leaf) within ${timeoutMs}ms.\n` +
+    (await dumpShadowState(page, shadowLogPath)),
   );
 }
