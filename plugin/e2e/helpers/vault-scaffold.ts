@@ -26,6 +26,14 @@ export interface ScaffoldOptions {
    * production connect-stall incident was reported on.
    */
   transport?: 'sftp' | 'rpc';
+  /**
+   * Remote vault path for the seeded profile. Defaults to the docker
+   * fixture vault (which exists). The negative-path spec passes a
+   * non-existent path to reproduce the field incident (a profile
+   * whose remotePath isn't on the remote → connect fails) and assert
+   * the failure is *visible*, not a silent hang / spawn storm.
+   */
+  remotePath?: string;
 }
 
 /**
@@ -38,6 +46,7 @@ export interface ScaffoldOptions {
  */
 export function scaffoldTestVault(opts: ScaffoldOptions = {}): ScaffoldResult {
   const transport = opts.transport ?? 'rpc';
+  const remotePath = opts.remotePath ?? TEST_VAULT_REMOTE;
   const pluginRoot = path.resolve(__dirname, '..', '..');
   const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-vault-'));
 
@@ -87,7 +96,7 @@ export function scaffoldTestVault(opts: ScaffoldOptions = {}): ScaffoldResult {
         username: TEST_USER,
         authMethod: 'privateKey',
         privateKeyPath,
-        remotePath: TEST_VAULT_REMOTE,
+        remotePath,
         transport,
         connectTimeoutMs: 30_000,
         keepaliveIntervalMs: 10_000,
