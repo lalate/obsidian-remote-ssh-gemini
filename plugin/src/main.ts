@@ -1,1131 +1,1668 @@
-import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
-import type { PluginSettings, SshProfile } from './types';
-import { SyncState } from './types';
-import { DEFAULT_SETTINGS, DEFAULT_WALK_IGNORE_DIRS } from './constants';
-import { SftpClient } from './ssh/SftpClient';
-import { AuthResolver } from './ssh/AuthResolver';
-import { HostKeyStore } from './ssh/HostKeyStore';
-import { SecretStore } from './ssh/SecretStore';
-import { KbdInteractiveModal } from './ui/KbdInteractiveModal';
-import { HostKeyMismatchModal } from './ui/HostKeyMismatchModal';
-import { PendingEditsBar } from './ui/PendingEditsBar';
-import { RpcRemoteFsClient } from './adapter/RpcRemoteFsClient';
-import { AdapterManager } from './adapter/AdapterManager';
-import { establishRpcConnection } from './transport/RpcConnection';
-import { ServerDeployer } from './transport/ServerDeployer';
-import type { ReconnectState } from './transport/ReconnectManager';
-import * as fs from 'fs';
-import { StatusBar } from './ui/StatusBar';
-import { ConnectModal } from './ui/ConnectModal';
-import { RemoteTerminalView, VIEW_TYPE_REMOTE_TERMINAL } from './ui/RemoteTerminalView';
-import { SettingsTab } from './settings/SettingsTab';
-import { logger } from './util/logger';
-import { classifyToNotice } from './transport/errorTaxonomy';
-import { VaultModelBuilder } from './vault/VaultModelBuilder';
-import { FsChangeListener } from './vault/FsChangeListener';
-import { BulkWalker } from './vault/BulkWalker';
-import { RenameLeafFollower } from './vault/RenameLeafFollower';
-import { ObsidianRegistry } from './shadow/ObsidianRegistry';
-import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
-import { SharedConfigWatcher } from './shadow/SharedConfigWatcher';
-import { ShadowVaultManager } from './shadow/ShadowVaultManager';
-import { WindowSpawner } from './shadow/WindowSpawner';
-import { ShadowStartupCoordinator } from './shadow/ShadowStartupCoordinator';
-import * as os from 'os';
-import { ObservabilityInstaller } from './util/ObservabilityInstaller';
-import { normalizeRemotePath } from './util/pathUtils';
-import * as path from 'path';
-import { errorMessage } from "./util/errorMessage";
-import { ConnectionManager } from "./ConnectionManager";
-import { TransferTracker } from "./util/TransferTracker";
-import { LargeTransferBar } from "./ui/LargeTransferBar";
-import { OnboardingModal } from "./ui/OnboardingModal";
-import { telemetry, telemetryLogPath } from "./util/Telemetry";
+import { Notice, Platform, Plugin, requestUrl } from 'obsidian';
+import type { App, PluginManifest } from 'obsidian';
+import { MobileSettingsTab } from './settings/MobileSettingsTab';
+import type { SshProfile } from './types';
+
+type DesktopPlugin = Plugin & {
+  onload: () => Promise<void>;
+  onunload: () => void;
+};
+
+type MobileProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authMethod: 'password' | 'privateKey' | 'agent';
+  passwordRef?: string;
+  privateKeyPath?: string;
+  passphraseRef?: string;
+  agentSocket?: string;
+  hostKeyFingerprint?: string;
+  remotePath: string;
+  connectTimeoutMs: number;
+  keepaliveIntervalMs: number;
+  keepaliveCountMax: number;
+  transport?: 'sftp' | 'rpc' | 'relay-rpc';
+  relayBaseUrl?: string;
+  relayAuthToken?: string;
+  relayRpcUsername?: string;
+  relayRpcPassword?: string;
+  jumpHost?: {
+    host: string;
+    port: number;
+    username: string;
+    authMethod: 'password' | 'privateKey' | 'agent';
+    privateKeyPath?: string;
+    passwordRef?: string;
+  };
+};
+
+type MobileVerificationIssue = {
+  profileId: string;
+  profileName: string;
+  field: 'name' | 'host' | 'port' | 'username' | 'remotePath';
+  message: string;
+};
+
+type MobileVerificationResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  totalProfiles: number;
+  invalidProfiles: number;
+  issues: MobileVerificationIssue[];
+  warnings: string[];
+};
+
+type MobileConnectionProbeEntry = {
+  profileId: string;
+  profileName: string;
+  target: string;
+  outcome: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+  detail: string;
+  latencyMs?: number;
+};
+
+type MobileConnectionProbeResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  attempted: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  entries: MobileConnectionProbeEntry[];
+  note: string;
+};
+
+type MobileSshConnectAttempt = {
+  profileId: string;
+  profileName: string;
+  target: string;
+  status: 'PASS' | 'WARN' | 'FAIL' | 'SKIP';
+  detail: string;
+  latencyMs?: number;
+};
+
+type MobileSshConnectResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  attempted: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  note: string;
+  attempts: MobileSshConnectAttempt[];
+};
+
+type MobileRelayConfig = {
+  endpoint: string;
+  authToken?: string;
+  rpcUsername?: string;
+  rpcPassword?: string;
+};
+
+type MobileRelayProbeResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  latencyMs?: number;
+  httpStatus?: number;
+  detail: string;
+  note: string;
+};
+
+type MobileRelayConnectResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  latencyMs?: number;
+  httpStatus?: number;
+  code?: string;
+  sessionId?: string;
+  streamUrl?: string;
+  detail: string;
+  note: string;
+};
+
+type MobileRelayStreamResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  sessionId?: string;
+  streamUrl?: string;
+  relayCode?: string;
+  latencyMs?: number;
+  detail: string;
+  note: string;
+};
+
+type MobileRelayRpcResult = {
+  timestamp: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  endpoint: string;
+  sessionId?: string;
+  streamUrl?: string;
+  relayCode?: string;
+  latencyMs?: number;
+  serverName?: string;
+  serverVersion?: string;
+  fsPath?: string;
+  detail: string;
+  note: string;
+};
+
+type RelayConnectApiBody = {
+  ok?: boolean;
+  code?: string;
+  message?: string;
+  sessionId?: string;
+  streamUrl?: string;
+};
 
 export default class RemoteSshPlugin extends Plugin {
-  settings: PluginSettings = DEFAULT_SETTINGS;
+  private desktopDelegate: DesktopPlugin | null = null;
+  private mobilePreviewMode = false;
+  private mobilePreviewLogs: string[] = [];
+  private mobileSessionId = '';
+  private mobileProfiles: MobileProfile[] = [];
+  private mobileRelayConfig: MobileRelayConfig = { endpoint: '' };
 
-  private secretStore  = new SecretStore();
-  private authResolver = new AuthResolver(this.secretStore);
-  private hostKeyStore = new HostKeyStore();
-  private conn!: ConnectionManager;
-  private adapterMgr!: AdapterManager;
-  private statusBar!: StatusBar;
-  private state: SyncState = SyncState.IDLE;
-  /**
-   * Re-entrancy guard for `openShadowVaultFor`. A spawned shadow
-   * window can take several seconds to surface, during which Obsidian
-   * keeps the source window focused; without this, every impatient
-   * Connect re-click re-bootstraps + re-fires `obsidian://open`,
-   * producing the WindowSpawner churn observed in the field.
-   *
-   * Asymmetric by design: held ~15s only after a *successful* spawn
-   * (debounce the double/triple-click while the new window surfaces);
-   * cleared *synchronously* on a failed spawn so a genuine retry is
-   * instant and the user is never stranded behind a stale
-   * "still opening" toast.
-   */
-  private shadowSpawnInFlight = false;
-  /**
-   * Status-bar indicator for queued offline edits (E2-β.4). Hidden
-   * when the queue is empty; click opens `PendingEditsModal`.
-   */
-  private pendingEditsBar!: PendingEditsBar;
-  /**
-   * Tracks in-flight large (>1 MB) file transfers so the StatusBar
-   * can show the user something is happening (#127). Pure in-memory.
-   */
-  private transferTracker: TransferTracker = new TransferTracker();
-  /** Status-bar indicator wired to the transferTracker. */
-  private largeTransferBar: LargeTransferBar | null = null;
-  /** Owns the daemon fs.watch subscription + notification dispatch. */
-  private fsChangeListener!: FsChangeListener;
-  /**
-   * #342 push half: watches the shadow vault's local config dir and
-   * pushes shared-config edits to the remote. Lives only for the
-   * duration of a connected session (started after the connect pull,
-   * stopped on disconnect/unload).
-   */
-  private sharedConfigWatcher: SharedConfigWatcher | null = null;
-  private observability: ObservabilityInstaller | null = null;
-  /**
-   * #149 — re-entrant guard for `openRemoteTerminal()`. The
-   * `addCommand` checkCallback doesn't debounce, so rapid command-
-   * palette activations would otherwise both pass the
-   * `getLeavesOfType(...).length === 0` check (because the first
-   * call's `await leaf.setViewState` is still pending) and create
-   * two terminal leaves with two RemoteShell channels.
-   */
-  private openingTerminal = false;
-
-  async onload() {
-    await this.loadSettings();
-
-    logger.setDebug(this.settings.enableDebugLog);
-    logger.setMaxLines(this.settings.maxLogLines);
-    const adapter = this.app.vault.adapter;
-    const basePath = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
-    this.observability = new ObservabilityInstaller(this.manifest, basePath, this.app.vault.configDir);
-    this.observability.install();
-
-    // F22 — opt-in anonymous telemetry. Counters live next to other
-    // plugin state under the vault's configDir. Wires no-op when
-    // basePath is null (mobile / unusual builds) or the toggle is off.
-    if (this.settings.telemetryEnabled && basePath) {
-      void telemetry.setEnabled(
-        true,
-        telemetryLogPath(basePath, this.app.vault.configDir, this.manifest.id),
-      );
+  private ensureBufferGlobal(): void {
+    if (this.hasBufferGlobal()) {
+      return;
     }
 
-    this.fsChangeListener = new FsChangeListener(this.app);
+    const runtime = globalThis as typeof globalThis & {
+      Buffer?: unknown;
+      require?: (id: string) => unknown;
+    };
 
-    const client = new SftpClient(
-      this.authResolver,
-      this.hostKeyStore,
-      (prompts) => new KbdInteractiveModal(this.app, prompts).prompt(),
-      (info) => new HostKeyMismatchModal(this.app, info).prompt(),
-    );
-    client.onClose(({ unexpected }) => {
-      if (unexpected) {
-        new Notice('Remote SSH: connection lost — reconnecting…');
-        void this.startReconnect();
-      }
-    });
-    this.conn = new ConnectionManager(client, {
-      locateDaemonBinary: () => this.locateDaemonBinary(),
-    });
-    this.conn.activeRemoteBasePath = null;
-
-    this.addSettingTab(new SettingsTab(this.app, this));
-
-    this.statusBar = new StatusBar(this, () => this.onStatusBarClick());
-    this.statusBar.update(this.state);
-
-    // Pending-edits indicator: shown only when the offline queue has
-    // entries. Click opens the read-only listing + "discard all"
-    // button. The bar starts hidden; replayOfflineQueue (inside
-    // AdapterManager) and the queue-aware adapter writes call into
-    // this bar's refresh helper.
-    this.pendingEditsBar = new PendingEditsBar(this, () => void this.adapterMgr.showPendingEditsModal());
-
-    // Large transfer indicator (#127) — shown only when >1 MB
-    // file transfers are in flight. Subscribes to transferTracker.
-    this.largeTransferBar = new LargeTransferBar(this, this.transferTracker);
-
-    this.adapterMgr = new AdapterManager(
-      this.app,
-      this.manifest,
-      this.conn,
-      this.fsChangeListener,
-      this.pendingEditsBar,
-      () => this.settings,
-      this.transferTracker,
-    );
-
-    // #341 follow-up: a writer rename reflects into the model fine,
-    // but Obsidian's own post-adapter `Vault.rename` reconcile crashes
-    // on this build and orphans the open tab. Own the editor-follow:
-    // if the file was open and Obsidian dropped it, re-open it. Gated
-    // by `isPatched` so an unconnected local vault is untouched.
-    const renameFollower = new RenameLeafFollower(
-      {
-        isPathOpen: (p) =>
-          this.app.workspace
-            .getLeavesOfType('markdown')
-            .some(
-              (l) =>
-                (l.view as unknown as { file?: { path?: string } } | undefined)
-                  ?.file?.path === p,
-            ),
-        reopen: (p) => {
-          const af = this.app.vault.getAbstractFileByPath(p);
-          if (af instanceof TFile) {
-            void this.app.workspace.getLeaf('tab').openFile(af);
-          }
-        },
-      },
-      () => this.adapterMgr.isPatched(),
-      (cb) => { activeWindow.setTimeout(cb, 0); },
-    );
-    this.registerEvent(
-      this.app.vault.on('rename', (file) => renameFollower.handleRename(file)),
-    );
-
-    this.addCommand({
-      id: 'connect',
-      name: 'Connect to remote vault',
-      callback: () => this.promptConnect(),
-    });
-
-    this.addCommand({
-      id: 'disconnect',
-      name: 'Disconnect from remote vault',
-      callback: () => this.disconnect(),
-    });
-
-    this.addCommand({
-      id: 'cancel-reconnect',
-      name: 'Cancel ongoing reconnect',
-      checkCallback: (checking) => {
-        const active = this.conn.reconnectManager?.isActive() ?? false;
-        if (checking) return active;
-        if (active) this.cancelReconnect();
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: 'debug-patch-adapter',
-      name: 'Debug: patch app.vault.adapter onto SFTP (read-side only)',
-      callback: () => this.debugPatchAdapter(),
-    });
-
-    this.addCommand({
-      id: 'debug-restore-adapter',
-      name: 'Debug: restore app.vault.adapter to its original',
-      callback: () => this.debugRestoreAdapter(),
-    });
-
-    this.addCommand({
-      id: 'debug-list-root',
-      name: 'Debug: list vault root via current adapter',
-      callback: () => this.debugListRoot(),
-    });
-
-    this.addCommand({
-      id: 'debug-test-rpc-tunnel',
-      name: 'Debug: test daemon tunnel',
-      callback: () => this.debugTestRpcTunnel(),
-    });
-
-    this.addCommand({
-      id: 'reconnect',
-      name: 'Reconnect to remote (shadow vault auto-connect)',
-      checkCallback: (checking: boolean) => {
-        // Only meaningful inside a shadow window (= a vault whose
-        // data.json has the autoConnectProfileId marker). Outside
-        // that, Reconnect doesn't have a target and the regular
-        // Connect command applies.
-        if (!this.settings.autoConnectProfileId) return false;
-        if (!checking) void this.runAutoConnect('reconnect');
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: 'show-onboarding',
-      name: 'Set up first remote vault',
-      callback: () => this.showOnboarding(),
-    });
-
-    // #149 — terminal pane. View registered unconditionally so a
-    // shadow vault that's still warming up can re-open a leaf saved
-    // in workspace.json before the connection completes; the View
-    // itself handles the disconnected state.
-    this.registerView(VIEW_TYPE_REMOTE_TERMINAL, leaf => new RemoteTerminalView(leaf, {
-      getClient: () => this.conn.client.isAlive() ? this.conn.client : null,
-      settings: this.settings,
-    }));
-
-    this.addCommand({
-      id: 'open-terminal',
-      name: 'Open remote terminal',
-      checkCallback: (checking) => {
-        const ready = this.conn.client.isAlive();
-        if (checking) return ready;
-        if (ready) void this.openRemoteTerminal();
-        return true;
-      },
-    });
-
-    // Phase 4 + 6C-prep: if this vault was opened with an
-    // autoConnectProfileId marker (= a shadow vault from
-    // `ShadowVaultBootstrap`):
-    //   1. install any plugins listed in community-plugins.json that
-    //      aren't yet on disk (marketplace download via
-    //      `app.plugins.installPlugin`),
-    //   2. then connect to the remote and populate the file model.
-    // Done inside `onLayoutReady` so we wait for Obsidian's own
-    // vault initialization to finish before touching plugins or the
-    // adapter.
-    this.app.workspace.onLayoutReady(() => {
-      if (this.settings.autoConnectProfileId) {
-        void this.runShadowStartup();
-        return;
-      }
-      // F17 — first-launch onboarding. Opens the wizard when the user
-      // has no profiles yet AND hasn't dismissed onboarding before.
-      // Skipped on shadow vaults (auto-connect path above).
-      if (this.settings.profiles.length === 0 && !this.settings.onboardingCompleted) {
-        this.showOnboarding();
-      }
-    });
-  }
-
-  private showOnboarding() {
-    new OnboardingModal(
-      this.app,
-      this.getProfileFormDeps(),
-      async ({ profile, dismissOnboarding }) => {
-        // Single coalesced saveSettings — push profile + flip the
-        // dismiss flag in one disk write rather than two (M2 from
-        // PR #222 review).
-        let dirty = false;
-        if (profile) {
-          this.settings.profiles.push(profile);
-          dirty = true;
-        }
-        if (dismissOnboarding && !this.settings.onboardingCompleted) {
-          this.settings.onboardingCompleted = true;
-          dirty = true;
-        }
-        if (dirty) await this.saveSettings();
-      },
-    ).open();
-  }
-
-  /**
-   * Shadow window startup orchestration: prompt the user about any
-   * pending plugin suggestions captured at bootstrap, fill in any
-   * binaries missing from the shadow's community-plugins.json (safety
-   * net for re-bootstraps), then auto-connect. Split from
-   * `runAutoConnect` so the Reconnect command can re-run just the
-   * connect half without re-fetching anything.
-   */
-  private async runShadowStartup(): Promise<void> {
-    const coordinator = new ShadowStartupCoordinator(
-      this.app, this.settings, () => this.saveSettings(),
-    );
-    await coordinator.prepareForAutoConnect();
-    await this.runAutoConnect('layout-ready');
-  }
-
-  onunload() {
-    // Restore adapter first so any in-flight Obsidian read calls see the
-    // original FileSystemAdapter again before we tear down the SSH session.
-    this.adapterMgr.restore();
-    void this.disconnect().catch(() => { /* ignore */ });
-    this.statusBar?.remove();
-    this.pendingEditsBar?.remove();
-    this.largeTransferBar?.remove();
-    this.observability?.uninstall();
-    // F22 — flush any in-memory counters before the process tears down.
-    void telemetry.setEnabled(false);
-  }
-
-  async loadSettings() {
-    // `loadData()` returns `any`; cast through a known shape so downstream
-    // accessors are typed. The fields we actually consume here are the
-    // host-key map and the encrypted-secrets blob; everything else flows
-    // into `Object.assign(...DEFAULT_SETTINGS, saved)` and is shape-checked
-    // by `PluginSettings`.
-    const saved = (await this.loadData()) as Partial<PluginSettings> & {
-      hostKeyStore?: Record<string, string>;
-      secrets?: Parameters<SecretStore['load']>[0];
-    } | null;
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved ?? {});
-    // Migration (Phase 5): the old `autoPatchAdapter` field is gone
-    // — Object.assign above doesn't pick it up because it's not in
-    // DEFAULT_SETTINGS, but a stray copy could survive in saved data
-    // and reappear via `saveData(...this.settings...)`. Force-strip
-    // it via the cast so saveSettings doesn't write it back.
-    delete (this.settings as unknown as Record<string, unknown>).autoPatchAdapter;
-    // We never come back online already connected; activeProfileId from disk
-    // is stale on startup and only confuses the settings UI.
-    this.settings.activeProfileId = null;
-    if (saved?.hostKeyStore) {
-      this.hostKeyStore.load(saved.hostKeyStore);
+    const req = runtime.require;
+    if (typeof req !== 'function') {
+      return;
     }
-    if (saved?.secrets) {
-      this.secretStore.load(saved.secrets);
-    }
-  }
 
-  /** Expose auth deps for the ProfileForm's Browse button. */
-  getProfileFormDeps() {
-    return { authResolver: this.authResolver, hostKeyStore: this.hostKeyStore };
-  }
-
-  /** Daemon status for the settings panel. */
-  getDaemonStatus(): { status: 'running' | 'down' | 'none'; version?: string; capabilities?: number } {
-    if (!this.conn.rpcConnection) return { status: 'none' };
     try {
-      const info = this.conn.rpcConnection.info;
-      return { status: 'running', version: info.version, capabilities: info.capabilities.length };
+      const maybeBufferModule = req('buffer') as { Buffer?: unknown } | undefined;
+      if (maybeBufferModule?.Buffer) {
+        runtime.Buffer = maybeBufferModule.Buffer as BufferConstructor;
+        this.pushMobilePreviewLog('Buffer global initialized from runtime module');
+      }
     } catch {
-      return { status: 'down' };
+      // Keep running even when the runtime does not expose the buffer module.
     }
   }
 
-  /** Read the last N lines of the daemon log from the remote. */
-  async readDaemonLog(lines = 50): Promise<string> {
-    if (!this.conn.isAlive()) throw new Error('Not connected');
-    const r = await this.conn.client.exec(`tail -n ${lines} ~/.obsidian-remote/server.log 2>/dev/null || echo '(no log file)'`);
-    return r.stdout;
+  private hasBufferGlobal(): boolean {
+    return typeof (globalThis as { Buffer?: unknown }).Buffer !== 'undefined';
   }
 
-  /** Restart the daemon: stop existing + redeploy. */
-  async restartDaemon(): Promise<void> {
-    const profile = this.conn.activeProfile;
-    const basePath = this.conn.activeRemoteBasePath;
-    if (!profile || !basePath) throw new Error('No active profile');
-    if (this.conn.daemonDeployer && this.conn.isAlive()) {
-      try { await this.conn.daemonDeployer.stop(); } catch { /* best effort */ }
-    }
-    if (this.conn.rpcConnection) {
-      try { this.conn.rpcConnection.close(); } catch { /* already dead */ }
-      this.conn.rpcConnection = null;
-    }
-    this.conn.daemonDeployer = null;
-    await this.conn.startRpcSession(profile, basePath);
-    // Rebind adapter to the fresh RPC client
-    this.adapterMgr.dataAdapter?.swapClient(this.conn.buildFsClient());
+  private getRuntimeCapabilitySummary(): string {
+    const runtime = globalThis as typeof globalThis & {
+      Buffer?: unknown;
+      require?: unknown;
+      process?: { versions?: { node?: string } };
+    };
+    const hasBuffer = typeof runtime.Buffer !== 'undefined';
+    const hasRequire = typeof runtime.require === 'function';
+    const nodeVersion = runtime.process?.versions?.node;
+    return `capabilities: buffer=${hasBuffer}, require=${hasRequire}, node=${nodeVersion ?? 'none'}`;
   }
 
-  async saveSettings() {
+  private getMobileReportMetaLine(): string {
+    const pluginVersion = this.manifest?.version ?? 'unknown';
+    const appVersion = (this.app as App & { version?: string }).version ?? 'unknown';
+    const platform = Platform.isMobileApp ? 'mobile' : 'desktop';
+    return `Meta: plugin=${pluginVersion}, obsidian=${appVersion}, platform=${platform}`;
+  }
+
+  private createDefaultMobileProfile(): MobileProfile {
+    const id = `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return {
+      id,
+      name: 'New profile',
+      host: '',
+      port: 22,
+      username: '',
+      authMethod: 'password',
+      remotePath: '',
+      connectTimeoutMs: 15000,
+      keepaliveIntervalMs: 15000,
+      keepaliveCountMax: 3,
+      transport: 'sftp',
+      relayBaseUrl: '',
+      relayAuthToken: '',
+      relayRpcUsername: '',
+      relayRpcPassword: '',
+    };
+  }
+
+  private getPrimaryMobileProfile(): MobileProfile | undefined {
+    const relayProfile = this.mobileProfiles.find(p => (p.transport ?? 'sftp') === 'relay-rpc');
+    return relayProfile ?? this.mobileProfiles[0];
+  }
+
+  private resolveRelayRuntimeConfig(profile?: MobileProfile): {
+    endpoint: string;
+    authToken?: string;
+    rpcUsername: string;
+    rpcPassword: string;
+  } {
+    const endpoint = profile?.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint.trim();
+    const authToken = profile?.relayAuthToken?.trim() || this.mobileRelayConfig.authToken?.trim() || undefined;
+    const rpcUsername = profile?.relayRpcUsername?.trim() || this.mobileRelayConfig.rpcUsername?.trim() || 'admin';
+    const rpcPassword = profile?.relayRpcPassword?.trim() || this.mobileRelayConfig.rpcPassword?.trim() || 'password';
+    return {
+      endpoint,
+      authToken,
+      rpcUsername,
+      rpcPassword,
+    };
+  }
+
+  private createDefaultMobileRelayConfig(): MobileRelayConfig {
+    return {
+      endpoint: '',
+      authToken: '',
+      rpcUsername: '',
+      rpcPassword: '',
+    };
+  }
+
+  private pushMobilePreviewLog(message: string): void {
+    const line = `[${new Date().toISOString()}] [session:${this.mobileSessionId || 'n/a'}] ${message}`;
+    this.mobilePreviewLogs.push(line);
+    if (this.mobilePreviewLogs.length > 200) {
+      this.mobilePreviewLogs.shift();
+    }
+    console.info(`[Remote SSH][mobile-preview] ${message}`);
+    void this.persistMobilePreviewState();
+  }
+
+  private async persistMobilePreviewState(): Promise<void> {
+    if (!this.mobilePreviewMode) return;
+    const saved = (await this.loadData()) as Record<string, unknown> | null;
     await this.saveData({
-      ...this.settings,
-      hostKeyStore: this.hostKeyStore.serialize(),
-      secrets: this.secretStore.serialize(),
+      ...(saved ?? {}),
+      mobilePreviewLogs: this.mobilePreviewLogs,
+      profiles: this.mobileProfiles,
+      relay: this.mobileRelayConfig,
     });
   }
 
-  async connectProfile(profile: SshProfile) {
-    if (this.conn.isAlive()) {
-      new Notice('Remote SSH: already connected. Disconnect first.');
-      return;
-    }
-    this.setState(SyncState.CONNECTING);
-    try {
-      await this.conn.connectSsh(profile);
-    } catch (e) {
-      this.setState(SyncState.ERROR);
-      const { notice, classified } = classifyToNotice(e);
-      logger.error(`Connect failed: ${classified.title}`, {
-        category: classified.category, code: classified.code,
-        original: classified.original.message, profileId: profile.id,
-      });
-      new Notice(notice);
-      try { await this.conn.client.disconnect(); } catch { /* ignore */ }
-      return;
+  getMobilePreviewLogs(): string[] {
+    return [...this.mobilePreviewLogs];
+  }
+
+  getMobileProfiles(): MobileProfile[] {
+    return this.mobileProfiles.map(p => ({ ...p }));
+  }
+
+  getMobileRelayConfig(): MobileRelayConfig {
+    return { ...this.mobileRelayConfig };
+  }
+
+  async updateMobileRelayConfig(patch: Partial<MobileRelayConfig>): Promise<void> {
+    this.mobileRelayConfig = { ...this.mobileRelayConfig, ...patch };
+    await this.persistMobilePreviewState();
+  }
+
+  async runMobileRelayProbe(): Promise<MobileRelayProbeResult> {
+    const timestamp = new Date().toISOString();
+    const endpoint = this.mobileRelayConfig.endpoint.trim();
+    const note =
+      'Mobile runtime lacks Node APIs in this environment, so direct SSH is unavailable. '
+      + 'Use relay endpoint reachability as the mobile connectivity gate.';
+
+    if (!endpoint) {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint,
+        detail: 'relay endpoint is not configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay probe: skipped (endpoint not configured)');
+      return result;
     }
 
-    const transport = profile.transport ?? 'sftp';
-    let rpcSummary = '';
-    if (transport === 'rpc') {
+    let url: URL;
+    try {
+      url = new URL(endpoint);
+    } catch {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        detail: 'relay endpoint is not a valid URL',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay probe: FAIL (invalid endpoint URL)');
+      return result;
+    }
+
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: url.toString(),
+        detail: `relay endpoint must use http/https (received: ${url.protocol})`,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: FAIL (unsupported scheme: ${url.protocol})`);
+      return result;
+    }
+
+    const host = url.hostname.toLowerCase();
+    if (host === 'github.com' || host.endsWith('.github.com') || host.includes('githubusercontent.com')) {
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: url.toString(),
+        detail: 'configured endpoint looks like a GitHub page, not a relay API/health endpoint',
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: WARN (${url.toString()}) — likely non-relay endpoint`);
+      return result;
+    }
+
+    const started = Date.now();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const headers: Record<string, string> = {
+      Accept: 'application/json,text/plain,*/*',
+      'Cache-Control': 'no-store',
+    };
+    const token = this.mobileRelayConfig.authToken?.trim();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    try {
+      const response = await requestUrl({
+        url: url.toString(),
+        method: 'GET',
+        headers,
+        throw: false,
+      });
+      const latencyMs = Date.now() - started;
+
+      const status: 'PASS' | 'WARN' = response.status >= 200 && response.status < 300 ? 'PASS' : 'WARN';
+      const detail = response.status >= 200 && response.status < 300
+        ? `relay endpoint reachable (HTTP ${response.status})`
+        : `relay endpoint responded but returned HTTP ${response.status}`;
+
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status,
+        endpoint: url.toString(),
+        latencyMs,
+        httpStatus: response.status,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: ${status} (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`);
+      return result;
+    } catch (requestErr) {
+      let fetchErrMessage = '';
       try {
-        await this.conn.startRpcSession(profile, this.conn.activeRemoteBasePath!);
-        const caps = this.conn.rpcConnection?.info.capabilities.length ?? 0;
-        const ver  = this.conn.rpcConnection?.info.version ?? '?';
-        rpcSummary = ` — daemon ${ver}, ${caps} capabilities`;
-      } catch (e) {
-        this.setState(SyncState.ERROR);
-        const { notice, classified } = classifyToNotice(e);
-        logger.error(`RPC startup failed: ${classified.title}`, {
-          category: classified.category, code: classified.code,
-          original: classified.original.message, profileId: profile.id,
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers,
+          signal: controller.signal,
+          cache: 'no-store',
         });
-        new Notice(notice);
-        try { await this.conn.client.disconnect(); } catch { /* ignore */ }
-        return;
+        const latencyMs = Date.now() - started;
+        const status: 'PASS' | 'WARN' = response.ok ? 'PASS' : 'WARN';
+        const detail = response.ok
+          ? `relay endpoint reachable via fetch fallback (HTTP ${response.status})`
+          : `relay endpoint responded via fetch fallback but returned HTTP ${response.status}`;
+        const result: MobileRelayProbeResult = {
+          timestamp,
+          status,
+          endpoint: url.toString(),
+          latencyMs,
+          httpStatus: response.status,
+          detail,
+          note,
+        };
+        this.pushMobilePreviewLog(
+          `Relay probe: ${status} via fetch fallback (${url.toString()}, http=${response.status}, latency=${latencyMs}ms)`,
+        );
+        return result;
+      } catch (fetchErr) {
+        fetchErrMessage = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
       }
+
+      const latencyMs = Date.now() - started;
+      const requestErrMessage = requestErr instanceof Error ? requestErr.message : String(requestErr);
+      const timeoutHit = requestErrMessage.toLowerCase().includes('abort') || fetchErrMessage.toLowerCase().includes('abort');
+      const detail = timeoutHit
+        ? 'relay probe timed out after 5000ms'
+        : `relay probe network error: requestUrl=${requestErrMessage}; fetch=${fetchErrMessage || 'n/a'}`;
+      const result: MobileRelayProbeResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: url.toString(),
+        latencyMs,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay probe: FAIL (${url.toString()}) — ${detail}`);
+      return result;
+    } finally {
+      clearTimeout(timeout);
     }
-
-    this.setState(SyncState.CONNECTED);
-    this.settings.activeProfileId = profile.id;
-    await this.saveSettings();
-
-    const patched = await this.adapterMgr.patch();
-    if (!patched) {
-      new Notice('Remote SSH: adapter patch failed — disconnecting');
-      await this.disconnect().catch(() => { /* already errored */ });
-      return;
-    }
-
-    const userLabel = ConnectionManager.formatUserLabel(this.settings);
-    new Notice(
-      `Remote SSH: Connected to ${profile.name} as ${userLabel} via ${transport.toUpperCase()}${rpcSummary}`,
-    );
-    void this.adapterMgr.replayOfflineQueue('after-connect');
   }
 
-  /**
-   * Phase 4 entry point: connect to the profile pointed at by
-   * `settings.autoConnectProfileId`, then populate the empty shadow
-   * vault from the remote tree via `VaultModelBuilder`. Called once
-   * on `onLayoutReady` and again from the `Reconnect` command.
-   *
-   * `tag` shows up in the log line so we can tell whether a given
-   * run came from the layout-ready hook or a manual reconnect.
-   */
-  private async runAutoConnect(tag: 'layout-ready' | 'reconnect'): Promise<void> {
-    const profileId = this.settings.autoConnectProfileId;
-    if (!profileId) return;
-    const profile = this.settings.profiles.find(p => p.id === profileId);
+  formatMobileRelayProbeReport(result: MobileRelayProbeResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay probe report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (typeof result.httpStatus === 'number') {
+      lines.push(`HTTP status: ${result.httpStatus}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  private deriveRelayConnectUrl(endpoint: string): string {
+    const url = new URL(endpoint);
+    return `${url.origin}/v1/connect`;
+  }
+
+  private parseRelayConnectBody(rawText: string): RelayConnectApiBody {
+    if (!rawText) {
+      return {};
+    }
+    try {
+      return JSON.parse(rawText) as RelayConnectApiBody;
+    } catch {
+      return {};
+    }
+  }
+
+  async runMobileRelayConnectTest(): Promise<MobileRelayConnectResult> {
+    const timestamp = new Date().toISOString();
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const endpoint = relayConfig.endpoint;
+    const note =
+      'Posts the active mobile profile to relay /v1/connect using profile transport settings '
+      + '(fallback: global relay settings).';
+
+    if (!endpoint) {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint,
+        detail: 'relay endpoint is not configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (endpoint not configured)');
+      return result;
+    }
+
+    let connectUrl = '';
+    try {
+      connectUrl = this.deriveRelayConnectUrl(endpoint);
+    } catch {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        detail: 'relay endpoint is not a valid URL',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: FAIL (invalid endpoint URL)');
+      return result;
+    }
+
     if (!profile) {
-      logger.warn(
-        `runAutoConnect(${tag}): autoConnectProfileId=${profileId} but no matching ` +
-        'profile in data.json; skipping',
-      );
-      new Notice(
-        `Remote SSH: shadow-vault profile id ${profileId} not found in data.json — ` +
-        'cannot auto-connect',
-      );
-      return;
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: connectUrl,
+        detail: 'no profiles configured',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (no profiles configured)');
+      return result;
     }
 
-    if (this.conn.client.isAlive()) {
-      logger.info(`runAutoConnect(${tag}): client already alive — disconnecting first`);
-      try { await this.disconnect(); } catch { /* swallow; we're about to reconnect */ }
+    const host = profile.host?.trim() ?? '';
+    const username = profile.username?.trim() ?? '';
+    const remotePath = profile.remotePath?.trim() ?? '';
+    if (!host || !username || !remotePath || !Number.isFinite(profile.port) || profile.port < 1 || profile.port > 65535) {
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'WARN',
+        endpoint: connectUrl,
+        detail: 'first profile has missing/invalid required fields (host, port, username, remotePath)',
+        note,
+      };
+      this.pushMobilePreviewLog('Relay connect test: skipped (first profile invalid)');
+      return result;
     }
 
-    logger.info(`runAutoConnect(${tag}): connecting to profile ${profile.name}`);
-    await this.connectProfile(profile);
-
-    if (this.state !== SyncState.CONNECTED) {
-      // A shadow-window auto-connect failed. `connectProfile` ALREADY
-      // emitted a classified, cause-specific Notice (auth / host /
-      // remote-path / patch) into THIS same shadow window on every
-      // failure path — a second generic toast here just stacks on top
-      // of it and pushes the specific cause off-screen. Keep the log
-      // line (the diagnostic trail the e2e oracle asserts on); do not
-      // double-Notice.
-      logger.warn(
-        `runAutoConnect(${tag}): connect did not reach CONNECTED state ` +
-        `(connectProfile surfaced the cause); skipping populate`,
-      );
-      return;
+    const started = Date.now();
+    const headers: Record<string, string> = {
+      Accept: 'application/json,text/plain,*/*',
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    };
+    const token = relayConfig.authToken;
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
 
-    // Pull the shared Obsidian config (app.json / appearance.json /
-    // core-plugins.json / hotkeys.json) from the remote onto the
-    // local shadow disk *before* the populate, so the next time this
-    // window restarts Obsidian reads fresh settings instead of the
-    // stale local copy (#342). Best-effort: a failure here must not
-    // block rendering the vault.
-    const da = this.adapterMgr.dataAdapter;
-    const hostAdapter = this.app.vault.adapter;
-    if (da && hostAdapter instanceof FileSystemAdapter) {
-      const localConfigDir = path.join(
-        hostAdapter.getBasePath(), this.app.vault.configDir,
-      );
-      const remoteConfigDir = this.app.vault.configDir;
-      try {
-        const cfg = await ShadowVaultBootstrap.pullSharedObsidianConfig(
-          da, remoteConfigDir, localConfigDir,
-        );
-        if (cfg.errored.length > 0) {
-          // The connection is up but some shared-config files the
-          // remote *had* couldn't be pulled (transient SSH error /
-          // corrupt file). Without a signal the user would just see
-          // settings silently not update — the #342 symptom. Absent
-          // files are not errored, so a fresh vault stays quiet.
-          new Notice(
-            `Remote SSH: ${cfg.errored.length} shared-config file` +
-            `${cfg.errored.length === 1 ? '' : 's'} (${cfg.errored.join(', ')}) ` +
-            'could not be synced — settings may be stale until the next connect',
-          );
-        }
-      } catch (e) {
-        logger.warn(
-          `runAutoConnect(${tag}): shared-config pull failed: ${errorMessage(e)}`,
-        );
-      }
+    const body = JSON.stringify({
+      requestId: `mobile-${Date.now().toString(36)}`,
+      host,
+      port: profile.port,
+      username,
+      remotePath,
+    });
 
-      // #342 push half: pull only brought remote→local. Without this,
-      // a settings change made HERE never reaches the remote, so the
-      // next session's pull finds nothing and the change evaporates.
-      // Watch the local config dir and push divergent shared files.
-      this.sharedConfigWatcher?.stop();
-      const watcher = new SharedConfigWatcher({
-        watch: (onChange) => {
-          const w = fs.watch(
-            localConfigDir, { persistent: false },
-            (_evt, filename) => onChange(filename ? String(filename) : null),
-          );
-          return { close: () => w.close() };
-        },
-        readLocal: (b) => {
-          try { return fs.readFileSync(path.join(localConfigDir, b), 'utf-8'); }
-          catch { return null; }
-        },
-        flush: async () => {
-          const r = await ShadowVaultBootstrap.pushSharedObsidianConfig(
-            da, remoteConfigDir, localConfigDir,
-          );
-          if (r.errored.length > 0) {
-            new Notice(
-              `Remote SSH: ${r.errored.length} shared-config file` +
-              `${r.errored.length === 1 ? '' : 's'} (${r.errored.join(', ')}) ` +
-              'could not be pushed — settings change not yet saved remotely',
-            );
-          }
-        },
-        debounceMs: 1500,
-        setTimer: (cb, ms) => activeWindow.setTimeout(cb, ms),
-        clearTimer: (h) => activeWindow.clearTimeout(h as number),
+    try {
+      const response = await requestUrl({
+        url: connectUrl,
+        method: 'POST',
+        headers,
+        body,
+        throw: false,
       });
-      // Seed the just-pulled bytes as the synced baseline so the
-      // pull's own writes (and Obsidian re-saving an identical file
-      // on open) don't immediately echo back to the remote.
-      for (const base of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+      const latencyMs = Date.now() - started;
+      const rawText = typeof response.text === 'string' ? response.text : '';
+      let parsed = this.parseRelayConnectBody(rawText);
+      let code = typeof parsed.code === 'string' ? parsed.code : undefined;
+      let message = typeof parsed.message === 'string' ? parsed.message : '';
+      let sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+      let streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
+
+      // iOS runtime sometimes returns 2xx with an empty requestUrl body.
+      // Retry with fetch to recover streamUrl/sessionId before judging result.
+      if (response.status >= 200 && response.status < 300 && !streamUrl) {
         try {
-          watcher.markSynced(
-            base, fs.readFileSync(path.join(localConfigDir, base), 'utf-8'),
-          );
-        } catch { /* absent locally — nothing to baseline */ }
-      }
-      watcher.start();
-      this.sharedConfigWatcher = watcher;
-    }
-
-    // Adapter is patched; build the file model so File Explorer
-    // renders the remote tree.
-    let summary: string;
-    try {
-      summary = await this.populateVaultFromRemote(`shadow-${tag}`);
-    } catch (e) {
-      const msg = errorMessage(e);
-      logger.error(`runAutoConnect(${tag}): populate failed: ${msg}`);
-      new Notice(`Remote SSH: connected but failed to populate vault — ${msg}`);
-      return;
-    }
-    new Notice(`Remote SSH: ${profile.name} ready — ${summary}`);
-  }
-
-  private cancelReconnect(): void {
-    if (!this.conn.reconnectManager?.isActive()) return;
-    this.conn.cancelReconnect();
-    this.adapterMgr.restore();
-    this.setState(SyncState.ERROR);
-    new Notice('Remote SSH: reconnect cancelled');
-  }
-
-  private async startReconnect(): Promise<void> {
-    if (!this.conn.activeProfile) {
-      logger.warn('startReconnect: no active profile to reconnect with');
-      this.setState(SyncState.ERROR);
-      return;
-    }
-    const maxRetries = this.settings.reconnectMaxRetries ?? DEFAULT_SETTINGS.reconnectMaxRetries;
-    if (maxRetries <= 0) {
-      logger.info('startReconnect: auto-reconnect disabled (reconnectMaxRetries <= 0)');
-      this.adapterMgr.restore();
-      this.setState(SyncState.ERROR);
-      return;
-    }
-    this.setState(SyncState.RECONNECTING);
-    await this.conn.startReconnect({
-      maxRetries,
-      setAdapterReconnecting: (on) => this.adapterMgr.dataAdapter?.setReconnecting(on),
-      onState: (s) => this.onReconnectStateChange(s),
-      hooks: {
-        swapClient: (c) => this.adapterMgr.dataAdapter?.swapClient(c),
-        prepareListenerForReconnect: () => this.fsChangeListener.prepareForReconnect(),
-        resumeListenerAfterReconnect: async (rpc) => {
-          const da = this.adapterMgr.dataAdapter;
-          if (da) {
-            await this.fsChangeListener.resumeAfterReconnect({
-              rpcConnection: rpc,
-              dataAdapter: da,
-            });
+          const fetchResponse = await fetch(connectUrl, {
+            method: 'POST',
+            headers,
+            body,
+            cache: 'no-store',
+          });
+          if (fetchResponse.ok) {
+            const fetchText = await fetchResponse.text();
+            const parsedFetch = this.parseRelayConnectBody(fetchText);
+            if (typeof parsedFetch.streamUrl === 'string') {
+              parsed = parsedFetch;
+              code = typeof parsed.code === 'string' ? parsed.code : undefined;
+              message = typeof parsed.message === 'string' ? parsed.message : '';
+              sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+              streamUrl = parsedFetch.streamUrl;
+              this.pushMobilePreviewLog('Relay connect test: recovered streamUrl via fetch body retry');
+            }
           }
+        } catch {
+          // Keep original requestUrl result when fetch retry is unavailable.
+        }
+      }
+
+      let status: 'PASS' | 'WARN' | 'FAIL' = 'FAIL';
+      if (response.status >= 200 && response.status < 300) {
+        if (code === 'NOT_IMPLEMENTED') {
+          status = 'WARN';
+        } else if (code === 'TARGET_UNREACHABLE') {
+          status = 'FAIL';
+        } else if (parsed.ok === true || code === 'PRECHECK_OK') {
+          status = 'PASS';
+        } else {
+          status = 'WARN';
+        }
+      }
+
+      const detail =
+        response.status >= 200 && response.status < 300
+          ? `relay connect responded (HTTP ${response.status}${code ? `, code=${code}` : ''}${message ? `, message=${message}` : ''})`
+          : `relay connect failed with HTTP ${response.status}`;
+
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status,
+        endpoint: connectUrl,
+        latencyMs,
+        httpStatus: response.status,
+        code,
+        sessionId,
+        streamUrl,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay connect test: ${status} (${connectUrl}, http=${response.status}${code ? `, code=${code}` : ''}, latency=${latencyMs}ms)`,
+      );
+      return result;
+    } catch (requestErr) {
+      const latencyMs = Date.now() - started;
+      const requestErrMessage = requestErr instanceof Error ? requestErr.message : String(requestErr);
+      let fetchErrMessage = '';
+
+      try {
+        const fetchResponse = await fetch(connectUrl, {
+          method: 'POST',
+          headers,
+          body,
+          cache: 'no-store',
+        });
+        const responseText = await fetchResponse.text();
+        const parsed = this.parseRelayConnectBody(responseText);
+        const code = typeof parsed.code === 'string' ? parsed.code : undefined;
+        const message = typeof parsed.message === 'string' ? parsed.message : '';
+        const sessionId = typeof parsed.sessionId === 'string' ? parsed.sessionId : undefined;
+        const streamUrl = typeof parsed.streamUrl === 'string' ? parsed.streamUrl : undefined;
+
+        const status: 'PASS' | 'WARN' | 'FAIL' = fetchResponse.ok
+          ? (code === 'NOT_IMPLEMENTED'
+            ? 'WARN'
+            : (code === 'TARGET_UNREACHABLE'
+              ? 'FAIL'
+              : (parsed.ok === true || code === 'PRECHECK_OK' ? 'PASS' : 'WARN')))
+          : 'FAIL';
+        const detail = fetchResponse.ok
+          ? `relay connect responded via fetch fallback (HTTP ${fetchResponse.status}${code ? `, code=${code}` : ''}${message ? `, message=${message}` : ''})`
+          : `relay connect failed via fetch fallback with HTTP ${fetchResponse.status}`;
+
+        const result: MobileRelayConnectResult = {
+          timestamp,
+          status,
+          endpoint: connectUrl,
+          latencyMs,
+          httpStatus: fetchResponse.status,
+          code,
+          sessionId,
+          streamUrl,
+          detail,
+          note,
+        };
+        this.pushMobilePreviewLog(
+          `Relay connect test: ${status} via fetch fallback (${connectUrl}, http=${fetchResponse.status}${code ? `, code=${code}` : ''}, latency=${latencyMs}ms)`,
+        );
+        return result;
+      } catch (fetchErr) {
+        fetchErrMessage = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+      }
+
+      const timeoutHit = requestErrMessage.toLowerCase().includes('abort') || fetchErrMessage.toLowerCase().includes('abort');
+      const detail = timeoutHit
+        ? 'relay connect test timed out'
+        : `relay connect network error: requestUrl=${requestErrMessage}; fetch=${fetchErrMessage || 'n/a'}`;
+
+      const result: MobileRelayConnectResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connectUrl,
+        latencyMs,
+        detail,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay connect test: FAIL (${connectUrl}) — ${detail}`);
+      return result;
+    }
+  }
+
+  formatMobileRelayConnectReport(result: MobileRelayConnectResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay connect test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (typeof result.httpStatus === 'number') {
+      lines.push(`HTTP status: ${result.httpStatus}`);
+    }
+    if (result.code) {
+      lines.push(`Relay code: ${result.code}`);
+    }
+    if (result.sessionId) {
+      lines.push(`Session ID: ${result.sessionId}`);
+    }
+    if (result.streamUrl) {
+      lines.push(`Stream URL: ${result.streamUrl}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  async runMobileRelayStreamTest(): Promise<MobileRelayStreamResult> {
+    const timestamp = new Date().toISOString();
+    const note =
+      'Runs relay connect first, then opens websocket stream URL and waits for session.ready. '
+      + 'This validates stream handshake before RPC framing is wired.';
+
+    const connect = await this.runMobileRelayConnectTest();
+    if (connect.status === 'FAIL') {
+      return {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs: connect.latencyMs,
+        detail: `relay connect failed before stream test: ${connect.detail}`,
+        note,
+      };
+    }
+
+    if (!connect.streamUrl) {
+      return {
+        timestamp,
+        status: 'WARN',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs: connect.latencyMs,
+        detail: `relay connect did not provide streamUrl (${connect.detail})`,
+        note,
+      };
+    }
+
+    const started = Date.now();
+
+    try {
+      const wsResult = await new Promise<{ type: string; message: string }>((resolve, reject) => {
+        const ws = new WebSocket(connect.streamUrl!);
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          try {
+            ws.close();
+          } catch {
+            // no-op
+          }
+          reject(new Error('relay stream websocket timed out after 5000ms'));
+        }, 5000);
+
+        ws.onmessage = evt => {
+          if (settled) return;
+          if (typeof evt.data !== 'string') {
+            return;
+          }
+          try {
+            const parsed = JSON.parse(evt.data) as { type?: string; message?: string };
+            if (parsed.type === 'session.ready') {
+              settled = true;
+              clearTimeout(timer);
+              try {
+                ws.close();
+              } catch {
+                // no-op
+              }
+              resolve({ type: parsed.type, message: parsed.message ?? '' });
+            }
+          } catch {
+            // Ignore non-JSON text frames.
+          }
+        };
+
+        ws.onerror = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error('relay stream websocket error'));
+        };
+
+        ws.onclose = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(new Error('relay stream websocket closed before session.ready'));
+        };
+      });
+
+      const latencyMs = Date.now() - started;
+      const result: MobileRelayStreamResult = {
+        timestamp,
+        status: 'PASS',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs,
+        detail: `stream handshake ok (${wsResult.type}${wsResult.message ? `: ${wsResult.message}` : ''})`,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay stream test: PASS (${connect.streamUrl}, latency=${latencyMs}ms, session=${connect.sessionId ?? 'n/a'})`,
+      );
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const result: MobileRelayStreamResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint: connect.endpoint,
+        sessionId: connect.sessionId,
+        streamUrl: connect.streamUrl,
+        relayCode: connect.code,
+        latencyMs,
+        detail: message,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay stream test: FAIL (${connect.streamUrl}, latency=${latencyMs}ms) — ${message}`,
+      );
+      return result;
+    }
+  }
+
+  formatMobileRelayStreamReport(result: MobileRelayStreamResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay stream test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (result.relayCode) {
+      lines.push(`Relay code: ${result.relayCode}`);
+    }
+    if (result.sessionId) {
+      lines.push(`Session ID: ${result.sessionId}`);
+    }
+    if (result.streamUrl) {
+      lines.push(`Stream URL: ${result.streamUrl}`);
+    }
+    if (typeof result.latencyMs === 'number') {
+      lines.push(`Latency: ${result.latencyMs}ms`);
+    }
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  async runMobileRelayRpcTest(): Promise<MobileRelayRpcResult> {
+    const timestamp = new Date().toISOString();
+    const note =
+      'Runs relay connect, opens WebSocket stream, waits for session.ready, '
+      + 'then performs JSON-RPC auth/server.info/fs.write/fs.read handshake.';
+
+    const stream = await this.runMobileRelayStreamTest();
+    if (stream.status === 'FAIL') {
+      return {
+        timestamp,
+        status: 'FAIL',
+        endpoint: stream.endpoint,
+        sessionId: stream.sessionId,
+        streamUrl: stream.streamUrl,
+        relayCode: stream.relayCode,
+        latencyMs: stream.latencyMs,
+        detail: `stream test failed before RPC: ${stream.detail}`,
+        note,
+      };
+    }
+    if (!stream.streamUrl) {
+      return {
+        timestamp,
+        status: 'WARN',
+        endpoint: stream.endpoint,
+        detail: `stream test did not provide streamUrl (${stream.detail})`,
+        note,
+      };
+    }
+
+    // Re-open a fresh WebSocket session for the RPC handshake.
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const endpoint = relayConfig.endpoint;
+    const rpcUsername = relayConfig.rpcUsername;
+    const rpcPassword = relayConfig.rpcPassword;
+    const fsPath = `${profile?.remotePath?.trim() || '/vault'}/.relay-rpc-smoke.txt`;
+    const fsContent = `relay-rpc-smoke:${Date.now()}`;
+
+    const started = Date.now();
+    try {
+      const { establishRelayWsConnection } = await import('./transport/RelayWsConnection');
+      const conn = await establishRelayWsConnection({
+        baseUrl: new URL(endpoint).origin,
+        target: {
+          host: profile?.host?.trim() ?? '',
+          port: profile?.port ?? 22,
+          username: profile?.username?.trim() ?? '',
+          remotePath: profile?.remotePath?.trim() ?? '',
         },
-      },
-    });
-  }
-
-  /**
-   * Project the manager's state onto the StatusBar + Notice surface
-   * and, on terminal states, clean up.
-   */
-  private onReconnectStateChange(s: ReconnectState): void {
-    // F22 — opt-in telemetry. No-op when disabled.
-    telemetry.recordReconnect(s.kind);
-    if (s.kind === 'waiting') {
-      const seconds = Math.max(1, Math.round(s.delayMs / 1000));
-      this.statusBar.update(
-        SyncState.RECONNECTING,
-        `Remote SSH: Reconnecting (${s.attempt}/${s.totalAttempts}) in ${seconds}s…`,
-      );
-    } else if (s.kind === 'attempting') {
-      this.statusBar.update(
-        SyncState.RECONNECTING,
-        `Remote SSH: Reconnecting (attempt ${s.attempt}/${s.totalAttempts})…`,
-      );
-    } else if (s.kind === 'recovered') {
-      this.adapterMgr.dataAdapter?.setReconnecting(false);
-      this.setState(SyncState.CONNECTED);
-      new Notice('Remote SSH: reconnected');
-      this.conn.reconnectManager = null;
-      // Drain any writes that landed during the disconnect. Fire-and-
-      // forget: the user's already-back state is independent of the
-      // replay outcome, and individual op failures stay in the queue
-      // for the next reconnect.
-      void this.adapterMgr.replayOfflineQueue('after-reconnect');
-    } else if (s.kind === 'failed') {
-      // Give up: tear the patched adapter down so Obsidian falls
-      // back to local file:// reads instead of blocking forever on a
-      // dead transport. restore() clears dataAdapter so the
-      // setReconnecting flag goes with it.
-      this.sharedConfigWatcher?.stop();
-      this.sharedConfigWatcher = null;
-      this.adapterMgr.restore();
-      this.setState(SyncState.ERROR);
-      // s.reason is a string from ReconnectManager; wrap into Error
-      // so classifyError can run pattern matching on the message
-      // (e.g. host-key / timeout substrings still get caught).
-      const { notice, classified } = classifyToNotice(new Error(s.reason));
-      logger.error(`Reconnect failed: ${classified.title}`, {
-        category: classified.category,
-        code: classified.code,
-        original: s.reason,
+        authToken: relayConfig.authToken,
+        rpcCredentials: { username: rpcUsername, password: rpcPassword },
       });
-      new Notice(notice);
-      this.conn.reconnectManager = null;
-    } else if (s.kind === 'cancelled') {
-      this.adapterMgr.dataAdapter?.setReconnecting(false);
-      this.conn.reconnectManager = null;
-    }
-  }
 
-  /**
-   * Idempotent: it always restores the adapter, drops the active SSH
-   * client, clears `activeProfileId`, and parks the state machine on
-   * IDLE. Calling it from a stale UI button (where state was already
-   * IDLE because the plugin had just reloaded) is a supported flow.
-   */
-  async disconnect() {
-    const wasActive = this.state !== SyncState.IDLE
-      || this.conn.isAlive()
-      || this.settings.activeProfileId !== null;
-    this.conn.cancelReconnect();
-    // #149 — close the terminal pane(s) before tearing the SSH
-    // session down so the shell channel close fires while the ssh2
-    // Client is still around (cleaner teardown logs).
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_REMOTE_TERMINAL);
-    // Stop the #342 config watcher before the transport goes — its
-    // flush pushes through the (about-to-be-restored) adapter.
-    this.sharedConfigWatcher?.stop();
-    this.sharedConfigWatcher = null;
-    this.adapterMgr.restore();
-    await this.conn.disconnectTransport();
-    this.setState(SyncState.IDLE);
-    if (this.settings.activeProfileId !== null) {
-      this.settings.activeProfileId = null;
-      await this.saveSettings();
-    }
-    if (wasActive) new Notice('Remote SSH: disconnected');
-  }
+      let serverName: string | undefined;
+      let serverVersion: string | undefined;
+      try {
+        const info = await conn.rpc.call<{ name?: string; version?: string }>('server.info', {});
+        serverName = info.name;
+        serverVersion = info.version;
 
-  /**
-   * Open or reveal the remote terminal pane in the right sidebar.
-   * Re-using an existing leaf keeps the shell channel alive across
-   * focus changes; opening a fresh leaf each time would reset
-   * scrollback and lose any in-flight commands.
-   *
-   * Uses `setActiveLeaf` rather than `revealLeaf` because the latter
-   * requires Obsidian v1.7.2 and our manifest declares
-   * `minAppVersion: 1.4.0` — `setActiveLeaf` has the same observable
-   * effect (focus + render) and has been stable since pre-1.0.
-   */
-  async openRemoteTerminal(): Promise<void> {
-    if (this.openingTerminal) return;
-    this.openingTerminal = true;
-    try {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_REMOTE_TERMINAL);
-      if (existing.length > 0) {
-        this.app.workspace.setActiveLeaf(existing[0], { focus: true });
-        return;
+        await conn.rpc.call('fs.write', { path: fsPath, content: fsContent });
+        const fsRead = await conn.rpc.call<{ path?: string; content?: string }>('fs.read', { path: fsPath });
+        if (typeof fsRead.path !== 'string') {
+          throw new Error('fs.read did not return path');
+        }
+      } finally {
+        conn.close();
       }
-      const leaf = this.app.workspace.getRightLeaf(false);
-      if (!leaf) {
-        new Notice('Remote SSH: no available workspace leaf to open the terminal in');
-        return;
-      }
-      await leaf.setViewState({ type: VIEW_TYPE_REMOTE_TERMINAL, active: true });
-      this.app.workspace.setActiveLeaf(leaf, { focus: true });
-    } finally {
-      this.openingTerminal = false;
-    }
-  }
 
-  /**
-   * POC for the shadow-vault architecture (see
-   * docs/en/architecture/shadow-vault.md, Phase 1): walk the patched
-   * adapter, then hand the resulting entry list to `VaultModelBuilder`
-   * which materialises TFile/TFolder objects in `app.vault.fileMap`
-   * and fires `vault.trigger('create', file)` for each new file. File
-   * Explorer should redraw with the remote tree.
-   *
-   * Stat is intentionally skipped per file in this POC — every entry
-   * lands with zero ctime/mtime/size. Shadow-vault Phase 4 will
-   * decide whether to batch-stat at walk time or stat lazily.
-   *
-   * Run from a vault that's already connected to a profile via the
-   * existing in-place patch flow (Tier 1-A); the command is hidden
-   * unless `this.conn.client?.isAlive()`.
-   */
-  /**
-   * Walk the patched adapter and run `VaultModelBuilder` so File
-   * Explorer renders the remote tree. Public so both the debug
-   * command and the Phase 4 auto-connect flow share one path.
-   *
-   * Stat is intentionally skipped per file — every entry lands with
-   * zero ctime/mtime/size. Subsequent file accesses fault in real
-   * stat values via the patched adapter as needed; a Phase 6
-   * follow-up can switch to a daemon-side batch-stat if it shows
-   * up in profiles.
-   *
-   * Returns a short summary string suitable for a Notice; logs the
-   * full counts + first 5 errors via `logger.info`/`logger.warn`.
-   */
-  async populateVaultFromRemote(label: string = 'remote'): Promise<string> {
-    const start = Date.now();
-
-    // Phase E1-α.2: prefer the daemon's `fs.walk` (one RPC, real
-    // mtime+size per entry) when the active session is RPC AND the
-    // daemon advertises the capability. Otherwise BulkWalker
-    // transparently runs the legacy BFS via the patched adapter.
-    const walker = new BulkWalker({
-      adapter: this.app.vault.adapter,
-      rpcConnection: this.conn.rpcConnection ?? undefined,
-      // Older profiles have no walkIgnoreDirs → fall back to the
-      // sensible defaults so existing users immediately benefit. An
-      // explicit empty array (user cleared it) means "ignore nothing"
-      // and is respected (?? only fills null/undefined).
-      ignoreDirs: this.conn.activeProfile?.walkIgnoreDirs
-        ?? [...DEFAULT_WALK_IGNORE_DIRS],
-    });
-    const walk = await walker.walk('');
-    logger.info(
-      `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
-      `in ${walk.walkMs}ms (pages=${walk.pages})` +
-      (walk.fastPathError ? ` (fast-path fallback: ${walk.fastPathError})` : ''),
-    );
-
-    const builder = new VaultModelBuilder(this.app.vault, { TFile, TFolder });
-    const result = await builder.build(walk.entries);
-    const totalMs = Date.now() - start;
-
-    const summary =
-      `${result.filesAdded}f + ${result.foldersAdded}d built, ` +
-      `${result.skipped} skipped, ${result.errors.length} errors (${totalMs}ms)`;
-    if (result.errors.length > 0) {
-      logger.warn(
-        `populateVaultFromRemote(${label}): first 5 errors: ` +
-        JSON.stringify(result.errors.slice(0, 5), null, 2),
+      const latencyMs = Date.now() - started;
+      const result: MobileRelayRpcResult = {
+        timestamp,
+        status: 'PASS',
+        endpoint,
+        sessionId: conn.sessionId,
+        streamUrl: conn.streamUrl,
+        latencyMs,
+        serverName,
+        serverVersion,
+        fsPath,
+        detail: `auth/server.info/fs.write/fs.read ok; server=${serverName ?? '?'} version=${serverVersion ?? '?'}`,
+        note,
+      };
+      this.pushMobilePreviewLog(
+        `Relay RPC test: PASS (${endpoint}, latency=${latencyMs}ms, server=${serverName ?? '?'})`,
       );
-    }
-
-    // Don't let a failed/clipped populate look like a working-but-empty
-    // vault (the silent "remote files won't open" symptom). Surface it.
-    if (walk.entries.length === 0) {
-      new Notice(
-        'Remote SSH: 0 files found on the remote. Check the profile’s ' +
-        'remotePath actually points at the vault (see console.log).',
-        10_000,
-      );
-    } else if (walk.truncated) {
-      new Notice(
-        `Remote SSH: remote tree is very large — loaded ${walk.entries.length} ` +
-        'entries but it is still incomplete. Point the profile’s remotePath ' +
-        'at the vault folder, not a large parent directory (see console.log).',
-        15_000,
-      );
-    }
-    return summary;
-  }
-
-  /**
-   * Settings UI Connect button handler (Phase 3) and the underlying
-   * implementation of the shadow-vault flow.
-   *
-   * Bootstraps the shadow vault for `profile` (creates the dir,
-   * installs the plugin per-file, writes data.json with the
-   * auto-connect marker, registers the path in obsidian.json) and
-   * opens it in a new Obsidian window via the
-   * `obsidian://open?path=…` URL scheme.
-   *
-   * Does NOT require an SSH connection — the shadow vault setup is
-   * a local-disk operation; the connect happens later, inside the
-   * shadow window (Phase 4).
-   */
-  async openShadowVaultFor(profile: SshProfile): Promise<void> {
-    // Source dir: where this running plugin lives, so the shadow
-    // vault's plugin install symlinks the same bundle.
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
-      new Notice('Remote SSH: vault is not file-system-backed; cannot locate plugin source');
-      return;
-    }
-    const sourcePluginDir = path.join(adapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
-
-    // The spawned window can take several seconds to surface while
-    // Obsidian keeps THIS (source) window focused. Without this guard
-    // an impatient re-click re-bootstraps + re-fires obsidian://open,
-    // and the user just sees more churn — never the new window.
-    if (this.shadowSpawnInFlight) {
-      new Notice('Remote SSH: the remote vault is still opening — give it a moment');
-      return;
-    }
-    this.shadowSpawnInFlight = true;
-
-    // Shadow vaults live under ~/.obsidian-remote/vaults/ on every
-    // OS. os.homedir() resolves at runtime — no hardcoded user.
-    const baseDir = path.join(os.homedir(), '.obsidian-remote', 'vaults');
-
-    const registry = new ObsidianRegistry(ObsidianRegistry.defaultConfigPath());
-    const bootstrap = new ShadowVaultBootstrap(baseDir, sourcePluginDir, registry);
-    const spawner = new WindowSpawner();
-    const manager = new ShadowVaultManager(bootstrap, spawner);
-
-    try {
-      const result = await manager.openShadowFor(profile, this.settings.profiles);
-      const how = result.pluginInstallMethod;
-      const reg = result.registryCreated ? 'newly registered' : 'reused';
-      new Notice(`Remote SSH: opened ${profile.name} in new window (${how}, ${reg})`);
-      logger.info(
-        `openShadowVaultFor: profile=${profile.name}, vault=${result.layout.vaultDir}, ` +
-        `registry id=${result.registryId} (${reg}), plugin=${how}`,
-      );
-      // Spawn SUCCEEDED. The new window can take several seconds to
-      // surface while Obsidian keeps THIS one focused — hold the guard
-      // ~15s so an impatient double/triple-click can't fire a second
-      // spawn into that gap. `activeWindow.setTimeout` (not bare
-      // setTimeout) for Obsidian popout-window compatibility.
-      activeWindow.setTimeout(() => { this.shadowSpawnInFlight = false; }, 15_000);
+      return result;
     } catch (e) {
-      // Spawn FAILED — nothing is opening. Clear the guard NOW so the
-      // user can retry immediately; a 15s lockout here would strand
-      // them on a failed connect behind a misleading "still opening"
-      // (the original `finally` armed the timer on this path too).
-      this.shadowSpawnInFlight = false;
-      const msg = errorMessage(e);
-      logger.error(`openShadowVaultFor: ${msg}`);
-      new Notice(`Remote SSH: shadow vault failed — ${msg}`);
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const result: MobileRelayRpcResult = {
+        timestamp,
+        status: 'FAIL',
+        endpoint,
+        latencyMs,
+        detail: message,
+        note,
+      };
+      this.pushMobilePreviewLog(`Relay RPC test: FAIL (${endpoint}) — ${message}`);
+      return result;
     }
   }
 
-  /**
-   * Manual command-palette entry point for adapter patching. Used
-   * during development to inspect pre-patch behaviour or to re-patch
-   * after a manual restore.
-   */
-  private async debugPatchAdapter(): Promise<void> {
-    if (this.state !== SyncState.CONNECTED || !this.conn.activeRemoteBasePath) {
-      new Notice('Remote SSH: connect first');
-      return;
+  formatMobileRelayRpcReport(result: MobileRelayRpcResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile relay RPC test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Endpoint: ${result.endpoint || '(not configured)'}`);
+    if (result.relayCode) lines.push(`Relay code: ${result.relayCode}`);
+    if (result.sessionId) lines.push(`Session ID: ${result.sessionId}`);
+    if (result.streamUrl) lines.push(`Stream URL: ${result.streamUrl}`);
+    if (result.serverName) lines.push(`Server name: ${result.serverName}`);
+    if (result.serverVersion) lines.push(`Server version: ${result.serverVersion}`);
+    if (result.fsPath) lines.push(`FS path: ${result.fsPath}`);
+    if (typeof result.latencyMs === 'number') lines.push(`Latency: ${result.latencyMs}ms`);
+    lines.push(`Detail: ${result.detail}`);
+    lines.push(`Note: ${result.note}`);
+    return lines.join('\n');
+  }
+
+  async addMobileProfile(): Promise<void> {
+    this.mobileProfiles.push(this.createDefaultMobileProfile());
+    this.pushMobilePreviewLog(`Profile added: total=${this.mobileProfiles.length}`);
+    await this.persistMobilePreviewState();
+  }
+
+  async updateMobileProfile(id: string, patch: Partial<MobileProfile>): Promise<void> {
+    const idx = this.mobileProfiles.findIndex(p => p.id === id);
+    if (idx < 0) return;
+    this.mobileProfiles[idx] = { ...this.mobileProfiles[idx], ...patch };
+    await this.persistMobilePreviewState();
+  }
+
+  async removeMobileProfile(id: string): Promise<void> {
+    this.mobileProfiles = this.mobileProfiles.filter(p => p.id !== id);
+    this.pushMobilePreviewLog(`Profile removed: total=${this.mobileProfiles.length}`);
+    await this.persistMobilePreviewState();
+  }
+
+  async clearMobilePreviewLogs(): Promise<void> {
+    this.mobilePreviewLogs = [];
+    await this.persistMobilePreviewState();
+  }
+
+  runMobileVerification(): MobileVerificationResult {
+    const timestamp = new Date().toISOString();
+    const issues: MobileVerificationIssue[] = [];
+    const warnings: string[] = [];
+    const profiles = this.mobileProfiles;
+    const duplicateKeys = new Map<string, number>();
+    const duplicateNames = new Map<string, number>();
+    const invalidProfileIds = new Set<string>();
+
+    for (const p of profiles) {
+      const profileName = p.name?.trim() || '(unnamed)';
+      const host = p.host?.trim() ?? '';
+      const username = p.username?.trim() ?? '';
+      const remotePath = p.remotePath?.trim() ?? '';
+
+      if (!p.name?.trim()) {
+        issues.push({ profileId: p.id, profileName, field: 'name', message: 'Name is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!host) {
+        issues.push({ profileId: p.id, profileName, field: 'host', message: 'Host is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!username) {
+        issues.push({ profileId: p.id, profileName, field: 'username', message: 'Username is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!remotePath) {
+        issues.push({ profileId: p.id, profileName, field: 'remotePath', message: 'Remote path is required' });
+        invalidProfileIds.add(p.id);
+      }
+      if (!Number.isFinite(p.port) || p.port < 1 || p.port > 65535) {
+        issues.push({ profileId: p.id, profileName, field: 'port', message: 'Port must be between 1 and 65535' });
+        invalidProfileIds.add(p.id);
+      }
+
+      if (host.includes(' ')) {
+        warnings.push(`${profileName}: host contains whitespace`);
+      }
+      if (host === 'localhost' || host === '127.0.0.1') {
+        warnings.push(`${profileName}: host points to local device (${host}); verify this is intended`);
+      }
+      if (remotePath && !remotePath.startsWith('/')) {
+        warnings.push(`${profileName}: remote path is not absolute (${remotePath})`);
+      }
+      if (remotePath.endsWith('/')) {
+        warnings.push(`${profileName}: remote path has trailing slash (${remotePath})`);
+      }
+
+      const transport = p.transport ?? 'sftp';
+      if (transport !== 'relay-rpc') {
+        warnings.push(
+          `${profileName}: transport=${transport}; mobile desktop-equivalent path is relay-rpc (direct SSH can fail by runtime)`,
+        );
+      }
+      if (transport === 'relay-rpc') {
+        const relayEndpoint = p.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint.trim();
+        if (!relayEndpoint) {
+          warnings.push(`${profileName}: transport=relay-rpc but relay endpoint is not configured`);
+        }
+      }
+
+      duplicateNames.set(profileName, (duplicateNames.get(profileName) ?? 0) + 1);
+      const key = `${username}@${host}:${p.port}:${remotePath}`;
+      duplicateKeys.set(key, (duplicateKeys.get(key) ?? 0) + 1);
     }
-    if (this.adapterMgr.isPatched()) {
-      new Notice('Remote SSH: adapter already patched');
-      return;
+
+    for (const [name, count] of duplicateNames.entries()) {
+      if (name !== '(unnamed)' && count > 1) {
+        warnings.push(`Duplicate profile name detected (${count}x): ${name}`);
+      }
     }
-    const transportLabel = this.conn.rpcConnection ? 'RPC' : 'SFTP';
-    const ok = await this.adapterMgr.patch();
-    if (ok) {
-      new Notice(`Remote SSH: adapter patched via ${transportLabel}`);
+    for (const [key, count] of duplicateKeys.entries()) {
+      if (count > 1) {
+        warnings.push(`Duplicate endpoint+path detected (${count}x): ${key}`);
+      }
+    }
+
+    const status: 'PASS' | 'WARN' | 'FAIL' =
+      invalidProfileIds.size > 0 ? 'FAIL' : (warnings.length > 0 ? 'WARN' : 'PASS');
+
+    const result: MobileVerificationResult = {
+      timestamp,
+      status,
+      totalProfiles: profiles.length,
+      invalidProfiles: invalidProfileIds.size,
+      issues,
+      warnings,
+    };
+
+    this.pushMobilePreviewLog(
+      `Verification suite: status=${result.status}, total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`,
+    );
+    return result;
+  }
+
+  formatMobileVerificationReport(result: MobileVerificationResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile verification report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(`Profiles: total=${result.totalProfiles}, invalid=${result.invalidProfiles}, warnings=${result.warnings.length}`);
+    if (result.warnings.length > 0) {
+      lines.push('Warnings:');
+      for (const w of result.warnings) lines.push(`- ${w}`);
+    }
+    if (result.issues.length > 0) {
+      lines.push('Issues:');
+      for (const i of result.issues) {
+        lines.push(`- ${i.profileName} (${i.profileId}) [${i.field}] ${i.message}`);
+      }
     } else {
-      new Notice('Remote SSH: adapter patch failed (see console.log)');
+      lines.push('Issues: none');
     }
+    return lines.join('\n');
   }
 
-  private debugRestoreAdapter(): void {
-    if (!this.adapterMgr.isPatched()) {
-      new Notice('Remote SSH: adapter is not patched');
-      return;
-    }
-    this.adapterMgr.restore();
-    new Notice('Remote SSH: adapter restored');
-  }
-
-  private async debugListRoot(): Promise<void> {
-    try {
-      const out = await this.app.vault.adapter.list('');
-      const via = this.adapterMgr.isPatched() ? 'PATCHED (SFTP)' : 'ORIGINAL (local)';
-      logger.info(`debugListRoot via ${via}: ${out.files.length} files, ${out.folders.length} folders`);
-      logger.info(`  files (first 5): ${out.files.slice(0, 5).join(', ')}`);
-      logger.info(`  folders (first 5): ${out.folders.slice(0, 5).join(', ')}`);
-      new Notice(`List via ${via}: ${out.files.length} files, ${out.folders.length} folders (see console.log)`);
-    } catch (e) {
-      logger.error(`debugListRoot failed: ${errorMessage(e)}`);
-      new Notice(`debugListRoot failed: ${errorMessage(e)}`);
-    }
-  }
-
-  /**
-   * Full α-path round-trip with auto-deploy:
-   *   1. Locate the staged daemon binary inside the plugin folder.
-   *   2. Upload it over the existing SFTP session, kill any prior
-   *      daemon, start the new one with `nohup`, wait for the token
-   *      to land on disk.
-   *   3. Open a unix-socket Duplex through the same SSH connection.
-   *   4. Run `auth` + `server.info`.
-   *   5. Smoke-list `activeRemoteBasePath` via `RpcRemoteFsClient`.
-   *
-   * Each step logs to `console.log` so the daemon and plugin can be
-   * debugged in tandem. Optional overrides on the active profile
-   * (`rpcSocketPath`, `rpcTokenPath`) are honoured; both default to
-   * `.obsidian-remote/{server.sock,token}` (home-relative).
-   */
-  private async debugTestRpcTunnel(): Promise<void> {
-    if (this.state !== SyncState.CONNECTED || !this.conn.client.isAlive()) {
-      new Notice('Remote SSH: connect first (the tunnel rides on SFTP)');
-      return;
-    }
-    const activeId = this.settings.activeProfileId;
-    const profile = this.settings.profiles.find(p => p.id === activeId);
-    if (!profile) {
-      new Notice('Remote SSH: no active profile');
-      return;
-    }
-
-    const localBinaryPath = this.locateDaemonBinary();
-    if (!localBinaryPath) {
-      new Notice(
-        'Remote SSH: daemon binary not staged. ' +
-        'Run `npm run build:server` (or `build:full`) and reload the plugin.',
-      );
-      return;
-    }
-
-    const remoteVaultRoot = normalizeRemotePath(profile.remotePath);
-    const remoteBinaryPath = '.obsidian-remote/server';
-    const remoteSocketPath = profile.rpcSocketPath?.trim() || '.obsidian-remote/server.sock';
-    const remoteTokenPath  = profile.rpcTokenPath?.trim()  || '.obsidian-remote/token';
-
-    logger.info(`debugTestRpcTunnel: local binary = ${localBinaryPath}`);
-    logger.info(`debugTestRpcTunnel: remote vault = ${remoteVaultRoot}`);
-    logger.info(`debugTestRpcTunnel: remote socket = ${remoteSocketPath}`);
-
-    let connection: Awaited<ReturnType<typeof establishRpcConnection>> | null = null;
-    try {
-      const deployer = new ServerDeployer(this.conn.client);
-      const deploy = await deployer.deploy({
-        localBinaryPath,
-        remoteBinaryPath,
-        remoteVaultRoot,
-        remoteSocketPath,
-        remoteTokenPath,
-      });
-      logger.info(`debugTestRpcTunnel: daemon up; token len=${deploy.token.length}`);
-
-      const stream = await this.conn.client.openUnixStream(deploy.remoteSocketPath);
-      connection = await establishRpcConnection({ stream, token: deploy.token });
-
-      const rpcFs = new RpcRemoteFsClient(connection.rpc);
-      const entries = await rpcFs.list(remoteVaultRoot);
-      logger.info(`debugTestRpcTunnel: list("${remoteVaultRoot}") returned ${entries.length} entries`);
-      for (const e of entries.slice(0, 5)) {
-        logger.info(`  - ${e.name} (${e.isDirectory ? 'dir' : 'file'}, ${e.size}B, mtime ${e.mtime})`);
-      }
-      new Notice(
-        `RPC OK: daemon ${connection.info.version}, ${entries.length} entries at "${remoteVaultRoot}" ` +
-        `(see console.log)`,
-      );
-    } catch (e) {
-      const msg = errorMessage(e);
-      logger.error(`debugTestRpcTunnel failed: ${msg}`);
-      new Notice(`RPC test failed: ${msg}`);
-    } finally {
-      try { connection?.close(); } catch { /* ignore */ }
-    }
-  }
-
-  /**
-   * Resolve the staged Linux/amd64 daemon binary that lives next to
-   * `main.js` in the plugin's vault folder. Returns the absolute path
-   * or `null` if the binary hasn't been built (run `npm run
-   * build:server` to populate it). Other architectures land in
-   * follow-up phases.
-   */
-  private locateDaemonBinary(): string | null {
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) return null;
-    const candidate = path.join(
-      adapter.getBasePath(),
-      this.app.vault.configDir, 'plugins', this.manifest.id,
-      'server-bin', 'obsidian-remote-server-linux-amd64',
+  private shouldRetryRelayRpcFailure(detail: string): boolean {
+    const d = detail.toLowerCase();
+    return (
+      d.includes('timed out')
+      || d.includes('timeout')
+      || d.includes('websocket')
+      || d.includes('network')
+      || d.includes('fetch')
+      || d.includes('closed before session.ready')
+      || d.includes('stream test failed before rpc')
     );
-    return fs.existsSync(candidate) ? candidate : null;
   }
 
-  isConnected(): boolean {
-    return this.state === SyncState.CONNECTED;
+  private async waitMs(ms: number): Promise<void> {
+    await new Promise<void>(resolve => setTimeout(resolve, ms));
   }
 
-  private setState(s: SyncState) {
-    this.state = s;
-    this.statusBar?.update(s);
+  private classifyProbeError(message: string): { outcome: 'WARN' | 'FAIL'; detail: string } {
+    const m = message.toLowerCase();
+    if (m.includes('timed out') || m.includes('timeout')) {
+      return { outcome: 'FAIL', detail: 'timeout while reaching host/port' };
+    }
+    if (m.includes('ssl') || m.includes('certificate') || m.includes('handshake')) {
+      return {
+        outcome: 'WARN',
+        detail: 'host reachable but TLS/HTTP mismatch (expected on SSH port in many cases)',
+      };
+    }
+    if (m.includes('fetch') || m.includes('network') || m.includes('dns')) {
+      return { outcome: 'FAIL', detail: 'network unreachable or host not resolvable from this device' };
+    }
+    return { outcome: 'WARN', detail: `indeterminate response: ${message}` };
   }
 
-  /**
-   * Command-palette / status-bar entry point that mirrors the
-   * Settings UI's Connect button: pick a profile, then open it as a
-   * shadow vault in a new Obsidian window. The original window is
-   * never patched in-place anymore.
-   */
-  private promptConnect() {
-    const { profiles } = this.settings;
-    if (profiles.length === 0) {
-      new Notice('Remote SSH: no profiles configured. Open settings to add one.');
+  async runMobileConnectionProbe(): Promise<MobileConnectionProbeResult> {
+    const timestamp = new Date().toISOString();
+    const entries: MobileConnectionProbeEntry[] = [];
+    const note =
+      'Best-effort probe via HTTP(S) request to host:port. This is not an SSH handshake test, '
+      + 'but helps detect obvious reachability problems from mobile.';
+
+    for (const p of this.mobileProfiles) {
+      const profileName = p.name?.trim() || '(unnamed)';
+      const host = p.host?.trim() ?? '';
+      const remotePath = p.remotePath?.trim() ?? '';
+      const username = p.username?.trim() ?? '';
+      const target = `${host}:${p.port}`;
+
+      if (!host || !username || !remotePath || !Number.isFinite(p.port) || p.port < 1 || p.port > 65535) {
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: 'SKIP',
+          detail: 'profile has missing/invalid required fields',
+        });
+        continue;
+      }
+
+      const started = Date.now();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+      try {
+        // HTTP probe only: quick signal that host:port is reachable from mobile.
+        await fetch(`http://${host}:${p.port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+        const latencyMs = Date.now() - started;
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: 'WARN',
+          detail: 'port responded to HTTP probe (reachable, but service may not be SSH)',
+          latencyMs,
+        });
+      } catch (e) {
+        const latencyMs = Date.now() - started;
+        const raw = e instanceof Error ? e.message : String(e);
+        const classified = this.classifyProbeError(raw);
+        entries.push({
+          profileId: p.id,
+          profileName,
+          target,
+          outcome: classified.outcome,
+          detail: classified.detail,
+          latencyMs,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
+    const attempted = entries.filter(e => e.outcome !== 'SKIP').length;
+    const pass = entries.filter(e => e.outcome === 'PASS').length;
+    const warn = entries.filter(e => e.outcome === 'WARN').length;
+    const fail = entries.filter(e => e.outcome === 'FAIL').length;
+    const skip = entries.filter(e => e.outcome === 'SKIP').length;
+    const status: 'PASS' | 'WARN' | 'FAIL' =
+      fail > 0 ? 'FAIL' : (warn > 0 ? 'WARN' : 'PASS');
+
+    const result: MobileConnectionProbeResult = {
+      timestamp,
+      status,
+      attempted,
+      pass,
+      warn,
+      fail,
+      skip,
+      entries,
+      note,
+    };
+
+    this.pushMobilePreviewLog(
+      `Connection probe: status=${status}, attempted=${attempted}, pass=${pass}, warn=${warn}, fail=${fail}, skip=${skip}`,
+    );
+
+    return result;
+  }
+
+  formatMobileConnectionProbeReport(result: MobileConnectionProbeResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile connection probe report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(
+      `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
+    );
+    lines.push(`Note: ${result.note}`);
+    lines.push('Entries:');
+    for (const e of result.entries) {
+      const latency = typeof e.latencyMs === 'number' ? `, latency=${e.latencyMs}ms` : '';
+      lines.push(`- ${e.profileName} (${e.target}) -> ${e.outcome}: ${e.detail}${latency}`);
+    }
+    if (result.entries.length === 0) {
+      lines.push('- (no profiles)');
+    }
+    return lines.join('\n');
+  }
+
+  private toSshProfile(profile: MobileProfile): SshProfile {
+    return {
+      id: profile.id,
+      name: profile.name,
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      authMethod: profile.authMethod,
+      passwordRef: profile.passwordRef,
+      privateKeyPath: profile.privateKeyPath,
+      passphraseRef: profile.passphraseRef,
+      agentSocket: profile.agentSocket,
+      hostKeyFingerprint: profile.hostKeyFingerprint,
+      remotePath: profile.remotePath,
+      connectTimeoutMs: profile.connectTimeoutMs,
+      keepaliveIntervalMs: profile.keepaliveIntervalMs,
+      keepaliveCountMax: profile.keepaliveCountMax,
+      transport: profile.transport,
+      relayBaseUrl: profile.relayBaseUrl,
+      relayAuthToken: profile.relayAuthToken,
+      relayRpcUsername: profile.relayRpcUsername,
+      relayRpcPassword: profile.relayRpcPassword,
+      jumpHost: profile.jumpHost,
+    };
+  }
+
+  async runMobileSshConnectTest(): Promise<MobileSshConnectResult> {
+    const timestamp = new Date().toISOString();
+    const note = 'Attempts a real SSH connect through SftpClient using the active mobile profile.';
+    const attempts: MobileSshConnectAttempt[] = [];
+    const profile = this.getPrimaryMobileProfile();
+    const relayConfig = this.resolveRelayRuntimeConfig(profile);
+    const profileTransport = profile?.transport ?? 'sftp';
+
+    // Desktop parity on mobile: honor profile transport first.
+    if (profileTransport === 'relay-rpc' || relayConfig.endpoint.length > 0) {
+      const maxRelayAttempts = 3;
+      let relay = await this.runMobileRelayRpcTest();
+      let relayAttempts = 1;
+      while (
+        relay.status === 'FAIL'
+        && relayAttempts < maxRelayAttempts
+        && this.shouldRetryRelayRpcFailure(relay.detail)
+      ) {
+        const backoffMs = 400 * relayAttempts;
+        this.pushMobilePreviewLog(
+          `Relay mainline retry: attempt=${relayAttempts + 1}/${maxRelayAttempts}, backoff=${backoffMs}ms`,
+        );
+        await this.waitMs(backoffMs);
+        relay = await this.runMobileRelayRpcTest();
+        relayAttempts += 1;
+      }
+      const mappedStatus: 'PASS' | 'WARN' | 'FAIL' = relay.status;
+      const attempt: MobileSshConnectAttempt = {
+        profileId: profile?.id ?? '(none)',
+        profileName: profile?.name ?? '(none)',
+        target: relay.endpoint || '(relay endpoint not configured)',
+        status: mappedStatus,
+        detail:
+          `relay mainline: ${relay.detail}; attempts=${relayAttempts}`
+          + (relay.streamUrl ? ` (stream=${relay.streamUrl})` : ''),
+        latencyMs: relay.latencyMs,
+      };
+      return {
+        timestamp,
+        status: mappedStatus,
+        attempted: 1,
+        pass: mappedStatus === 'PASS' ? 1 : 0,
+        warn: mappedStatus === 'WARN' ? 1 : 0,
+        fail: mappedStatus === 'FAIL' ? 1 : 0,
+        skip: 0,
+        note:
+          'Transport is relay-rpc (or relay endpoint is configured), so mobile mainline connect test '
+          + `uses relay JSON-RPC (auth/server.info/fs.write/fs.read) instead of direct SSH. retry<=${maxRelayAttempts}.`,
+        attempts: [attempt],
+      };
+    }
+
+    if (!this.hasBufferGlobal()) {
+      const capabilitySummary = this.getRuntimeCapabilitySummary();
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'WARN',
+        attempted: 0,
+        pass: 0,
+        warn: 1,
+        fail: 0,
+        skip: 1,
+        note,
+        attempts: [
+          {
+            profileId: '(none)',
+            profileName: '(none)',
+            target: '(none)',
+            status: 'WARN',
+            detail: `Buffer global is unavailable in this runtime; SSH connect test cannot start (${capabilitySummary})`,
+          },
+        ],
+      };
+      this.pushMobilePreviewLog(`SSH connect test: skipped (Buffer global unavailable; ${capabilitySummary})`);
+      return result;
+    }
+
+    if (!profile) {
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'WARN',
+        attempted: 0,
+        pass: 0,
+        warn: 0,
+        fail: 0,
+        skip: 1,
+        note,
+        attempts: [
+          {
+            profileId: '(none)',
+            profileName: '(none)',
+            target: '(none)',
+            status: 'SKIP',
+            detail: 'no profiles configured',
+          },
+        ],
+      };
+      this.pushMobilePreviewLog('SSH connect test: skipped (no profiles configured)');
+      return result;
+    }
+
+    const target = `${profile.host}:${profile.port}`;
+    const started = Date.now();
+    try {
+      const [{ SftpClient }, { AuthResolver }, { HostKeyStore }, { SecretStore }] = await Promise.all([
+        import('./ssh/SftpClient'),
+        import('./ssh/AuthResolver'),
+        import('./ssh/HostKeyStore'),
+        import('./ssh/SecretStore'),
+      ]);
+
+      const secretStore = new SecretStore();
+      const authResolver = new AuthResolver(secretStore);
+      const hostKeyStore = new HostKeyStore();
+      const client = new SftpClient(authResolver, hostKeyStore);
+      const sshProfile = this.toSshProfile(profile);
+
+      await client.connect(sshProfile);
+      await client.disconnect();
+
+      const latencyMs = Date.now() - started;
+      attempts.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        target,
+        status: 'PASS',
+        detail: 'SSH connect succeeded and disconnected cleanly',
+        latencyMs,
+      });
+
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status: 'PASS',
+        attempted: 1,
+        pass: 1,
+        warn: 0,
+        fail: 0,
+        skip: 0,
+        note,
+        attempts,
+      };
+      this.pushMobilePreviewLog(`SSH connect test: PASS (${profile.name})`);
+      return result;
+    } catch (e) {
+      const latencyMs = Date.now() - started;
+      const message = e instanceof Error ? e.message : String(e);
+      const lower = message.toLowerCase();
+      const status: 'WARN' | 'FAIL' =
+        lower.includes('no password stored') ||
+        lower.includes('no private key path') ||
+        lower.includes('ssh agent requested')
+          ? 'WARN'
+          : 'FAIL';
+      attempts.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        target,
+        status,
+        detail: message,
+        latencyMs,
+      });
+
+      const result: MobileSshConnectResult = {
+        timestamp,
+        status,
+        attempted: 1,
+        pass: 0,
+        warn: status === 'WARN' ? 1 : 0,
+        fail: status === 'FAIL' ? 1 : 0,
+        skip: 0,
+        note,
+        attempts,
+      };
+      this.pushMobilePreviewLog(`SSH connect test: ${status} (${profile.name}) — ${message}`);
+      return result;
+    }
+  }
+
+  formatMobileSshConnectReport(result: MobileSshConnectResult): string {
+    const lines: string[] = [];
+    lines.push(`Mobile SSH connect test report @ ${result.timestamp}`);
+    lines.push(this.getMobileReportMetaLine());
+    lines.push(`Status: ${result.status}`);
+    lines.push(
+      `Summary: attempted=${result.attempted}, pass=${result.pass}, warn=${result.warn}, fail=${result.fail}, skip=${result.skip}`,
+    );
+    lines.push(`Note: ${result.note}`);
+    lines.push('Attempts:');
+    for (const a of result.attempts) {
+      const latency = typeof a.latencyMs === 'number' ? `, latency=${a.latencyMs}ms` : '';
+      lines.push(`- ${a.profileName} (${a.target}) -> ${a.status}: ${a.detail}${latency}`);
+    }
+    return lines.join('\n');
+  }
+
+  async onload(): Promise<void> {
+    this.ensureBufferGlobal();
+    const saved = (await this.loadData()) as {
+      mobilePreviewLogs?: string[];
+      profiles?: Array<Partial<MobileProfile>>;
+      relay?: Partial<MobileRelayConfig>;
+    } | null;
+    this.mobileSessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.mobilePreviewLogs = Array.isArray(saved?.mobilePreviewLogs)
+      ? saved.mobilePreviewLogs.filter((v): v is string => typeof v === 'string').slice(-200)
+      : [];
+    this.mobileProfiles = Array.isArray(saved?.profiles)
+      ? saved.profiles
+        .filter((v): v is Partial<MobileProfile> => typeof v === 'object' && v !== null)
+        .map(v => ({
+          ...this.createDefaultMobileProfile(),
+          ...v,
+          id: typeof v.id === 'string' && v.id.length > 0 ? v.id : this.createDefaultMobileProfile().id,
+          port: Number.isFinite(v.port) ? Number(v.port) : 22,
+          transport:
+            v.transport === 'sftp' || v.transport === 'rpc' || v.transport === 'relay-rpc'
+              ? v.transport
+              : 'sftp',
+          authMethod:
+            v.authMethod === 'privateKey' || v.authMethod === 'agent' || v.authMethod === 'password'
+              ? v.authMethod
+              : 'password',
+          relayBaseUrl: typeof v.relayBaseUrl === 'string' ? v.relayBaseUrl : '',
+          relayAuthToken: typeof v.relayAuthToken === 'string' ? v.relayAuthToken : '',
+          relayRpcUsername: typeof v.relayRpcUsername === 'string' ? v.relayRpcUsername : '',
+          relayRpcPassword: typeof v.relayRpcPassword === 'string' ? v.relayRpcPassword : '',
+        }))
+      : [];
+    this.mobileRelayConfig = {
+      ...this.createDefaultMobileRelayConfig(),
+      ...(saved?.relay ?? {}),
+      endpoint: typeof saved?.relay?.endpoint === 'string' ? saved.relay.endpoint : '',
+      authToken: typeof saved?.relay?.authToken === 'string' ? saved.relay.authToken : '',
+      rpcUsername: typeof saved?.relay?.rpcUsername === 'string' ? saved.relay.rpcUsername : '',
+      rpcPassword: typeof saved?.relay?.rpcPassword === 'string' ? saved.relay.rpcPassword : '',
+    };
+
+    if (Platform.isMobileApp) {
+      this.mobilePreviewMode = true;
+      this.addSettingTab(new MobileSettingsTab(this.app, this));
+      this.pushMobilePreviewLog('Activated mobile preview mode');
+      this.addCommand({
+        id: 'mobile-status',
+        name: 'Mobile status (preview)',
+        callback: () => {
+          this.pushMobilePreviewLog('Executed command: mobile-status');
+          new Notice(
+            'Remote SSH: mobile preview mode. Activation succeeded; desktop runtime is gated in this phase.',
+          );
+        },
+      });
+      this.addCommand({
+        id: 'mobile-copy-preview-logs',
+        name: 'Mobile: copy preview logs',
+        callback: () => {
+          const body = this.mobilePreviewLogs.length === 0
+            ? '(no logs)'
+            : this.mobilePreviewLogs.join('\n');
+          void navigator.clipboard.writeText(body);
+          this.pushMobilePreviewLog('Executed command: mobile-copy-preview-logs');
+          new Notice('Remote SSH: preview logs copied');
+        },
+      });
+      this.addCommand({
+        id: 'mobile-validate-profiles',
+        name: 'Mobile: validate profile settings',
+        callback: () => {
+          const result = this.runMobileVerification();
+          if (result.totalProfiles === 0) {
+            this.pushMobilePreviewLog('Profile validation: no profiles configured');
+            new Notice('Remote SSH: no profiles configured yet');
+            return;
+          }
+          this.pushMobilePreviewLog(`Profile validation: total=${result.totalProfiles}, invalid=${result.invalidProfiles}`);
+          if (result.invalidProfiles === 0) {
+            new Notice(`Remote SSH: profile settings look good (${result.totalProfiles} profiles)`);
+            return;
+          }
+          new Notice(`Remote SSH: ${result.invalidProfiles}/${result.totalProfiles} profiles have invalid fields`);
+        },
+      });
+      this.addCommand({
+        id: 'mobile-copy-verification-report',
+        name: 'Mobile: copy verification report',
+        callback: () => {
+          const result = this.runMobileVerification();
+          const report = this.formatMobileVerificationReport(result);
+          void navigator.clipboard.writeText(report);
+          this.pushMobilePreviewLog('Executed command: mobile-copy-verification-report');
+          new Notice('Remote SSH: verification report copied');
+        },
+      });
+      this.addCommand({
+        id: 'mobile-run-connection-probe',
+        name: 'Mobile: run connection probe',
+        callback: async () => {
+          const result = await this.runMobileConnectionProbe();
+          if (result.attempted === 0) {
+            new Notice('Remote SSH: connection probe skipped (no valid profiles)');
+            return;
+          }
+          if (result.status === 'PASS') {
+            new Notice('Remote SSH: connection probe passed');
+            return;
+          }
+          if (result.status === 'WARN') {
+            new Notice(`Remote SSH: connection probe completed with ${result.warn} warnings`);
+            return;
+          }
+          new Notice(`Remote SSH: connection probe failed (${result.fail} failures)`);
+        },
+      });
+      this.addCommand({
+        id: 'mobile-copy-connection-probe-report',
+        name: 'Mobile: copy connection probe report',
+        callback: async () => {
+          const result = await this.runMobileConnectionProbe();
+          const report = this.formatMobileConnectionProbeReport(result);
+          void navigator.clipboard.writeText(report);
+          this.pushMobilePreviewLog('Executed command: mobile-copy-connection-probe-report');
+          new Notice('Remote SSH: connection probe report copied');
+        },
+      });
+      new Notice('Remote SSH: mobile preview mode enabled');
       return;
     }
-    new ConnectModal(
-      this.app,
-      profiles,
-      this.authResolver,
-      profile => this.openShadowVaultFor(profile),
-    ).open();
+
+    const mod = await import('./main.desktop');
+    const DesktopPluginClass = mod.default as new (app: App, manifest: PluginManifest) => DesktopPlugin;
+    this.desktopDelegate = new DesktopPluginClass(this.app, this.manifest);
+    await this.desktopDelegate.onload();
   }
 
-  private onStatusBarClick() {
-    if (this.state === SyncState.IDLE || this.state === SyncState.ERROR) {
-      this.promptConnect();
-    } else if (this.state === SyncState.CONNECTED) {
-      void this.disconnect();
+  onunload(): void {
+    if (this.mobilePreviewMode) {
+      this.pushMobilePreviewLog('Unloaded mobile preview mode');
+      return;
     }
+    this.desktopDelegate?.onunload();
   }
 }
 
