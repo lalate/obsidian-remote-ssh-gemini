@@ -83,26 +83,101 @@ describe('BulkWalker', () => {
     expect(callSpy).toHaveBeenCalledWith('fs.walk', { path: '', recursive: true, maxEntries: 7 });
   });
 
-  // ─── fast path → fallback (truncated, error) ────────────────────────────
+  it('passes ignoreDirs through to fs.walk as `ignore`', async () => {
+    const adapter = makeAdapter({});
+    const callSpy = vi.fn(async () => ({ entries: [], truncated: false } as WalkResult));
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: callSpy as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({
+      adapter, rpcConnection: rpc, ignoreDirs: ['node_modules', '.git'],
+    });
 
-  it('falls back to per-folder list when the daemon returns truncated=true', async () => {
-    const adapter = makeAdapter({
-      '': { folders: ['docs'], files: ['README.md'] },
-      'docs': { files: ['docs/a.md'] },
+    await walker.walk('');
+
+    expect(callSpy).toHaveBeenCalledWith('fs.walk', {
+      path: '', recursive: true, ignore: ['node_modules', '.git'],
     });
-    const { rpc } = makeRpc(['fs.walk'], {
-      entries: [{ path: 'partial.md', type: 'file', mtime: 1, size: 1 }],
-      truncated: true,
+  });
+
+  it('omits `ignore` when ignoreDirs is empty or unset', async () => {
+    const adapter = makeAdapter({});
+    const callSpy = vi.fn(async () => ({ entries: [], truncated: false } as WalkResult));
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: callSpy as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({ adapter, rpcConnection: rpc, ignoreDirs: [] });
+
+    await walker.walk('');
+
+    expect(callSpy).toHaveBeenCalledWith('fs.walk', { path: '', recursive: true });
+  });
+
+  // ─── fast path pagination + fallback-on-error ───────────────────────────
+
+  it('paginates: drains every page with an increasing offset, no fallback', async () => {
+    // The bug this guards: a truncated page used to be DISCARDED and
+    // replaced by an unbounded per-folder BFS that never finished on a
+    // huge tree → empty vault. Now it must page through and return the
+    // FULL stitched tree via rpc-walk.
+    const pages: WalkResult[] = [
+      { entries: [
+        { path: 'a.md', type: 'file', mtime: 1, size: 1 },
+        { path: 'b.md', type: 'file', mtime: 2, size: 2 },
+      ], truncated: true },
+      { entries: [
+        { path: 'c.md', type: 'file', mtime: 3, size: 3 },
+        { path: 'd.md', type: 'file', mtime: 4, size: 4 },
+      ], truncated: true },
+      { entries: [
+        { path: 'e.md', type: 'file', mtime: 5, size: 5 },
+      ], truncated: false },
+    ];
+    const seenOffsets: Array<number | undefined> = [];
+    const call = vi.fn(async (_m: string, p: { offset?: number }) => {
+      seenOffsets.push(p.offset);
+      return pages.shift()!;
     });
-    const walker = new BulkWalker({ adapter, rpcConnection: rpc });
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: call as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({ adapter: makeAdapter({}), rpcConnection: rpc });
 
     const result = await walker.walk('');
 
-    expect(result.source).toBe('fallback-list');
-    expect(result.fastPathError).toBe('truncated');
-    expect(result.entries.map(e => e.path).sort()).toEqual(['README.md', 'docs', 'docs/a.md']);
-    // Fallback fills mtime/size with zeros (matches pre-walker behaviour).
-    expect(result.entries.every(e => e.mtime === 0 && e.size === 0)).toBe(true);
+    expect(result.source).toBe('rpc-walk');
+    expect(result.truncated).toBe(false);
+    expect(result.fastPathError).toBeNull();
+    expect(result.pages).toBe(3);
+    expect(result.entries.map(e => e.path)).toEqual(['a.md', 'b.md', 'c.md', 'd.md', 'e.md']);
+    // Real mtime/size preserved across pages (fast path, not the zeroed fallback).
+    expect(result.entries[4]).toMatchObject({ path: 'e.md', mtime: 5, size: 5 });
+    // Page 1 has no offset; pages 2/3 carry the running total.
+    expect(seenOffsets).toEqual([undefined, 2, 4]);
+  });
+
+  it('stops at the empty-page guard when the daemon truncates but delivers nothing', async () => {
+    const pages: WalkResult[] = [
+      { entries: [{ path: 'a.md', type: 'file', mtime: 1, size: 1 }], truncated: true },
+      { entries: [], truncated: true }, // daemon can't advance — must not spin
+    ];
+    const call = vi.fn(async () => pages.shift()!);
+    const rpc: RpcConnectionSlice = {
+      info: { capabilities: ['fs.walk'] },
+      rpc: { call: call as unknown as RpcConnectionSlice['rpc']['call'] },
+    };
+    const walker = new BulkWalker({ adapter: makeAdapter({}), rpcConnection: rpc });
+
+    const result = await walker.walk('');
+
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(result.source).toBe('rpc-walk');
+    expect(result.truncated).toBe(true);          // incomplete, surfaced
+    expect(result.fastPathError).toBe('page-guard');
+    expect(result.entries.map(e => e.path)).toEqual(['a.md']);
   });
 
   it('falls back when the fs.walk RPC throws', async () => {

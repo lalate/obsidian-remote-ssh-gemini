@@ -6,6 +6,7 @@ import {
   normalizeRemotePath,
   posixJoin,
   relativeTo,
+  sameRemotePath,
   toLocalPath,
   toRemotePath,
 } from '../src/util/pathUtils';
@@ -99,5 +100,60 @@ describe('path utility helpers', () => {
 
   it('expandHome leaves non-tilde paths unchanged', () => {
     expect(expandHome('/srv/vault')).toBe('/srv/vault');
+  });
+});
+
+describe('sameRemotePath (RPC daemon vault-root validation)', () => {
+  it('equal paths match', () => {
+    expect(sameRemotePath('/home/souta/work', '/home/souta/work')).toBe(true);
+  });
+
+  it('trailing slash is ignored on either side', () => {
+    expect(sameRemotePath('/home/souta/work/', '/home/souta/work')).toBe(true);
+    expect(sameRemotePath('/home/souta/work', '/home/souta/work/')).toBe(true);
+    expect(sameRemotePath('/home/souta/work//', '/home/souta/work')).toBe(true);
+  });
+
+  it('surrounding whitespace is ignored', () => {
+    expect(sameRemotePath('  /home/souta/work  ', '/home/souta/work')).toBe(true);
+  });
+
+  it('a deeper/old root does NOT match the wanted root (the field bug)', () => {
+    // Stale daemon rooted at the deleted VaultDev vs profile now
+    // pointing at ~/work → must NOT reuse, must redeploy.
+    expect(sameRemotePath('/home/souta/work/VaultDev', '/home/souta/work')).toBe(false);
+  });
+
+  it('different paths do not match', () => {
+    expect(sameRemotePath('/home/souta/a', '/home/souta/b')).toBe(false);
+    expect(sameRemotePath('', '/home/souta/work')).toBe(false);
+  });
+
+  it('root path "/" is preserved (not stripped to empty)', () => {
+    expect(sameRemotePath('/', '/')).toBe(true);
+    expect(sameRemotePath('/', '')).toBe(false);
+  });
+
+  it('normalises "." — remotePath "~" case that caused the redeploy loop', () => {
+    // resolveRemotePath('.', '/home/souta') = '/home/souta/.'
+    // daemon filepath.Abs('.') reports '/home/souta' → must MATCH now.
+    expect(sameRemotePath('/home/souta/.', '/home/souta')).toBe(true);
+  });
+
+  it('normalises ".." and collapses "//"', () => {
+    expect(sameRemotePath('/home/souta/work/../work', '/home/souta/work')).toBe(true);
+    expect(sameRemotePath('/home//souta/work', '/home/souta/work')).toBe(true);
+  });
+
+  it('empty-vs-empty is NOT a match (missing root always redeploys)', () => {
+    expect(sameRemotePath('', '')).toBe(false);
+    expect(sameRemotePath('   ', '/x')).toBe(false);
+  });
+
+  it('undefined inputs are safe (no throw) and never match', () => {
+    expect(() => sameRemotePath(undefined, '/home/souta/work')).not.toThrow();
+    expect(sameRemotePath(undefined, '/home/souta/work')).toBe(false);
+    expect(sameRemotePath('/home/souta/work', undefined)).toBe(false);
+    expect(sameRemotePath(undefined, undefined)).toBe(false);
   });
 });

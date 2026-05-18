@@ -36,6 +36,13 @@ export interface BulkWalkerDeps {
    * "truncated → fall back" branch without needing a real big vault.
    */
   maxEntries?: number;
+  /**
+   * Directory basenames to prune from the walk (e.g. `node_modules`,
+   * `.git`). Passed straight through to `fs.walk`'s `ignore` so the
+   * daemon never descends/transfers them. Only the fast path honours
+   * this; the per-folder fallback (SFTP / no daemon) does not yet.
+   */
+  ignoreDirs?: string[];
 }
 
 /** Outcome telemetry from a single `walk()` call. */
@@ -44,14 +51,22 @@ export interface BulkWalkResult {
   /**
    * `'rpc-walk'` when the daemon's `fs.walk` produced the result;
    * `'fallback-list'` when we used the BFS-via-`adapter.list` path
-   * (no RPC, daemon doesn't advertise the capability, RPC walk
-   * threw, or it returned `truncated: true`).
+   * (no RPC, daemon doesn't advertise the capability, or the RPC
+   * walk threw). A truncated page is NO LONGER a fallback trigger —
+   * the fast path now paginates and drains every page.
    */
   source: 'rpc-walk' | 'fallback-list';
-  /** Whether the fast-path response was truncated (only meaningful when source === 'rpc-walk'). */
+  /**
+   * `true` only when the returned set is still INCOMPLETE — i.e. the
+   * fast path hit the defensive page guard on a pathologically huge
+   * tree (we return the large partial set rather than nothing).
+   * Normal completion (all pages drained) is `false`.
+   */
   truncated: boolean;
   /** Wall-clock for the walk itself, milliseconds. */
   walkMs: number;
+  /** rpc-walk only: number of `fs.walk` pages drained (1 for small trees). */
+  pages: number;
   /** When `fallback-list` because of a fast-path error, the error message; else null. */
   fastPathError: string | null;
 }
@@ -67,8 +82,15 @@ export interface BulkWalkResult {
  *   - No RPC connection injected (= SFTP transport).
  *   - Daemon doesn't advertise `fs.walk` in its capabilities.
  *   - RPC call throws.
- *   - RPC returns `truncated: true` (= MaxEntries exhausted; partial
- *     data would mislead the vault model).
+ *
+ * A `truncated: true` page is NOT a fallback trigger. The old
+ * behaviour (discard the partial result and do an unbounded
+ * per-folder BFS) never completed on a huge remote tree — e.g. a
+ * profile pointed at `~/work` with 50 000+ files — so the vault
+ * stayed empty and "files that exist on the remote can't be opened".
+ * The fast path now PAGINATES: it re-issues `fs.walk` with an
+ * increasing `offset` and drains every page, so the full tree loads
+ * in bounded-size chunks regardless of size.
  *
  * The fallback's per-entry `mtime` / `size` stay at 0 (matching the
  * pre-walker behaviour) — Obsidian fills those in lazily on file
@@ -80,31 +102,27 @@ export class BulkWalker {
 
   constructor(private readonly deps: BulkWalkerDeps) {}
 
+  /**
+   * Defensive ceiling so a misbehaving daemon that always answers
+   * `truncated:true` (or never advances the offset) can't spin
+   * forever. At the daemon's default 50 000-entry page this is
+   * 50 000 000 entries — far past any real vault — so a legitimate
+   * tree never hits it; only a broken daemon does.
+   */
+  private static readonly MAX_PAGES = 1_000;
+
   async walk(rootPath: string = ''): Promise<BulkWalkResult> {
     const start = Date.now();
     if (this.canUseFastPath()) {
       try {
         const result = await this.fastPath(rootPath);
-        if (!result.truncated) {
-          return {
-            ...result,
-            walkMs: Date.now() - start,
-            fastPathError: null,
-          };
-        }
-        // Truncated → server returned a partial snapshot. We can't
-        // hand a partial tree to VaultModelBuilder (it would silently
-        // miss files), so fall back to the per-folder traversal which
-        // doesn't have a budget.
-        logger.warn(
-          `BulkWalker: fs.walk returned truncated=true at ${result.entries.length} entries; ` +
-          'falling back to per-folder list',
-        );
-        const fallback = await this.fallbackPath(rootPath);
         return {
-          ...fallback,
+          ...result,
           walkMs: Date.now() - start,
-          fastPathError: 'truncated',
+          // `truncated` here means we stopped at the page guard on a
+          // pathological tree — surface it so populate can Notice the
+          // partial load instead of silently showing a clipped vault.
+          fastPathError: result.truncated ? 'page-guard' : null,
         };
       } catch (e) {
         const message = errorMessage(e);
@@ -138,30 +156,61 @@ export class BulkWalker {
     entries: RemoteEntry[];
     source: 'rpc-walk';
     truncated: boolean;
+    pages: number;
   }> {
     // canUseFastPath() guarded the caller, but assert for the type
     // narrowing flow analysis.
     if (!this.deps.rpcConnection) {
       throw new Error('BulkWalker.fastPath called without rpcConnection');
     }
-    const params: WalkParams = { path: rootPath, recursive: true };
-    if (this.deps.maxEntries != null) params.maxEntries = this.deps.maxEntries;
-    const result = await this.deps.rpcConnection.rpc.call('fs.walk', params);
-
-    const entries: RemoteEntry[] = result.entries.map(e => ({
-      path:        e.path,
-      isDirectory: e.type === 'folder',
-      ctime:       e.mtime,  // daemon doesn't expose ctime separately; mtime is the closest signal
-      mtime:       e.mtime,
-      size:        e.size,
-    }));
-    return { entries, source: 'rpc-walk', truncated: result.truncated };
+    const all: RemoteEntry[] = [];
+    let offset = 0;
+    let pages = 0;
+    for (;;) {
+      const params: WalkParams = { path: rootPath, recursive: true };
+      if (this.deps.maxEntries != null) params.maxEntries = this.deps.maxEntries;
+      if (offset > 0) params.offset = offset;
+      if (this.deps.ignoreDirs?.length) params.ignore = this.deps.ignoreDirs;
+      const page = await this.deps.rpcConnection.rpc.call('fs.walk', params);
+      for (const e of page.entries) {
+        all.push({
+          path:        e.path,
+          isDirectory: e.type === 'folder',
+          ctime:       e.mtime, // daemon has no separate ctime; mtime is the closest signal
+          mtime:       e.mtime,
+          size:        e.size,
+        });
+      }
+      pages++;
+      if (!page.truncated) {
+        return { entries: all, source: 'rpc-walk', truncated: false, pages };
+      }
+      if (page.entries.length === 0) {
+        // truncated=true but nothing delivered → the daemon cannot
+        // advance past this offset. Returning what we have (flagged
+        // incomplete) beats spinning forever.
+        logger.warn(
+          'BulkWalker: fs.walk reported truncated with an empty page; ' +
+          `stopping at ${all.length} entries (incomplete)`,
+        );
+        return { entries: all, source: 'rpc-walk', truncated: true, pages };
+      }
+      offset += page.entries.length;
+      if (pages >= BulkWalker.MAX_PAGES) {
+        logger.warn(
+          `BulkWalker: fs.walk exceeded ${BulkWalker.MAX_PAGES} pages ` +
+          `(${all.length} entries); stopping (tree pathologically large)`,
+        );
+        return { entries: all, source: 'rpc-walk', truncated: true, pages };
+      }
+    }
   }
 
   private async fallbackPath(rootPath: string): Promise<{
     entries: RemoteEntry[];
     source: 'fallback-list';
     truncated: false;
+    pages: number;
   }> {
     const entries: RemoteEntry[] = [];
     const queue: string[] = [rootPath];
@@ -184,6 +233,6 @@ export class BulkWalker {
         entries.push({ path: file, isDirectory: false, ctime: 0, mtime: 0, size: 0 });
       }
     }
-    return { entries, source: 'fallback-list', truncated: false };
+    return { entries, source: 'fallback-list', truncated: false, pages: 0 };
   }
 }

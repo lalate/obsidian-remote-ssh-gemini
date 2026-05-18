@@ -5,6 +5,21 @@ import type { SshProfile, PendingPluginSuggestion } from '../types';
 import type { ObsidianRegistry } from './ObsidianRegistry';
 import { errorMessage } from "../util/errorMessage";
 
+/** A configured app.json is a plain object with at least one key. */
+function isNonEmptyObject(v: unknown): boolean {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.keys(v).length > 0
+  );
+}
+
+/** A configured core-plugins.json is a non-empty array. */
+function isNonEmptyArray(v: unknown): boolean {
+  return Array.isArray(v) && v.length > 0;
+}
+
 /**
  * Where the shadow vault for a given profile lives on disk.
  */
@@ -39,6 +54,16 @@ export interface BootstrapResult {
 export interface SharedConfigReader {
   exists(normalizedPath: string): Promise<boolean>;
   read(normalizedPath: string): Promise<string>;
+}
+
+/**
+ * The narrow write surface `pushSharedObsidianConfig` needs — the
+ * other half of the #342 round-trip. `SftpDataAdapter.write`
+ * satisfies it structurally, so the connect flow passes the patched
+ * adapter directly (symmetric with `SharedConfigReader`).
+ */
+export interface SharedConfigWriter {
+  write(normalizedPath: string, content: string): Promise<void>;
 }
 
 /**
@@ -103,6 +128,14 @@ export class ShadowVaultBootstrap {
     // the user opts in via a modal (see `pendingPluginSuggestions`
     // below) and the install only happens for what they tick.
     this.seedCommunityPlugins(layout.configDir);
+
+    // Without this, a freshly-bootstrapped shadow vault has an empty
+    // app.json → Obsidian treats it as "never configured", opens it
+    // in first-run / Restricted mode, and never loads remote-ssh — so
+    // runAutoConnect (and the pullSharedObsidianConfig that would
+    // populate the real app.json) never run. Deadlock: the very first
+    // connect to any new profile silently does nothing.
+    this.seedObsidianFirstRunState(layout.configDir);
 
     // Install our own plugin source (symlink preferred so dev
     // iterations appear immediately; copy as a Windows fallback).
@@ -285,6 +318,79 @@ export class ShadowVaultBootstrap {
     return { pulled, skipped, errored };
   }
 
+  /**
+   * Push the local shadow vault's shared-config files to the remote —
+   * the other half of the #342 round-trip. Without this, a settings
+   * change made in the shadow window only ever lives on the local
+   * shadow disk: the next session's `pullSharedObsidianConfig` finds
+   * nothing new on the remote and the change "evaporates".
+   *
+   * Symmetric with the pull: each local file is `JSON.parse`-validated
+   * before it is sent, so a half-written local file (Obsidian saving
+   * mid-flush) never clobbers a healthy remote copy. Absent local
+   * files are skipped (not an error — a fresh vault legitimately has
+   * none yet); a remote write that throws is `errored` so the caller
+   * can surface it instead of silently losing settings again.
+   *
+   * Static for the same reason as the pull: callers have a writer +
+   * paths but not necessarily a constructed instance.
+   */
+  static async pushSharedObsidianConfig(
+    writer: SharedConfigWriter,
+    /** Vault-relative config dir, e.g. `.obsidian` (`app.vault.configDir`). */
+    remoteConfigDir: string,
+    /** Absolute local config dir, i.e. `ShadowVaultLayout.configDir`. */
+    localConfigDir: string,
+  ): Promise<{ pushed: string[]; skipped: string[]; errored: string[] }> {
+    const pushed: string[] = [];
+    const skipped: string[] = [];
+    const errored: string[] = [];
+
+    for (const basename of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+      const localPath = path.join(localConfigDir, basename);
+      let content: string;
+      try {
+        content = fs.readFileSync(localPath, 'utf-8');
+      } catch {
+        // Absent locally — nothing to push (fresh vault). Not an error.
+        skipped.push(basename);
+        continue;
+      }
+      try {
+        JSON.parse(content);
+      } catch {
+        // Obsidian caught mid-save, or a corrupt local file — do NOT
+        // push broken JSON over a healthy remote copy.
+        logger.warn(
+          `pushSharedObsidianConfig: local ${basename} is not valid JSON; ` +
+          'not pushing (keeping remote copy untouched)',
+        );
+        skipped.push(basename);
+        errored.push(basename);
+        continue;
+      }
+      try {
+        await writer.write(`${remoteConfigDir}/${basename}`, content);
+        pushed.push(basename);
+      } catch (e) {
+        // A transient SSH error must not abort the rest or lose the
+        // change silently — surface it (errored) so the caller can
+        // Notice and the next connect retries.
+        logger.warn(
+          `pushSharedObsidianConfig: ${basename} push failed (${errorMessage(e)})`,
+        );
+        skipped.push(basename);
+        errored.push(basename);
+      }
+    }
+
+    logger.info(
+      `pushSharedObsidianConfig: pushed [${pushed.join(', ')}], ` +
+      `skipped [${skipped.join(', ')}], errored [${errored.join(', ')}]`,
+    );
+    return { pushed, skipped, errored };
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   /**
@@ -320,6 +426,90 @@ export class ShadowVaultBootstrap {
     }
 
     fs.writeFileSync(shadowPath, JSON.stringify(['remote-ssh']) + '\n', 'utf-8');
+  }
+
+  /**
+   * Seed the minimal `.obsidian/` state Obsidian needs to treat a
+   * freshly-created shadow vault as *already configured*, so it loads
+   * community plugins (incl. remote-ssh) on first open instead of
+   * coming up in first-run / Restricted mode. Without this the very
+   * first connect to a new profile deadlocks: the plugin never loads
+   * → runAutoConnect never runs → pullSharedObsidianConfig never runs
+   * → the real app.json is never pulled → the vault stays "never
+   * configured" forever (observed in the field: a brand-new shadow
+   * vault with an empty app.json and zero plugin log).
+   *
+   * Idempotent and non-destructive — only writes a file that is a
+   * first-run placeholder: absent, blank, unparseable, or the literal
+   * empty `{}` / `[]` Obsidian itself writes on first run. A real
+   * app.json / core-plugins.json (written later by
+   * pullSharedObsidianConfig, or by Obsidian once the vault has been
+   * used) has ≥1 key/element and is never clobbered. The e2e scaffold
+   * (`e2e/helpers/vault-scaffold.ts`) has always pre-written exactly
+   * this; the production bootstrap was the one missing it — which is
+   * also why the connect e2e never reproduced the failure.
+   */
+  private seedObsidianFirstRunState(configDir: string): void {
+    const appPath = path.join(configDir, 'app.json');
+    // Obsidian's actual first-run app.json is the literal `{}` — NOT a
+    // zero-byte file. A `.trim() === ''` check misses that and leaves
+    // the deadlock in place (the field symptom). Seed when the file is
+    // absent, blank, unparseable, or an empty object; a real app.json
+    // (≥1 key) is left untouched.
+    if (this.needsFirstRunSeed(appPath, isNonEmptyObject)) {
+      fs.writeFileSync(
+        appPath,
+        JSON.stringify({ promptDelete: false }, null, 2) + '\n',
+        'utf-8',
+      );
+    }
+
+    // Same rule for core-plugins.json — `!existsSync` alone left a
+    // zero-byte / `[]` file as a deadlock (asymmetric with app.json).
+    const corePath = path.join(configDir, 'core-plugins.json');
+    if (this.needsFirstRunSeed(corePath, isNonEmptyArray)) {
+      fs.writeFileSync(
+        corePath,
+        JSON.stringify([
+          'file-explorer', 'global-search', 'switcher', 'graph', 'backlink',
+          'canvas', 'outgoing-link', 'tag-pane', 'page-preview', 'daily-notes',
+          'templates', 'note-composer', 'command-palette', 'editor-status',
+          'bookmarks', 'markdown-importer', 'outline', 'word-count',
+          'file-recovery',
+        ]) + '\n',
+        'utf-8',
+      );
+    }
+  }
+
+  /**
+   * True when `filePath` is a first-run placeholder that must be
+   * (re)seeded: absent, blank, unparseable, or parses to a value the
+   * `isConfigured` predicate rejects (e.g. `{}` / `[]`).
+   *
+   * A non-ENOENT read error (EACCES, EISDIR, …) is NOT "absent" — it
+   * is rethrown rather than silently treated as "needs seed", which
+   * would clobber a file we merely failed to read.
+   */
+  private needsFirstRunSeed(
+    filePath: string,
+    isConfigured: (parsed: unknown) => boolean,
+  ): boolean {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      throw e;
+    }
+    if (raw.trim() === '') return true;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return true; // corrupt/partial → treat as placeholder, reseed
+    }
+    return !isConfigured(parsed);
   }
 
   /**

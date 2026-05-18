@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as crypto from 'node:crypto';
 
 /**
  * Connection coordinates for the Docker test sshd — same as the
@@ -18,6 +19,24 @@ export interface ScaffoldResult {
   cleanup: () => void;
 }
 
+export interface ScaffoldOptions {
+  /**
+   * Transport for the seeded test profile. Defaults to `'rpc'` so
+   * existing specs (smoke/sync/reflect/demo) are unaffected. The
+   * connect-lifecycle spec passes `'sftp'` — the transport the
+   * production connect-stall incident was reported on.
+   */
+  transport?: 'sftp' | 'rpc';
+  /**
+   * Remote vault path for the seeded profile. Defaults to the docker
+   * fixture vault (which exists). The negative-path spec passes a
+   * non-existent path to reproduce the field incident (a profile
+   * whose remotePath isn't on the remote → connect fails) and assert
+   * the failure is *visible*, not a silent hang / spawn storm.
+   */
+  remotePath?: string;
+}
+
 /**
  * Create a temporary Obsidian vault with the remote-ssh plugin
  * pre-installed and a test SSH profile pre-configured.
@@ -26,9 +45,28 @@ export interface ScaffoldResult {
  * auto-connect on launch if `autoConnectProfileId` is set in
  * `data.json`.
  */
-export function scaffoldTestVault(): ScaffoldResult {
+export function scaffoldTestVault(opts: ScaffoldOptions = {}): ScaffoldResult {
+  const transport = opts.transport ?? 'rpc';
+  const remotePath = opts.remotePath ?? TEST_VAULT_REMOTE;
   const pluginRoot = path.resolve(__dirname, '..', '..');
   const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-vault-'));
+
+  // UNIQUE profile id per scaffold. The shadow vault dir is derived
+  // as `~/.obsidian-remote/vaults/<sanitised-profile-id>/`, and the
+  // plugin's structured logger appends (never truncates) to
+  // `<shadow>/.obsidian/plugins/remote-ssh/console.log`. A hardcoded
+  // shared id meant connect-failure-visible / connect-lifecycle /
+  // connect-reconnect all wrote to ONE rolling log: the log-oracle in
+  // a later spec matched an EARLIER spec's stale `SFTP channel open`
+  // / `Adapter patched` lines, so connect-reconnect `sshd('stop')`'d
+  // the container off a stale success while its own connect was still
+  // in flight — that connect then legitimately timed out (the
+  // "Connection timed out" the CI was wrongly attributing to a broken
+  // product connect). Per-spec ids make every log-oracle read only
+  // that spec's own run. The id stays `[a-z0-9-]` so
+  // `sanitiseProfileId` is identity (cleanup must compute the same
+  // path).
+  const profileId = `e2e-test-profile-${crypto.randomBytes(4).toString('hex')}`;
 
   // .obsidian base
   const obsidianDir = path.join(vaultPath, '.obsidian');
@@ -69,15 +107,15 @@ export function scaffoldTestVault(): ScaffoldResult {
   const dataJson = {
     profiles: [
       {
-        id: 'e2e-test-profile',
+        id: profileId,
         name: 'E2E Test',
         host: TEST_HOST,
         port: TEST_PORT,
         username: TEST_USER,
         authMethod: 'privateKey',
         privateKeyPath,
-        remotePath: TEST_VAULT_REMOTE,
-        transport: 'rpc',
+        remotePath,
+        transport,
         connectTimeoutMs: 30_000,
         keepaliveIntervalMs: 10_000,
         keepaliveCountMax: 3,
@@ -137,11 +175,53 @@ export function scaffoldTestVault(): ScaffoldResult {
   // Seed demo notes so the vault isn't empty in screenshots / tests
   seedDemoNotes(vaultPath);
 
+  // Shadow vault dir for THIS profile, computed with the same rule as
+  // ShadowVaultBootstrap (`<home>/.obsidian-remote/vaults/<id>`; the
+  // id is `[a-z0-9-]` so sanitisation is identity). Removing it on
+  // cleanup means a re-run — or the next serial spec — starts with a
+  // fresh console.log and no leftover shadow content, instead of
+  // inheriting a prior run's state under a shared directory.
+  const shadowVaultDir = path.join(
+    os.homedir(), '.obsidian-remote', 'vaults', profileId,
+  );
+
   const cleanup = () => {
     try {
       fs.rmSync(vaultPath, { recursive: true, force: true });
     } catch {
       // best effort
+    }
+    try {
+      fs.rmSync(shadowVaultDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+    // Prune this profile's entry from the user-global obsidian.json so
+    // `findShadowVaultPath` (which picks the highest-`ts` vault whose
+    // path still exists) can't resolve to a now-deleted shadow dir and
+    // the file doesn't accumulate dead entries across the run.
+    try {
+      const obsidianConfigPath = path.join(
+        process.env.APPDATA ?? path.join(process.env.HOME ?? os.homedir(), '.config'),
+        'obsidian',
+        'obsidian.json',
+      );
+      const cfg = JSON.parse(fs.readFileSync(obsidianConfigPath, 'utf8')) as {
+        vaults?: Record<string, { path?: string }>;
+      };
+      let changed = false;
+      for (const id of Object.keys(cfg.vaults ?? {})) {
+        const p = cfg.vaults?.[id]?.path;
+        if (p === vaultPath || p === shadowVaultDir) {
+          delete cfg.vaults![id];
+          changed = true;
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(obsidianConfigPath, JSON.stringify(cfg), 'utf8');
+      }
+    } catch {
+      // best effort — obsidian.json may be absent or mid-write
     }
   };
 

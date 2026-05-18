@@ -136,6 +136,145 @@ func TestFsWalk_HonorsMaxEntriesAndSetsTruncated(t *testing.T) {
 	}
 }
 
+func TestFsWalk_OffsetPaginationStitchesFullTreeNoDupesNoGaps(t *testing.T) {
+	v := newVault(t)
+	h := FsWalk(v.Root)
+
+	// Ground truth: one unpaginated walk (the deterministic order the
+	// pages must reproduce exactly).
+	rawFull, _ := json.Marshal(proto.WalkParams{Path: "", Recursive: true})
+	rFull, rerr := h(context.Background(), rawFull)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	full := rFull.(proto.WalkResult)
+	if full.Truncated {
+		t.Fatal("unpaginated walk of the small fixture must not truncate")
+	}
+	want := make([]string, 0, len(full.Entries))
+	for _, e := range full.Entries {
+		want = append(want, e.Path)
+	}
+
+	// Page through with a tiny budget so we cross several boundaries.
+	const pageSize = 3
+	got := make([]string, 0, len(want))
+	offset := 0
+	for page := 0; ; page++ {
+		if page > 100 {
+			t.Fatalf("pagination did not terminate (offset=%d)", offset)
+		}
+		raw, _ := json.Marshal(proto.WalkParams{
+			Path: "", Recursive: true, MaxEntries: pageSize, Offset: offset,
+		})
+		r, e := h(context.Background(), raw)
+		if e != nil {
+			t.Fatal(e)
+		}
+		res := r.(proto.WalkResult)
+		if len(res.Entries) > pageSize {
+			t.Fatalf("page %d returned %d entries, > MaxEntries %d", page, len(res.Entries), pageSize)
+		}
+		for _, en := range res.Entries {
+			got = append(got, en.Path)
+		}
+		if !res.Truncated {
+			break
+		}
+		if len(res.Entries) == 0 {
+			t.Fatalf("page %d: Truncated=true but 0 entries (would loop forever)", page)
+		}
+		offset += len(res.Entries)
+	}
+
+	// Exact same sequence, in the same order: no dupes, no gaps.
+	if len(got) != len(want) {
+		t.Fatalf("stitched %d entries, want %d (got=%v want=%v)", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("stitched[%d] = %q, want %q (full got=%v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestFsWalk_IgnorePrunesSubtreeEntirely(t *testing.T) {
+	v := newVault(t)
+	h := FsWalk(v.Root)
+	raw, _ := json.Marshal(proto.WalkParams{
+		Path: "", Recursive: true, Ignore: []string{"docs"},
+	})
+	result, rerr := h(context.Background(), raw)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	res := result.(proto.WalkResult)
+
+	got := map[string]bool{}
+	for _, e := range res.Entries {
+		got[e.Path] = true
+		if e.Path == "docs" || (len(e.Path) >= 5 && e.Path[:5] == "docs/") {
+			t.Errorf("ignored subtree leaked: %q", e.Path)
+		}
+	}
+	// The pruned dir itself is gone, and everything else survives.
+	for _, want := range []string{"note.md", "img", "img/logo.png", "empty"} {
+		if !got[want] {
+			t.Errorf("expected %q present after pruning docs, got %v", want, res.Entries)
+		}
+	}
+	if got["docs"] {
+		t.Errorf("ignored dir 'docs' itself must not be emitted")
+	}
+}
+
+func TestFsWalk_IgnoreDoesNotShiftPaginationOffset(t *testing.T) {
+	// Pruned entries must not be counted toward `offset`, so paging
+	// with an ignore list stitches the SAME set as a single ignored
+	// walk (no dupes/gaps at page boundaries).
+	v := newVault(t)
+	h := FsWalk(v.Root)
+
+	rawFull, _ := json.Marshal(proto.WalkParams{
+		Path: "", Recursive: true, Ignore: []string{"docs"},
+	})
+	rFull, _ := h(context.Background(), rawFull)
+	want := []string{}
+	for _, e := range rFull.(proto.WalkResult).Entries {
+		want = append(want, e.Path)
+	}
+
+	got := []string{}
+	offset := 0
+	for page := 0; page <= 50; page++ {
+		raw, _ := json.Marshal(proto.WalkParams{
+			Path: "", Recursive: true, MaxEntries: 1, Offset: offset,
+			Ignore: []string{"docs"},
+		})
+		r, e := h(context.Background(), raw)
+		if e != nil {
+			t.Fatal(e)
+		}
+		res := r.(proto.WalkResult)
+		for _, en := range res.Entries {
+			got = append(got, en.Path)
+		}
+		if !res.Truncated {
+			break
+		}
+		offset += len(res.Entries)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("paged-with-ignore stitched %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("stitched[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestFsWalk_EntriesCarryMtimeAndSize(t *testing.T) {
 	v := newVault(t)
 	h := FsWalk(v.Root)

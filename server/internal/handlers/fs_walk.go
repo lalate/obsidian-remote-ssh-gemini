@@ -48,6 +48,22 @@ func FsWalk(vaultRoot string) rpc.Handler {
 		if max <= 0 {
 			max = DefaultWalkMaxEntries
 		}
+		offset := p.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		// Directory basenames to prune entirely. Pruned subtrees are
+		// never emitted, never counted toward pagination, and never
+		// descended into — so a git/node_modules-heavy work dir does
+		// not blow up the walk. The same list is passed on every page
+		// so the deterministic order (and offset accounting) stays
+		// stable across pages.
+		ignore := make(map[string]struct{}, len(p.Ignore))
+		for _, name := range p.Ignore {
+			if name != "" {
+				ignore[name] = struct{}{}
+			}
+		}
 
 		abs, e := resolveOrErr(vaultRoot, p.Path)
 		if e != nil {
@@ -67,6 +83,10 @@ func FsWalk(vaultRoot string) rpc.Handler {
 
 		entries := make([]proto.WalkEntry, 0, 256)
 		truncated := false
+		// seen counts emittable entries in deterministic WalkDir order
+		// (across the whole tree, not just this page) so `offset` can
+		// skip the entries already delivered on prior pages.
+		seen := 0
 
 		walkFn := func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -88,14 +108,19 @@ func FsWalk(vaultRoot string) rpc.Handler {
 			if path == abs {
 				return nil
 			}
-			if len(entries) >= max {
-				truncated = true
-				return errWalkLimitReached
+			// Prune ignored directory subtrees BEFORE counting/emitting
+			// so the dir itself and everything under it is invisible to
+			// pagination and the client. Match is by exact basename.
+			if d.IsDir() {
+				if _, skip := ignore[d.Name()]; skip {
+					return fs.SkipDir
+				}
 			}
 			einfo, err := d.Info()
 			if err != nil {
 				// Concurrent delete between readdir and stat — skip and
-				// keep going, matching fs.list's tolerance.
+				// keep going, matching fs.list's tolerance. Not counted
+				// toward `seen` (it never reaches any page).
 				return nil
 			}
 
@@ -110,6 +135,27 @@ func FsWalk(vaultRoot string) rpc.Handler {
 			// stable across daemon OSes (Windows daemons, if ever, would
 			// otherwise emit backslashes).
 			rel = filepath.ToSlash(rel)
+
+			// This is an emittable entry. Its global index decides
+			// which page it belongs to.
+			seen++
+			if seen <= offset {
+				// Already delivered on a previous page — skip emitting
+				// but keep the same descent behaviour so the traversal
+				// (and therefore the ordering) is identical to page 0.
+				if !p.Recursive && d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if len(entries) >= max {
+				// One more emittable entry exists beyond this page →
+				// there is a next page. (If the tree ended exactly at
+				// the budget we never get here, so truncated stays
+				// false and the client stops — no spurious empty page.)
+				truncated = true
+				return errWalkLimitReached
+			}
 
 			entries = append(entries, proto.WalkEntry{
 				Path:  rel,

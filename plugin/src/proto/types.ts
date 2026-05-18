@@ -18,8 +18,16 @@ export interface ServerInfo {
   protocolVersion: number;
   /** Method names the daemon implements, e.g. ["fs.stat", "fs.list", ...]. */
   capabilities: string[];
-  /** Absolute vault root on the remote host (informational; paths are vault-relative). */
-  vaultRoot: string;
+  /**
+   * Absolute vault root on the remote host (informational; paths are
+   * vault-relative). Optional: this field was added after the initial
+   * protocol, so an older or third-party daemon that passes the
+   * protocol-version check can still omit it on the wire. Consumers
+   * MUST treat an absent value as "unknown root" (the connect flow
+   * `?? ''`s it and redeploys). Do not drop the `?` — the runtime can
+   * be `undefined` even though the current daemon always sets it.
+   */
+  vaultRoot?: string;
 }
 
 export interface Stat {
@@ -110,15 +118,29 @@ export interface ListResult { entries: Entry[] }
 
 /**
  * fs.walk — single-RPC alternative to recursively calling fs.list.
- * `maxEntries` caps the response size; the daemon returns
- * `truncated: true` when the budget is exhausted so the caller can
- * fall back to per-folder listing without truncation lying about
- * tree shape.
+ * `maxEntries` caps ONE page; the daemon returns `truncated: true`
+ * when more entries remain.
+ *
+ * `offset` paginates a large tree: the daemon's walk order is
+ * deterministic, so the caller fetches the next page by re-issuing
+ * the call with `offset = total entries already received` and keeps
+ * going while `truncated` is true. This lets a huge remote tree load
+ * fully instead of being discarded at the cap. Mirrors
+ * `server/internal/proto/types.go` WalkParams — keep in sync.
  */
 export interface WalkParams {
   path: string;
   recursive?: boolean;
   maxEntries?: number;
+  offset?: number;
+  /**
+   * Directory basenames to prune entirely (e.g. `node_modules`,
+   * `.git`). A pruned subtree is never walked, transferred, or
+   * counted toward pagination. Must be sent identically on every
+   * page so the deterministic order / offset stays stable. Mirrors
+   * `server/internal/proto/types.go` WalkParams.Ignore.
+   */
+  ignore?: string[];
 }
 export interface WalkEntry {
   /** Vault-relative (forward slashes), unlike `Entry.name` which is a basename. */

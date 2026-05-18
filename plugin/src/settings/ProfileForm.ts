@@ -2,7 +2,7 @@ import { Modal, App, Setting, Notice } from 'obsidian';
 import type { SshProfile, AuthMethod, RemoteTransport } from '../types';
 import type { AuthResolver } from '../ssh/AuthResolver';
 import type { HostKeyStore } from '../ssh/HostKeyStore';
-import { DEFAULT_PROFILE } from '../constants';
+import { DEFAULT_PROFILE, DEFAULT_WALK_IGNORE_DIRS } from '../constants';
 import { readSshConfig, type SshConfigEntry } from '../ssh/SshConfigReader';
 import { RemotePathBrowserModal } from '../ui/RemotePathBrowserModal';
 import * as crypto from 'crypto';
@@ -132,6 +132,27 @@ export class ProfileForm extends Modal {
           ).open();
         }));
     }
+
+    new Setting(contentEl)
+      .setName('Ignore directories')
+      .setDesc(
+        'One directory name per line. Any directory with this exact ' +
+        'name is skipped anywhere in the tree — never transferred or ' +
+        'indexed. Essential when the remote path is a large work dir ' +
+        '(node_modules / .git etc. would otherwise make it unusable).',
+      )
+      .addTextArea(t => {
+        const current = this.profile.walkIgnoreDirs ?? [...DEFAULT_WALK_IGNORE_DIRS];
+        t.setPlaceholder(DEFAULT_WALK_IGNORE_DIRS.join('\n'))
+          .setValue(current.join('\n'))
+          .onChange(v => {
+            this.profile.walkIgnoreDirs = v
+              .split('\n')
+              .map(s => s.trim())
+              .filter(s => s.length > 0);
+          });
+        t.inputEl.rows = 6;
+      });
 
     contentEl.createEl('h3', { text: 'Transport' });
     contentEl.createEl('p', {

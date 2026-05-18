@@ -1,7 +1,7 @@
 import { Plugin, Notice, FileSystemAdapter, TFile, TFolder } from 'obsidian';
 import type { PluginSettings, SshProfile } from './types';
 import { SyncState } from './types';
-import { DEFAULT_SETTINGS } from './constants';
+import { DEFAULT_SETTINGS, DEFAULT_WALK_IGNORE_DIRS } from './constants';
 import { SftpClient } from './ssh/SftpClient';
 import { AuthResolver } from './ssh/AuthResolver';
 import { HostKeyStore } from './ssh/HostKeyStore';
@@ -24,8 +24,10 @@ import { classifyToNotice } from './transport/errorTaxonomy';
 import { VaultModelBuilder } from './vault/VaultModelBuilder';
 import { FsChangeListener } from './vault/FsChangeListener';
 import { BulkWalker } from './vault/BulkWalker';
+import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
+import { SharedConfigWatcher } from './shadow/SharedConfigWatcher';
 import { ShadowVaultManager } from './shadow/ShadowVaultManager';
 import { WindowSpawner } from './shadow/WindowSpawner';
 import { ShadowStartupCoordinator } from './shadow/ShadowStartupCoordinator';
@@ -51,6 +53,20 @@ export default class RemoteSshPlugin extends Plugin {
   private statusBar!: StatusBar;
   private state: SyncState = SyncState.IDLE;
   /**
+   * Re-entrancy guard for `openShadowVaultFor`. A spawned shadow
+   * window can take several seconds to surface, during which Obsidian
+   * keeps the source window focused; without this, every impatient
+   * Connect re-click re-bootstraps + re-fires `obsidian://open`,
+   * producing the WindowSpawner churn observed in the field.
+   *
+   * Asymmetric by design: held ~15s only after a *successful* spawn
+   * (debounce the double/triple-click while the new window surfaces);
+   * cleared *synchronously* on a failed spawn so a genuine retry is
+   * instant and the user is never stranded behind a stale
+   * "still opening" toast.
+   */
+  private shadowSpawnInFlight = false;
+  /**
    * Status-bar indicator for queued offline edits (E2-β.4). Hidden
    * when the queue is empty; click opens `PendingEditsModal`.
    */
@@ -64,6 +80,13 @@ export default class RemoteSshPlugin extends Plugin {
   private largeTransferBar: LargeTransferBar | null = null;
   /** Owns the daemon fs.watch subscription + notification dispatch. */
   private fsChangeListener!: FsChangeListener;
+  /**
+   * #342 push half: watches the shadow vault's local config dir and
+   * pushes shared-config edits to the remote. Lives only for the
+   * duration of a connected session (started after the connect pull,
+   * stopped on disconnect/unload).
+   */
+  private sharedConfigWatcher: SharedConfigWatcher | null = null;
   private observability: ObservabilityInstaller | null = null;
   /**
    * #149 — re-entrant guard for `openRemoteTerminal()`. The
@@ -138,6 +161,35 @@ export default class RemoteSshPlugin extends Plugin {
       this.pendingEditsBar,
       () => this.settings,
       this.transferTracker,
+    );
+
+    // #341 follow-up: a writer rename reflects into the model fine,
+    // but Obsidian's own post-adapter `Vault.rename` reconcile crashes
+    // on this build and orphans the open tab. Own the editor-follow:
+    // if the file was open and Obsidian dropped it, re-open it. Gated
+    // by `isPatched` so an unconnected local vault is untouched.
+    const renameFollower = new RenameLeafFollower(
+      {
+        isPathOpen: (p) =>
+          this.app.workspace
+            .getLeavesOfType('markdown')
+            .some(
+              (l) =>
+                (l.view as unknown as { file?: { path?: string } } | undefined)
+                  ?.file?.path === p,
+            ),
+        reopen: (p) => {
+          const af = this.app.vault.getAbstractFileByPath(p);
+          if (af instanceof TFile) {
+            void this.app.workspace.getLeaf('tab').openFile(af);
+          }
+        },
+      },
+      () => this.adapterMgr.isPatched(),
+      (cb) => { activeWindow.setTimeout(cb, 0); },
+    );
+    this.registerEvent(
+      this.app.vault.on('rename', (file) => renameFollower.handleRename(file)),
     );
 
     this.addCommand({
@@ -472,9 +524,17 @@ export default class RemoteSshPlugin extends Plugin {
     await this.connectProfile(profile);
 
     if (this.state !== SyncState.CONNECTED) {
-      // connectProfile already surfaced a Notice on failure — don't
-      // double up; just skip the populate.
-      logger.warn(`runAutoConnect(${tag}): connect did not reach CONNECTED state; skipping populate`);
+      // A shadow-window auto-connect failed. `connectProfile` ALREADY
+      // emitted a classified, cause-specific Notice (auth / host /
+      // remote-path / patch) into THIS same shadow window on every
+      // failure path — a second generic toast here just stacks on top
+      // of it and pushes the specific cause off-screen. Keep the log
+      // line (the diagnostic trail the e2e oracle asserts on); do not
+      // double-Notice.
+      logger.warn(
+        `runAutoConnect(${tag}): connect did not reach CONNECTED state ` +
+        `(connectProfile surfaced the cause); skipping populate`,
+      );
       return;
     }
 
@@ -487,11 +547,13 @@ export default class RemoteSshPlugin extends Plugin {
     const da = this.adapterMgr.dataAdapter;
     const hostAdapter = this.app.vault.adapter;
     if (da && hostAdapter instanceof FileSystemAdapter) {
+      const localConfigDir = path.join(
+        hostAdapter.getBasePath(), this.app.vault.configDir,
+      );
+      const remoteConfigDir = this.app.vault.configDir;
       try {
         const cfg = await ShadowVaultBootstrap.pullSharedObsidianConfig(
-          da,
-          this.app.vault.configDir,
-          path.join(hostAdapter.getBasePath(), this.app.vault.configDir),
+          da, remoteConfigDir, localConfigDir,
         );
         if (cfg.errored.length > 0) {
           // The connection is up but some shared-config files the
@@ -510,6 +572,52 @@ export default class RemoteSshPlugin extends Plugin {
           `runAutoConnect(${tag}): shared-config pull failed: ${errorMessage(e)}`,
         );
       }
+
+      // #342 push half: pull only brought remote→local. Without this,
+      // a settings change made HERE never reaches the remote, so the
+      // next session's pull finds nothing and the change evaporates.
+      // Watch the local config dir and push divergent shared files.
+      this.sharedConfigWatcher?.stop();
+      const watcher = new SharedConfigWatcher({
+        watch: (onChange) => {
+          const w = fs.watch(
+            localConfigDir, { persistent: false },
+            (_evt, filename) => onChange(filename ? String(filename) : null),
+          );
+          return { close: () => w.close() };
+        },
+        readLocal: (b) => {
+          try { return fs.readFileSync(path.join(localConfigDir, b), 'utf-8'); }
+          catch { return null; }
+        },
+        flush: async () => {
+          const r = await ShadowVaultBootstrap.pushSharedObsidianConfig(
+            da, remoteConfigDir, localConfigDir,
+          );
+          if (r.errored.length > 0) {
+            new Notice(
+              `Remote SSH: ${r.errored.length} shared-config file` +
+              `${r.errored.length === 1 ? '' : 's'} (${r.errored.join(', ')}) ` +
+              'could not be pushed — settings change not yet saved remotely',
+            );
+          }
+        },
+        debounceMs: 1500,
+        setTimer: (cb, ms) => activeWindow.setTimeout(cb, ms),
+        clearTimer: (h) => activeWindow.clearTimeout(h as number),
+      });
+      // Seed the just-pulled bytes as the synced baseline so the
+      // pull's own writes (and Obsidian re-saving an identical file
+      // on open) don't immediately echo back to the remote.
+      for (const base of ShadowVaultBootstrap.SHARED_OBSIDIAN_CONFIG_FILES) {
+        try {
+          watcher.markSynced(
+            base, fs.readFileSync(path.join(localConfigDir, base), 'utf-8'),
+          );
+        } catch { /* absent locally — nothing to baseline */ }
+      }
+      watcher.start();
+      this.sharedConfigWatcher = watcher;
     }
 
     // Adapter is patched; build the file model so File Explorer
@@ -601,6 +709,8 @@ export default class RemoteSshPlugin extends Plugin {
       // back to local file:// reads instead of blocking forever on a
       // dead transport. restore() clears dataAdapter so the
       // setReconnecting flag goes with it.
+      this.sharedConfigWatcher?.stop();
+      this.sharedConfigWatcher = null;
       this.adapterMgr.restore();
       this.setState(SyncState.ERROR);
       // s.reason is a string from ReconnectManager; wrap into Error
@@ -635,6 +745,10 @@ export default class RemoteSshPlugin extends Plugin {
     // session down so the shell channel close fires while the ssh2
     // Client is still around (cleaner teardown logs).
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_REMOTE_TERMINAL);
+    // Stop the #342 config watcher before the transport goes — its
+    // flush pushes through the (about-to-be-restored) adapter.
+    this.sharedConfigWatcher?.stop();
+    this.sharedConfigWatcher = null;
     this.adapterMgr.restore();
     await this.conn.disconnectTransport();
     this.setState(SyncState.IDLE);
@@ -717,11 +831,17 @@ export default class RemoteSshPlugin extends Plugin {
     const walker = new BulkWalker({
       adapter: this.app.vault.adapter,
       rpcConnection: this.conn.rpcConnection ?? undefined,
+      // Older profiles have no walkIgnoreDirs → fall back to the
+      // sensible defaults so existing users immediately benefit. An
+      // explicit empty array (user cleared it) means "ignore nothing"
+      // and is respected (?? only fills null/undefined).
+      ignoreDirs: this.conn.activeProfile?.walkIgnoreDirs
+        ?? [...DEFAULT_WALK_IGNORE_DIRS],
     });
     const walk = await walker.walk('');
     logger.info(
       `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
-      `in ${walk.walkMs}ms` +
+      `in ${walk.walkMs}ms (pages=${walk.pages})` +
       (walk.fastPathError ? ` (fast-path fallback: ${walk.fastPathError})` : ''),
     );
 
@@ -736,6 +856,23 @@ export default class RemoteSshPlugin extends Plugin {
       logger.warn(
         `populateVaultFromRemote(${label}): first 5 errors: ` +
         JSON.stringify(result.errors.slice(0, 5), null, 2),
+      );
+    }
+
+    // Don't let a failed/clipped populate look like a working-but-empty
+    // vault (the silent "remote files won't open" symptom). Surface it.
+    if (walk.entries.length === 0) {
+      new Notice(
+        'Remote SSH: 0 files found on the remote. Check the profile’s ' +
+        'remotePath actually points at the vault (see console.log).',
+        10_000,
+      );
+    } else if (walk.truncated) {
+      new Notice(
+        `Remote SSH: remote tree is very large — loaded ${walk.entries.length} ` +
+        'entries but it is still incomplete. Point the profile’s remotePath ' +
+        'at the vault folder, not a large parent directory (see console.log).',
+        15_000,
       );
     }
     return summary;
@@ -765,6 +902,16 @@ export default class RemoteSshPlugin extends Plugin {
     }
     const sourcePluginDir = path.join(adapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
 
+    // The spawned window can take several seconds to surface while
+    // Obsidian keeps THIS (source) window focused. Without this guard
+    // an impatient re-click re-bootstraps + re-fires obsidian://open,
+    // and the user just sees more churn — never the new window.
+    if (this.shadowSpawnInFlight) {
+      new Notice('Remote SSH: the remote vault is still opening — give it a moment');
+      return;
+    }
+    this.shadowSpawnInFlight = true;
+
     // Shadow vaults live under ~/.obsidian-remote/vaults/ on every
     // OS. os.homedir() resolves at runtime — no hardcoded user.
     const baseDir = path.join(os.homedir(), '.obsidian-remote', 'vaults');
@@ -783,7 +930,18 @@ export default class RemoteSshPlugin extends Plugin {
         `openShadowVaultFor: profile=${profile.name}, vault=${result.layout.vaultDir}, ` +
         `registry id=${result.registryId} (${reg}), plugin=${how}`,
       );
+      // Spawn SUCCEEDED. The new window can take several seconds to
+      // surface while Obsidian keeps THIS one focused — hold the guard
+      // ~15s so an impatient double/triple-click can't fire a second
+      // spawn into that gap. `activeWindow.setTimeout` (not bare
+      // setTimeout) for Obsidian popout-window compatibility.
+      activeWindow.setTimeout(() => { this.shadowSpawnInFlight = false; }, 15_000);
     } catch (e) {
+      // Spawn FAILED — nothing is opening. Clear the guard NOW so the
+      // user can retry immediately; a 15s lockout here would strand
+      // them on a failed connect behind a misleading "still opening"
+      // (the original `finally` armed the timer on this path too).
+      this.shadowSpawnInFlight = false;
       const msg = errorMessage(e);
       logger.error(`openShadowVaultFor: ${msg}`);
       new Notice(`Remote SSH: shadow vault failed — ${msg}`);
