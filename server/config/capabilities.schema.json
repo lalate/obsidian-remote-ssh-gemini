@@ -24,7 +24,8 @@
         "name": { "type": "string", "minLength": 1 },
         "required": { "type": "boolean" },
         "pattern": { "type": "string" },
-        "maxLength": { "type": "integer", "minimum": 1 }
+        "maxLength": { "type": "integer", "minimum": 1 },
+        "allowFlags": { "type": "boolean" }
       },
       "additionalProperties": false
     },

@@ -244,6 +244,8 @@ type ExtensionArgRule struct {
 	Required  bool   `json:"required,omitempty"`
 	Pattern   string `json:"pattern,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
+	// AllowFlags permits values that start with '-' for this arg.
+	AllowFlags bool `json:"allowFlags,omitempty"`
 }
 
 // ExtensionCapability defines one executable tool from capabilities.json.
