@@ -70,6 +70,19 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
   });
 
   test('an unexpected sshd drop enters a visible reconnect loop and recovers', async () => {
+    // Per-attempt log cutoff — THE fix for run 26010373894. The
+    // scaffold (built once in `beforeAll`) was shared across all SFTP
+    // specs AND Playwright retries via one APPEND-mode console.log, so
+    // step 1's `waitForLog(/SFTP channel open/)` matched a PRIOR
+    // spec's stale open, the test then `sshd('stop')`'d while its own
+    // connect was still in flight, and that connect legitimately timed
+    // out (the misattributed "Connection timed out"). Profile ids are
+    // now per-spec, and this gate scopes every oracle to lines emitted
+    // at/after this instant so a retry can't match its first attempt's
+    // lines either. The baseline open-count is likewise scoped, so the
+    // `+1` recovery check counts only this attempt's reconnect.
+    const since = new Date().toISOString();
+
     scaffoldHandle = await launchObsidian(scaffold.vaultPath);
     const shadowVaultPath = await connectAndWaitForShadowVault(
       scaffoldHandle.page, scaffold.vaultPath, 45_000,
@@ -81,12 +94,13 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     const shadowLog = logPathFor(shadowVaultPath);
 
     // 1. Establish a healthy connection first.
-    await waitForLog(shadowLog, /SFTP channel open/, 60_000, 'initial SFTP open');
+    await waitForLog(shadowLog, /SFTP channel open/, 60_000, 'initial SFTP open', since);
     await waitForLog(
       shadowLog,
       /Adapter patched via SFTP/,
       60_000,
       'initial connect must patch',
+      since,
     );
 
     // 2. Drop the remote unexpectedly.
@@ -101,6 +115,7 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       /reconnect attempt \d+\/\d+ failed/,
       90_000,
       'an unexpected drop must enter a VISIBLE reconnect loop',
+      since,
     );
 
     // Capture the baseline open-count HERE, not right after the
@@ -111,7 +126,7 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
     // (false pass). At this point sshd is down and the reconnect-fail
     // line is logged well after every pre-drop open — so the count is
     // stable and no new open can appear until we restore.
-    const baselineOpens = countLog(shadowLog, /SFTP channel open/);
+    const baselineOpens = countLog(shadowLog, /SFTP channel open/, since);
 
     // 4. Restore the remote immediately — stay within the retry
     //    budget so a later attempt can succeed.
@@ -132,6 +147,7 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       baselineOpens + 1,
       150_000,
       'reconnect must recover (a fresh SFTP channel open after restore)',
+      since,
     );
 
     // 6. No spawn storm through the whole drop/recover cycle.
@@ -140,6 +156,7 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
       /WindowSpawner: firing obsidian:\/\/open/,
       2,
       'reconnect must not loop-spawn the shadow vault',
+      since,
     );
 
     // 7. The vault is usable again — File Explorer still renders.

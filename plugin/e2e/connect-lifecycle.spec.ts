@@ -53,6 +53,16 @@ test.describe('connect lifecycle (SFTP)', () => {
   });
 
   test('Connect → patch → runAutoConnect → populate completes end-to-end over SFTP', async () => {
+    // Per-attempt log cutoff. `beforeAll` builds the scaffold once, so
+    // a Playwright retry reuses the same scaffold/shadow dirs and the
+    // same APPEND-mode console.log files. Without this gate the retry
+    // would match the FIRST attempt's stale `SFTP channel open` /
+    // `Adapter patched` / `populateVaultFromRemote` lines and race
+    // past straight to the File Explorer DOM check (the exact 13s
+    // false-fail seen in run 26010373894). Every oracle below is
+    // scoped to lines emitted at/after this instant.
+    const since = new Date().toISOString();
+
     // 1. Real Obsidian on the scaffold vault, plugin force-loaded.
     scaffoldHandle = await launchObsidian(scaffold.vaultPath);
 
@@ -71,6 +81,7 @@ test.describe('connect lifecycle (SFTP)', () => {
       /WindowSpawner: firing obsidian:\/\/open/,
       3,
       'scaffold window must not loop-spawn the shadow vault',
+      since,
     );
 
     // 4. Hand off to a fresh Obsidian on the shadow vault — this is
@@ -88,6 +99,7 @@ test.describe('connect lifecycle (SFTP)', () => {
       /SFTP channel open/,
       60_000,
       'SFTP channel must open',
+      since,
     );
     //    b) the adapter was patched over the SFTP transport
     await waitForLog(
@@ -95,6 +107,7 @@ test.describe('connect lifecycle (SFTP)', () => {
       /Adapter patched via SFTP/,
       60_000,
       'adapter must patch after SFTP open (absent in the incident)',
+      since,
     );
     //    c) the remote tree was actually walked into the vault model.
     //    A partial / empty populate STILL logs this line ("0 entries")
@@ -106,6 +119,7 @@ test.describe('connect lifecycle (SFTP)', () => {
       /populateVaultFromRemote\(shadow-[^)]*\):.*?\d+ entries/,
       90_000,
       'vault must populate from remote (absent in the incident)',
+      since,
     );
     const populatedCount = Number(
       /(\d+) entries/.exec(populateEntry.msg ?? '')?.[1] ?? '0',
@@ -122,6 +136,7 @@ test.describe('connect lifecycle (SFTP)', () => {
       /WindowSpawner: firing obsidian:\/\/open/,
       2,
       'shadow window must not loop-spawn',
+      since,
     );
 
     // 7. Observable end state: File Explorer shows remote content.
