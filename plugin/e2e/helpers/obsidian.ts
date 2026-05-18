@@ -547,6 +547,52 @@ async function waitForCDP(url: string, timeoutMs: number): Promise<void> {
 }
 
 /**
+ * Run an Obsidian command through the command palette, robust to CI's
+ * slow/racy palette wiring. The old per-spec pattern —
+ * `Ctrl+P` → `waitForTimeout(300)` → type → `waitForTimeout(500)` →
+ * click `.prompt .suggestion-item` — raced the palette: in CI the
+ * suggestion list isn't populated yet when the fixed sleeps elapse,
+ * so the click hangs and the whole test hits its 120s timeout (the
+ * sync.spec create/edit/delete cascade in run 26015295742). Mirrors
+ * `driveConnectFlow`'s hardened open: re-press until the palette
+ * input is actually visible, then wait for a real suggestion to
+ * appear before clicking it.
+ */
+export async function runCommandViaPalette(
+  page: Page,
+  query: string,
+): Promise<void> {
+  const paletteInput = page
+    .locator('.prompt input, input.prompt-input, .suggestion-container input')
+    .first();
+
+  let opened = false;
+  for (let i = 0; i < 5 && !opened; i++) {
+    await page.keyboard.press('Control+P');
+    opened = await paletteInput
+      .waitFor({ state: 'visible', timeout: 4_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!opened) await page.keyboard.press('Escape').catch(() => { /* ignore */ });
+  }
+  if (!opened) {
+    throw new Error(
+      `runCommandViaPalette: command palette never opened for "${query}" ` +
+      '(Obsidian not interactive)',
+    );
+  }
+
+  await paletteInput.fill('');
+  await page.keyboard.type(query, { delay: 20 });
+
+  // Wait for the fuzzy filter to actually surface a suggestion before
+  // clicking — the fixed sleep this replaces is exactly what raced.
+  const firstSuggestion = page.locator('.prompt .suggestion-item').first();
+  await firstSuggestion.waitFor({ state: 'visible', timeout: 10_000 });
+  await firstSuggestion.click();
+}
+
+/**
  * Diagnostic snapshot for the "File Explorer empty after a successful
  * SFTP connect+populate" failure. The bare Playwright "element(s) not
  * found" can't distinguish three very different root causes:
