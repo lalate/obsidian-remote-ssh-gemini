@@ -3,8 +3,7 @@ import * as path from 'node:path';
 import { execSync } from 'node:child_process';
 import {
   launchObsidian,
-  driveConnectFlow,
-  findShadowVaultPath,
+  connectAndWaitForShadowVault,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -72,8 +71,9 @@ test.describe('connect reconnect (SFTP, sshd drop → recover)', () => {
 
   test('an unexpected sshd drop enters a visible reconnect loop and recovers', async () => {
     scaffoldHandle = await launchObsidian(scaffold.vaultPath);
-    await driveConnectFlow(scaffoldHandle.page);
-    const shadowVaultPath = await findShadowVaultPath(scaffold.vaultPath, 20_000);
+    const shadowVaultPath = await connectAndWaitForShadowVault(
+      scaffoldHandle.page, scaffold.vaultPath, 45_000,
+    );
     await scaffoldHandle.cleanup();
     scaffoldHandle = null;
 

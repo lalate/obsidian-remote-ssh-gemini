@@ -1,8 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   launchObsidian,
-  driveConnectFlow,
-  findShadowVaultPath,
+  connectAndWaitForShadowVault,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -64,8 +63,9 @@ test.describe('connect failure is visible (bad remotePath, SFTP)', () => {
   test('a bad remotePath fails visibly — no silent hang, no spawn storm, no false connect', async () => {
     scaffoldHandle = await launchObsidian(scaffold.vaultPath);
 
-    await driveConnectFlow(scaffoldHandle.page);
-    const shadowVaultPath = await findShadowVaultPath(scaffold.vaultPath, 20_000);
+    const shadowVaultPath = await connectAndWaitForShadowVault(
+      scaffoldHandle.page, scaffold.vaultPath, 45_000,
+    );
 
     // C2 guard: one Connect drive must not have produced a spawn storm
     // in the source window.

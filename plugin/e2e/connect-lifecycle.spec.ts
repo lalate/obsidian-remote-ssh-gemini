@@ -1,8 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   launchObsidian,
-  driveConnectFlow,
-  findShadowVaultPath,
+  connectAndWaitForShadowVault,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -57,10 +56,12 @@ test.describe('connect lifecycle (SFTP)', () => {
     // 1. Real Obsidian on the scaffold vault, plugin force-loaded.
     scaffoldHandle = await launchObsidian(scaffold.vaultPath);
 
-    // 2. Drive the real Connect command; the plugin bootstraps a
+    // 2. Drive the real Connect command (retries the palette flow if
+    //    CI Obsidian wasn't interactive yet); the plugin bootstraps a
     //    shadow vault and registers it in obsidian.json.
-    await driveConnectFlow(scaffoldHandle.page);
-    const shadowVaultPath = await findShadowVaultPath(scaffold.vaultPath, 20_000);
+    const shadowVaultPath = await connectAndWaitForShadowVault(
+      scaffoldHandle.page, scaffold.vaultPath, 45_000,
+    );
 
     // 3. The connecting (scaffold) window must NOT be stuck
     //    re-bootstrapping/re-spawning the shadow — the production

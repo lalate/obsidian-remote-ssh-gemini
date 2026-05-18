@@ -143,17 +143,88 @@ export async function launchObsidian(
  *      empty passphrase input does NOT submit; verified empirically)
  */
 export async function driveConnectFlow(page: Page): Promise<void> {
-  await page.keyboard.press('Control+P');
-  await page.waitForTimeout(500);
-  await page.keyboard.type('Remote SSH: Connect', { delay: 25 });
-  await page.waitForTimeout(800);
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(1_200);
+  // CI's headless Obsidian is slow/racy to wire the command palette
+  // for ~seconds after the plugin loads (proven: the pre-existing
+  // smoke "settings tab" test fails first try, passes on retry). The
+  // old fixed `waitForTimeout`s raced that window — Ctrl+P / Enter
+  // landed before the palette accepted input, so the connect command
+  // never fired and the connect-lifecycle/reconnect specs hard-failed
+  // with "connect command likely never fired". Wait for the palette
+  // input to actually be present before typing; re-open it if the
+  // first Ctrl+P didn't take.
+  const paletteInput = page
+    .locator('.prompt input, input.prompt-input, .suggestion-container input')
+    .first();
 
+  let opened = false;
+  for (let i = 0; i < 5 && !opened; i++) {
+    await page.keyboard.press('Control+P');
+    opened = await paletteInput
+      .waitFor({ state: 'visible', timeout: 4_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!opened) await page.keyboard.press('Escape').catch(() => { /* ignore */ });
+  }
+  if (!opened) {
+    throw new Error('driveConnectFlow: command palette never opened (Obsidian not interactive)');
+  }
+
+  await paletteInput.fill('');
+  await page.keyboard.type('Remote SSH: Connect', { delay: 20 });
+  // Let the fuzzy filter settle on the matching command.
+  await page.waitForTimeout(600);
+  await page.keyboard.press('Enter');
+
+  // The per-profile connect modal appears for passphrase/confirm
+  // profiles; for the scaffold's key-auth profile connect can fire
+  // straight off Enter (no modal). Click the button if it shows; its
+  // absence is not an error.
   const connectBtn = page.locator('.modal button:has-text("Connect")').first();
   if (await connectBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
     await connectBtn.click();
   }
+}
+
+/**
+ * Robust connect: drive the palette flow, then wait for the shadow
+ * vault to register. If it doesn't appear within a per-attempt
+ * window, re-drive the connect command (CI Obsidian may not have been
+ * interactive on the first attempt) — bounded by `timeoutMs`.
+ *
+ * Re-driving is safe: a successful (if slow) first spawn is guarded
+ * by the plugin's `shadowSpawnInFlight` debounce (a second connect
+ * within ~15s is a no-op), and that slow spawn's entry still shows up
+ * for a later poll; a first attempt that never fired left no guard,
+ * so the retry fires cleanly.
+ */
+export async function connectAndWaitForShadowVault(
+  page: Page,
+  scaffoldVaultPath: string,
+  timeoutMs = 45_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  let lastErr: unknown = null;
+  while (Date.now() < deadline) {
+    attempts++;
+    try {
+      await driveConnectFlow(page);
+    } catch (e) {
+      lastErr = e;
+      await page.waitForTimeout(1_500);
+      continue;
+    }
+    const perAttempt = Math.min(15_000, Math.max(3_000, deadline - Date.now()));
+    try {
+      return await findShadowVaultPath(scaffoldVaultPath, perAttempt);
+    } catch (e) {
+      lastErr = e; // not registered yet — re-drive the connect command
+    }
+  }
+  throw new Error(
+    `connectAndWaitForShadowVault: no shadow vault after ${attempts} connect ` +
+    `attempt(s) in ${timeoutMs}ms — ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+  );
 }
 
 /**
