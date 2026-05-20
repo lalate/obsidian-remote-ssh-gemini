@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -20,10 +21,16 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	rpcframe "github.com/sotashimozono/obsidian-remote-ssh/server/internal/rpc"
 )
 
 // Version is replaced at link time via -ldflags "-X main.Version=...".
 var Version = "0.0.0-dev"
+
+const (
+	relayRPCModeStub   = "stub"
+	relayRPCModeFramed = "framed"
+)
 
 type healthResponse struct {
 	OK        bool   `json:"ok"`
@@ -108,6 +115,7 @@ func run(args []string) (int, error) {
 		path        = fs.String("path", "/healthz", "health endpoint path")
 		token       = fs.String("token", "", "optional bearer token")
 		allowOrigin = fs.String("allow-origin", "*", "CORS allow-origin value")
+		rpcMode     = fs.String("rpc-mode", "", "relay rpc mode: stub|framed (default from RELAY_RPC_MODE or stub)")
 		versionFlag = fs.Bool("version", false, "print version and exit")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -122,6 +130,7 @@ func run(args []string) (int, error) {
 	if tokenValue == "" {
 		tokenValue = strings.TrimSpace(os.Getenv("RELAY_PROBE_TOKEN"))
 	}
+	rpcModeValue := resolveRelayRPCMode(*rpcMode)
 	sessionStore := newRelaySessionStore(5 * time.Minute)
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(_ *http.Request) bool { return true },
@@ -171,15 +180,18 @@ func run(args []string) (int, error) {
 			return
 		}
 
+		capabilities := []string{"healthz", "connect.precheck.v1"}
+		if rpcModeValue == relayRPCModeFramed {
+			capabilities = append(capabilities, "stream.ws.framed-rpc.v1")
+		} else {
+			capabilities = append(capabilities, "stream.ws.stub.v1")
+		}
+
 		resp := capabilitiesResponse{
-			OK:      true,
-			Service: "obsidian-remote-relay",
-			Version: Version,
-			Capabilities: []string{
-				"healthz",
-				"connect.precheck.v1",
-				"stream.ws.stub.v1",
-			},
+			OK:           true,
+			Service:      "obsidian-remote-relay",
+			Version:      Version,
+			Capabilities: capabilities,
 		}
 		writeJSON(w, http.StatusOK, resp, false)
 	})
@@ -250,7 +262,7 @@ func run(args []string) (int, error) {
 		resp := connectResponse{
 			OK:                true,
 			Code:              "PRECHECK_OK",
-			Message:           "tcp precheck to target succeeded; SSH/RPC bridge wiring is the next step",
+			Message:           connectSuccessMessage(rpcModeValue),
 			RequestID:         strings.TrimSpace(req.RequestID),
 			Target:            target,
 			PrecheckLatencyMs: latencyMs,
@@ -299,15 +311,6 @@ func run(args []string) (int, error) {
 		}
 		defer func() { _ = targetConn.Close() }()
 
-		streamDone := make(chan struct{})
-		var writeMu sync.Mutex
-		closeOnce := sync.Once{}
-		closeStream := func() {
-			closeOnce.Do(func() {
-				close(streamDone)
-			})
-		}
-
 		ready := streamReadyMessage{
 			Type:      "session.ready",
 			SessionID: sessionID,
@@ -316,6 +319,22 @@ func run(args []string) (int, error) {
 		}
 		if err := conn.WriteJSON(ready); err != nil {
 			return
+		}
+
+		if rpcModeValue == relayRPCModeFramed {
+			if err := proxyRelayRPCFramed(conn, targetConn); err != nil {
+				log.Printf("relay rpc framed session %s closed: %v", sessionID, err)
+			}
+			return
+		}
+
+		streamDone := make(chan struct{})
+		var writeMu sync.Mutex
+		closeOnce := sync.Once{}
+		closeStream := func() {
+			closeOnce.Do(func() {
+				close(streamDone)
+			})
 		}
 
 		go func() {
@@ -368,11 +387,111 @@ func run(args []string) (int, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	log.Printf("obsidian-remote-relay-health %s listening on %s%s", Version, *listenAddr, endpoint)
+	log.Printf("obsidian-remote-relay-health %s listening on %s%s (rpc-mode=%s)", Version, *listenAddr, endpoint, rpcModeValue)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+func resolveRelayRPCMode(flagValue string) string {
+	mode := strings.ToLower(strings.TrimSpace(flagValue))
+	if mode == "" {
+		mode = strings.ToLower(strings.TrimSpace(os.Getenv("RELAY_RPC_MODE")))
+	}
+	switch mode {
+	case "", relayRPCModeStub:
+		return relayRPCModeStub
+	case relayRPCModeFramed:
+		return relayRPCModeFramed
+	default:
+		log.Printf("unknown rpc mode %q; fallback to %q", mode, relayRPCModeStub)
+		return relayRPCModeStub
+	}
+}
+
+func connectSuccessMessage(rpcMode string) string {
+	if rpcMode == relayRPCModeFramed {
+		return "tcp precheck to target succeeded; relay will proxy JSON-RPC frames to upstream"
+	}
+	return "tcp precheck to target succeeded; SSH/RPC bridge wiring is the next step"
+}
+
+func proxyRelayRPCFramed(conn *websocket.Conn, targetConn net.Conn) error {
+	reader := bufio.NewReader(targetConn)
+	for {
+		messageType, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			return readErr
+		}
+		if messageType == websocket.CloseMessage {
+			return nil
+		}
+		if messageType != websocket.TextMessage {
+			_ = conn.WriteJSON(errorResponse{Error: "rpc-mode=framed supports text websocket frames only"})
+			continue
+		}
+
+		reqID := extractRelayRPCID(payload)
+		if !json.Valid(payload) {
+			writeRelayRPCError(conn, reqID, "invalid json-rpc payload")
+			continue
+		}
+		if err := rpcframe.WriteFrame(targetConn, payload); err != nil {
+			writeRelayRPCError(conn, reqID, fmt.Sprintf("failed to write upstream rpc frame: %v", err))
+			continue
+		}
+
+		responsePayload, err := readRelayRPCUpstreamFrame(reader, conn)
+		if err != nil {
+			writeRelayRPCError(conn, reqID, fmt.Sprintf("failed to read upstream rpc frame: %v", err))
+			continue
+		}
+		if len(responsePayload) == 0 {
+			continue
+		}
+		if err := conn.WriteMessage(websocket.TextMessage, responsePayload); err != nil {
+			return err
+		}
+	}
+}
+
+func readRelayRPCUpstreamFrame(reader *bufio.Reader, conn *websocket.Conn) ([]byte, error) {
+	for {
+		payload, err := rpcframe.ReadFrame(reader, 0)
+		if err != nil {
+			return nil, err
+		}
+		if isRelayRPCNotification(payload) {
+			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return payload, nil
+	}
+}
+
+func isRelayRPCNotification(payload []byte) bool {
+	var envelope struct {
+		Method string          `json:"method"`
+		ID     json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return false
+	}
+	if strings.TrimSpace(envelope.Method) == "" {
+		return false
+	}
+	return len(envelope.ID) == 0 || string(envelope.ID) == "null"
+}
+
+func extractRelayRPCID(payload []byte) json.RawMessage {
+	var req relayJSONRPCRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil
+	}
+	return req.ID
 }
 
 func normalizePath(path string) string {
@@ -516,10 +635,10 @@ type relayJSONRPCRequest struct {
 }
 
 type relayJSONRPCResponse struct {
-	JSONRPC string              `json:"jsonrpc"`
-	ID      json.RawMessage     `json:"id,omitempty"`
-	Result  any                 `json:"result,omitempty"`
-	Error   *relayJSONRPCError  `json:"error,omitempty"`
+	JSONRPC string             `json:"jsonrpc"`
+	ID      json.RawMessage    `json:"id,omitempty"`
+	Result  any                `json:"result,omitempty"`
+	Error   *relayJSONRPCError `json:"error,omitempty"`
 }
 
 type relayJSONRPCError struct {

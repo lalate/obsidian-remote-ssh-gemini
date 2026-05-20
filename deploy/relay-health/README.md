@@ -12,7 +12,9 @@ SSH/RPCブリッジ本体はまだ未実装ですが、API形と認証導線を�
 - `GET /healthz` で `200` + JSON を返す
 - `GET /v1/capabilities` で利用可能機能を返す
 - `POST /v1/connect` で relayサーバから target `host:port` への TCP到達プリチェック
-- `GET /v1/stream/:sessionId` WebSocket ストリーム（接続時 `session.ready` を送信し、以降は target への raw TCP 中継）
+- `GET /v1/stream/:sessionId` WebSocket ストリーム（接続時 `session.ready` を送信）
+  - `RELAY_RPC_MODE=stub`（既定）: 最小 JSON-RPC スタブ（auth/server.info/fs.write/fs.read）
+  - `RELAY_RPC_MODE=framed`: WebSocket JSON-RPC を target 側の framed JSON-RPC（Content-Length 形式）へ中継
 - 任意の Bearer token 認証 (`RELAY_PROBE_TOKEN`)
 - CORS ヘッダ付与 (`ALLOW_ORIGIN`)
 
@@ -140,5 +142,7 @@ Relay endpoint URL (HTTPS/Caddy): https://192.168.1.188:8443/healthz
 ## 注意
 
 - 公開する場合は HTTPS 化してください（Cloudflare Tunnel, Caddy, Nginx など）。
-- `POST /v1/connect` は現時点で TCP 到達プリチェックまでです。SSH/RPCブリッジ本体は次フェーズです。
-- `GET /v1/stream/:sessionId` は現時点で target への raw TCP 中継です。次フェーズでRPCフレーム中継を実装します。
+- `POST /v1/connect` は target への TCP 到達プリチェックを行います。
+- `RELAY_RPC_MODE=framed` は、target が **framed JSON-RPC（Content-Length 形式）** を話す前提です。
+- target が `openssh-server`（SSH 生プロトコル）だけの場合、`RELAY_RPC_MODE=framed` では JSON-RPC は成立しません。
+  SSH 経由で `obsidian-remote-server` の Unix socket へ中継するブリッジは別実装が必要です。

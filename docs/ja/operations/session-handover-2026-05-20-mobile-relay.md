@@ -72,6 +72,8 @@
 ### 実機向け残タスク
 - 追加の実機端末があれば同手順で再現確認。
 - 変更差分を整理して PR 化。
+- relay-health の `RELAY_RPC_MODE=framed` で upstream framed RPC 接続を使う場合の運用手順を確定。
+- `openssh-server` だけを target にした場合に必要な SSH->Unix socket ブリッジ方式を設計/実装。
 
 ## 9. iPhone 実機検証ログ（2026-05-20 追記）
 
@@ -91,3 +93,14 @@
 - server: `obsidian-remote-relay` / version: `0.0.0-dev`
 - stream: `wss://100.102.8.15:8443/v1/stream/401fd66f367ba915377f5dd20e95bfb7`
 - latency: `514ms`
+
+## 10. relay接続の次段（Stub脱却の進捗）
+- `server/cmd/obsidian-remote-relay-health/main.go` に `rpc-mode` を追加。
+  - `stub`（既定）: 既存の最小JSON-RPCスタブ
+  - `framed`: WebSocket JSON-RPC を target の framed JSON-RPC（Content-Length）へ中継
+- `deploy/relay-health/.env.example` / `docker-compose.yml` に `RELAY_RPC_MODE` を追加。
+- `deploy/relay-health/README.md` に mode 仕様を追記。
+- 注意点:
+  - `framed` は target が framed JSON-RPC を話す必要がある。
+  - target が `openssh-server` のみの場合、SSH 生プロトコルのためそのままでは動作しない。
+  - その場合は relay 側に SSH トンネル（remote daemon socket への橋渡し）実装が別途必要。

@@ -10,10 +10,12 @@ services:
     restart: unless-stopped
     environment:
       RELAY_PROBE_TOKEN: ${RELAY_PROBE_TOKEN:-}
+      RELAY_RPC_MODE: ${RELAY_RPC_MODE:-stub}
     command:
       - --listen=:8080
       - --path=/healthz
       - --allow-origin=${ALLOW_ORIGIN:-*}
+      - --rpc-mode=${RELAY_RPC_MODE:-stub}
     ports:
       - "${HOST_PORT:-8080}:8080"
     healthcheck:
