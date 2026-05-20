@@ -71,6 +71,13 @@ type relaySession struct {
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	RequestRef connectRequest
+	rpcState   *relayRpcState
+}
+
+type relayRpcState struct {
+	mu            sync.Mutex
+	authenticated bool
+	files         map[string]string
 }
 
 type relaySessionStore struct {
@@ -237,6 +244,7 @@ func run(args []string) (int, error) {
 			CreatedAt:  time.Now(),
 			ExpiresAt:  time.Now().Add(sessionStore.ttl),
 			RequestRef: req,
+			rpcState:   newRelayRpcState(),
 		})
 
 		resp := connectResponse{
@@ -339,8 +347,9 @@ func run(args []string) (int, error) {
 				return
 			}
 			if messageType == websocket.TextMessage {
-				// Text frames are reserved for future control messages.
-				continue
+				if handleRelayRPCTextFrame(conn, session, payload) {
+					continue
+				}
 			}
 			if _, writeErr := targetConn.Write(payload); writeErr != nil {
 				return
@@ -493,4 +502,131 @@ func writeJSON(w http.ResponseWriter, status int, payload any, omitBody bool) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func newRelayRpcState() *relayRpcState {
+	return &relayRpcState{files: map[string]string{}}
+}
+
+type relayJSONRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+type relayJSONRPCResponse struct {
+	JSONRPC string              `json:"jsonrpc"`
+	ID      json.RawMessage     `json:"id,omitempty"`
+	Result  any                 `json:"result,omitempty"`
+	Error   *relayJSONRPCError  `json:"error,omitempty"`
+}
+
+type relayJSONRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func handleRelayRPCTextFrame(conn *websocket.Conn, session relaySession, payload []byte) bool {
+	var req relayJSONRPCRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		writeRelayRPCError(conn, nil, fmt.Sprintf("invalid json-rpc payload: %v", err))
+		return true
+	}
+	if req.Method == "" {
+		writeRelayRPCError(conn, req.ID, "invalid json-rpc request: method is required")
+		return true
+	}
+
+	state := session.rpcState
+	if state == nil {
+		state = newRelayRpcState()
+	}
+
+	switch req.Method {
+	case "auth":
+		state.mu.Lock()
+		state.authenticated = true
+		state.mu.Unlock()
+		writeRelayRPCResult(conn, req.ID, map[string]any{"ok": true, "status": "success"})
+		return true
+	case "server.info":
+		writeRelayRPCResult(conn, req.ID, map[string]any{
+			"name":            "obsidian-remote-relay",
+			"version":         Version,
+			"protocolVersion": 1,
+			"capabilities":    []string{"auth", "server.info", "fs.write", "fs.read"},
+		})
+		return true
+	case "fs.write":
+		var params struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			writeRelayRPCError(conn, req.ID, fmt.Sprintf("invalid fs.write params: %v", err))
+			return true
+		}
+		path := strings.TrimSpace(params.Path)
+		if path == "" {
+			writeRelayRPCError(conn, req.ID, "invalid fs.write params: path is required")
+			return true
+		}
+		state.mu.Lock()
+		state.files[path] = params.Content
+		state.mu.Unlock()
+		log.Printf("Writing to %s: %s", path, params.Content)
+		writeRelayRPCResult(conn, req.ID, map[string]any{"ok": true, "path": path})
+		return true
+	case "fs.read":
+		var params struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			writeRelayRPCError(conn, req.ID, fmt.Sprintf("invalid fs.read params: %v", err))
+			return true
+		}
+		path := strings.TrimSpace(params.Path)
+		if path == "" {
+			writeRelayRPCError(conn, req.ID, "invalid fs.read params: path is required")
+			return true
+		}
+		state.mu.Lock()
+		content, ok := state.files[path]
+		state.mu.Unlock()
+		if !ok {
+			writeRelayRPCError(conn, req.ID, fmt.Sprintf("invalid fs.read params: file not found: %s", path))
+			return true
+		}
+		writeRelayRPCResult(conn, req.ID, map[string]any{"path": path, "content": content})
+		return true
+	default:
+		writeRelayRPCError(conn, req.ID, fmt.Sprintf("method not found: %s", req.Method))
+		return true
+	}
+}
+
+func writeRelayRPCResult(conn *websocket.Conn, id json.RawMessage, result any) {
+	if len(id) == 0 || string(id) == "null" {
+		return
+	}
+	_ = conn.WriteJSON(relayJSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	})
+}
+
+func writeRelayRPCError(conn *websocket.Conn, id json.RawMessage, message string) {
+	if len(id) == 0 || string(id) == "null" {
+		return
+	}
+	_ = conn.WriteJSON(relayJSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &relayJSONRPCError{
+			Code:    -32602,
+			Message: message,
+		},
+	})
 }
