@@ -21,3 +21,17 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+  relay-tls:
+    image: caddy:2-alpine
+    container_name: obsidian-remote-relay-tls
+    restart: unless-stopped
+    profiles: ["tls"]
+    depends_on:
+      relay-health:
+        condition: service_healthy
+    ports:
+      - "${TLS_HOST_PORT:-8443}:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro

@@ -26,6 +26,27 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+## HTTPS クイックスタート（Caddy TLS 終端）
+
+`certs/cert.pem` と `certs/key.pem` がある状態で、TLS終端を同時起動します。
+
+```bash
+cd deploy/relay-health
+cp .env.example .env
+
+# certs/cert.pem と certs/key.pem が未作成なら先に生成
+pwsh ./scripts/generate-self-signed-certs.ps1 -IpSans 192.168.1.188,100.102.8.15 -DnsSans localhost
+
+docker compose --profile tls up -d --build
+```
+
+確認:
+
+```bash
+curl -k -i https://localhost:8443/healthz
+curl -k -i https://localhost:8443/v1/capabilities
+```
+
 ## 証明書つきセットアップ（Windows + WSL）
 
 モバイル実機で HTTPS を使う場合は、証明書の SAN に実際の接続先 IP/DNS を含める必要があります。
@@ -51,6 +72,7 @@ pwsh ./scripts/generate-self-signed-certs.ps1 \
 ## 実運用メモ（HTTPS）
 
 - この `docker-compose.yml` 自体は relay-health を平文HTTPで起動します。
+- `docker compose --profile tls up` を使うと、同梱の Caddy が `:8443` で TLS 終端します。
 - HTTPS は前段のTLS終端（reverse proxy）で有効化してください。
 - TLS終端側で `cert.pem` / `key.pem`（または `relay.crt` / `relay.key`）を参照してください。
 
@@ -111,7 +133,8 @@ curl -i -H "Authorization: Bearer <token>" http://localhost:8080/healthz
 実機確認の例:
 
 ```text
-Relay endpoint URL: https://192.168.1.188:8080/healthz
+Relay endpoint URL (HTTP): http://192.168.1.188:8080/healthz
+Relay endpoint URL (HTTPS/Caddy): https://192.168.1.188:8443/healthz
 ```
 
 ## 注意
