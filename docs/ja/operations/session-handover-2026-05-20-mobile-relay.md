@@ -104,3 +104,76 @@
   - `framed` は target が framed JSON-RPC を話す必要がある。
   - target が `openssh-server` のみの場合、SSH 生プロトコルのためそのままでは動作しない。
   - その場合は relay 側に SSH トンネル（remote daemon socket への橋渡し）実装が別途必要。
+
+## 11. relay接続の次段（SSHブリッジ実装）
+- `rpc-mode=ssh-framed` を追加。
+  - relay は `/v1/connect` の `host:port` / `username` で SSH 接続。
+  - remote Unix socket（既定 `~/.obsidian-remote/server.sock`）へ接続し、WebSocket JSON-RPC <-> framed JSON-RPC を中継。
+- `/v1/connect` で設定不備を事前検出するよう変更（`RELAY_CONFIG_ERROR`）。
+- 追加環境変数:
+  - `RELAY_SSH_SOCKET_PATH`
+  - `RELAY_SSH_PRIVATE_KEY_BASE64` / `RELAY_SSH_PRIVATE_KEY_FILE` / `RELAY_SSH_PASSWORD`
+  - `RELAY_SSH_KNOWN_HOSTS_FILE`
+  - `RELAY_SSH_INSECURE_IGNORE_HOST_KEY`
+  - `RELAY_SSH_CONNECT_TIMEOUT_MS`
+- 依存追加: `golang.org/x/crypto`（ssh/knownhosts）。
+- 追加対応（同日）:
+  - `auth` 互換レイヤを実装。
+  - `ssh-framed` セッション開始時に remote token（既定 `~/.obsidian-remote/token`）を SSH で取得。
+  - WebSocket 側 `auth` リクエストを upstream 向け `{"token":"..."}` に透過変換して転送。
+  - 環境変数 `RELAY_SSH_TOKEN_PATH` を追加。
+
+### 次セッション開始時の最短確認（ssh-framed）
+1. `.env` で `RELAY_RPC_MODE=ssh-framed` を設定。
+2. SSH認証情報（秘密鍵 or パスワード）を設定。
+3. `docker compose up -d --build`。
+4. `curl -s http://127.0.0.1:8080/v1/capabilities` で `stream.ws.ssh-framed-rpc.v1` を確認。
+5. iPhone/desktop から relay-rpc mainline を実行し `auth/server.info/fs.write/fs.read` の通過を確認。
+
+### 現在の検証状態（2026-05-20 夜）
+- `go test ./cmd/obsidian-remote-relay-health` 成功。
+- `POST /v1/connect` は `ok=true` / `PRECHECK_OK` を確認。
+- relay ログ上で ssh/token/socket 周りのエラーは未検出。
+- 残りは実クライアント（iPhone/plugin）からの mainline 通過確認。
+
+## 12. 追加切り分け結果（2026-05-20 深夜）
+- 症状: Mobile mainline が `relay stream websocket error` で FAIL。
+- Go製 websocket probe で `streamUrl` に直接接続した結果、最初のフレームに以下エラーを受信:
+  - `{"error":"failed to connect target 100.102.8.15:22: read relay token failed (/home/lalate/.obsidian-remote/token): Process exited with status 1"}`
+- relay-health ログにも一致する診断行を確認:
+  - `stream upstream connect failed ... err=read relay token failed (/home/lalate/.obsidian-remote/token): Process exited with status 1`
+
+### 意味
+- websocket 自体ではなく、`ssh-framed` の upstream 接続時に remote token 読み取りで失敗。
+- つまり `lalate` ユーザーの `~/.obsidian-remote/token` が存在しない/読めない/daemon未起動のいずれか。
+
+### 次の対処
+1. `ssh lalate@100.102.8.15` で remote 側確認:
+  - `ls -la ~/.obsidian-remote`
+  - `cat ~/.obsidian-remote/token`
+  - `ls -la ~/.obsidian-remote/server.sock`
+2. token/socket が無い場合:
+  - そのユーザーで `obsidian-remote-server` を起動して token/socket を生成する。
+3. token の場所が別パスの場合:
+  - `RELAY_SSH_TOKEN_PATH` を実パスに更新して relay 再起動。
+
+## 13. 最終収束（2026-05-20 17:18Z）
+- iPhone 実機 mainline connect test が PASS。
+  - `attempted=1, pass=1, fail=0`
+  - relay mainline: `auth/server.info/fs.write/fs.read ok`
+  - stream: `wss://100.102.8.15:8443/v1/stream/...`
+
+### 収束までの主要因と対策
+1. `auth` 互換差分
+  - 原因: upstream daemon の `auth` result は `{ok:true}` で、mobile 側は `status=="success"` を期待。
+  - 対策: relay 側で `auth` 応答を正規化し `status` を補完。
+2. `fs.read` メソッド差分
+  - 原因: mobile mainline は `fs.read` を呼ぶが、upstream は `fs.readText` 仕様。
+  - 対策: relay 側で `fs.read -> fs.readText` 変換と戻り値整形を追加。
+3. path 形式差分
+  - 原因: mainline の smoke path が絶対パスで、upstream は vault 相対パス前提。
+  - 対策: relay 側で `remotePath` 基準に相対化して転送。
+
+### 現在の運用メモ
+- `rpc-mode=ssh-framed` + TLS (`relay-tls`) で実機 mainline は通過済み。
+- `.env` に秘密鍵を直接入れた運用は暫定。次フェーズで鍵ローテーションと secret 取り扱いの見直しを推奨。

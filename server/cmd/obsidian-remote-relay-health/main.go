@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	rpcframe "github.com/sotashimozono/obsidian-remote-ssh/server/internal/rpc"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Version is replaced at link time via -ldflags "-X main.Version=...".
@@ -30,7 +34,20 @@ var Version = "0.0.0-dev"
 const (
 	relayRPCModeStub   = "stub"
 	relayRPCModeFramed = "framed"
+	relayRPCModeSSH    = "ssh-framed"
 )
+
+type relaySSHBridgeConfig struct {
+	SocketPath            string
+	TokenPath             string
+	PrivateKey            string
+	PrivateKeyBase64      string
+	PrivateKeyFile        string
+	Password              string
+	KnownHostsFile        string
+	InsecureIgnoreHostKey bool
+	SSHConnectTimeout     time.Duration
+}
 
 type healthResponse struct {
 	OK        bool   `json:"ok"`
@@ -131,6 +148,7 @@ func run(args []string) (int, error) {
 		tokenValue = strings.TrimSpace(os.Getenv("RELAY_PROBE_TOKEN"))
 	}
 	rpcModeValue := resolveRelayRPCMode(*rpcMode)
+	sshBridgeCfg := resolveRelaySSHBridgeConfig()
 	sessionStore := newRelaySessionStore(5 * time.Minute)
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(_ *http.Request) bool { return true },
@@ -183,6 +201,8 @@ func run(args []string) (int, error) {
 		capabilities := []string{"healthz", "connect.precheck.v1"}
 		if rpcModeValue == relayRPCModeFramed {
 			capabilities = append(capabilities, "stream.ws.framed-rpc.v1")
+		} else if rpcModeValue == relayRPCModeSSH {
+			capabilities = append(capabilities, "stream.ws.ssh-framed-rpc.v1")
 		} else {
 			capabilities = append(capabilities, "stream.ws.stub.v1")
 		}
@@ -222,6 +242,17 @@ func run(args []string) (int, error) {
 
 		if issues := validateConnectRequest(req); len(issues) > 0 {
 			writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request", Details: issues}, false)
+			return
+		}
+		if cfgErr := validateRelayModeConfig(rpcModeValue, req, sshBridgeCfg); cfgErr != nil {
+			resp := connectResponse{
+				OK:        false,
+				Code:      "RELAY_CONFIG_ERROR",
+				Message:   cfgErr.Error(),
+				RequestID: strings.TrimSpace(req.RequestID),
+				Received:  req,
+			}
+			writeJSON(w, http.StatusOK, resp, false)
 			return
 		}
 
@@ -297,6 +328,7 @@ func run(args []string) (int, error) {
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
+			log.Printf("stream upgrade failed session=%s remote=%s err=%v", sessionID, r.RemoteAddr, err)
 			return
 		}
 		defer func() {
@@ -304,12 +336,18 @@ func run(args []string) (int, error) {
 			_ = conn.Close()
 		}()
 
-		targetConn, err := net.DialTimeout("tcp", session.Target, 5*time.Second)
+		targetConn, targetClose, upstreamAuthToken, err := openRelayUpstreamConn(session, rpcModeValue, sshBridgeCfg)
 		if err != nil {
+			log.Printf("stream upstream connect failed session=%s target=%s mode=%s err=%v", sessionID, session.Target, rpcModeValue, err)
 			_ = conn.WriteJSON(errorResponse{Error: fmt.Sprintf("failed to connect target %s: %v", session.Target, err)})
 			return
 		}
-		defer func() { _ = targetConn.Close() }()
+		defer func() {
+			_ = targetConn.Close()
+			if targetClose != nil {
+				targetClose()
+			}
+		}()
 
 		ready := streamReadyMessage{
 			Type:      "session.ready",
@@ -318,11 +356,12 @@ func run(args []string) (int, error) {
 			Message:   "websocket stream scaffold established",
 		}
 		if err := conn.WriteJSON(ready); err != nil {
+			log.Printf("stream ready write failed session=%s err=%v", sessionID, err)
 			return
 		}
 
-		if rpcModeValue == relayRPCModeFramed {
-			if err := proxyRelayRPCFramed(conn, targetConn); err != nil {
+		if rpcModeValue == relayRPCModeFramed || rpcModeValue == relayRPCModeSSH {
+			if err := proxyRelayRPCFramed(sessionID, conn, targetConn, upstreamAuthToken, strings.TrimSpace(session.RequestRef.RemotePath)); err != nil {
 				log.Printf("relay rpc framed session %s closed: %v", sessionID, err)
 			}
 			return
@@ -404,6 +443,8 @@ func resolveRelayRPCMode(flagValue string) string {
 		return relayRPCModeStub
 	case relayRPCModeFramed:
 		return relayRPCModeFramed
+	case relayRPCModeSSH:
+		return relayRPCModeSSH
 	default:
 		log.Printf("unknown rpc mode %q; fallback to %q", mode, relayRPCModeStub)
 		return relayRPCModeStub
@@ -414,10 +455,253 @@ func connectSuccessMessage(rpcMode string) string {
 	if rpcMode == relayRPCModeFramed {
 		return "tcp precheck to target succeeded; relay will proxy JSON-RPC frames to upstream"
 	}
+	if rpcMode == relayRPCModeSSH {
+		return "tcp precheck to target succeeded; relay will proxy JSON-RPC frames via SSH unix-socket bridge"
+	}
 	return "tcp precheck to target succeeded; SSH/RPC bridge wiring is the next step"
 }
 
-func proxyRelayRPCFramed(conn *websocket.Conn, targetConn net.Conn) error {
+func resolveRelaySSHBridgeConfig() relaySSHBridgeConfig {
+	return relaySSHBridgeConfig{
+		SocketPath:            resolveDefaultEnv("RELAY_SSH_SOCKET_PATH", "~/.obsidian-remote/server.sock"),
+		TokenPath:             resolveDefaultEnv("RELAY_SSH_TOKEN_PATH", "~/.obsidian-remote/token"),
+		PrivateKey:            strings.TrimSpace(os.Getenv("RELAY_SSH_PRIVATE_KEY")),
+		PrivateKeyBase64:      strings.TrimSpace(os.Getenv("RELAY_SSH_PRIVATE_KEY_BASE64")),
+		PrivateKeyFile:        strings.TrimSpace(os.Getenv("RELAY_SSH_PRIVATE_KEY_FILE")),
+		Password:              strings.TrimSpace(os.Getenv("RELAY_SSH_PASSWORD")),
+		KnownHostsFile:        strings.TrimSpace(os.Getenv("RELAY_SSH_KNOWN_HOSTS_FILE")),
+		InsecureIgnoreHostKey: parseEnvBool("RELAY_SSH_INSECURE_IGNORE_HOST_KEY", true),
+		SSHConnectTimeout:     resolveEnvDurationMS("RELAY_SSH_CONNECT_TIMEOUT_MS", 5000),
+	}
+}
+
+func validateRelayModeConfig(rpcMode string, req connectRequest, cfg relaySSHBridgeConfig) error {
+	if rpcMode != relayRPCModeSSH {
+		return nil
+	}
+	if strings.TrimSpace(req.Username) == "" {
+		return errors.New("rpc-mode=ssh-framed requires request.username as SSH user")
+	}
+	if !cfg.hasAuthMethod() {
+		return errors.New("rpc-mode=ssh-framed requires RELAY_SSH_PRIVATE_KEY(_BASE64|_FILE) or RELAY_SSH_PASSWORD")
+	}
+	if !cfg.InsecureIgnoreHostKey && strings.TrimSpace(cfg.KnownHostsFile) == "" {
+		return errors.New("rpc-mode=ssh-framed requires RELAY_SSH_KNOWN_HOSTS_FILE when RELAY_SSH_INSECURE_IGNORE_HOST_KEY=false")
+	}
+	return nil
+}
+
+func openRelayUpstreamConn(session relaySession, rpcMode string, cfg relaySSHBridgeConfig) (net.Conn, func(), string, error) {
+	if rpcMode != relayRPCModeSSH {
+		conn, err := net.DialTimeout("tcp", session.Target, 5*time.Second)
+		if err != nil {
+			return nil, nil, "", err
+		}
+		return conn, nil, "", nil
+	}
+	return dialRelaySSHUnixSocket(session, cfg)
+}
+
+func dialRelaySSHUnixSocket(session relaySession, cfg relaySSHBridgeConfig) (net.Conn, func(), string, error) {
+	sshUser := strings.TrimSpace(session.RequestRef.Username)
+	if sshUser == "" {
+		return nil, nil, "", errors.New("missing ssh username")
+	}
+
+	authMethods, authErr := cfg.authMethods()
+	if authErr != nil {
+		return nil, nil, "", authErr
+	}
+	hostKeyCallback, hostKeyErr := cfg.hostKeyCallback()
+	if hostKeyErr != nil {
+		return nil, nil, "", hostKeyErr
+	}
+
+	client, err := ssh.Dial("tcp", session.Target, &ssh.ClientConfig{
+		User:            sshUser,
+		Auth:            authMethods,
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         cfg.SSHConnectTimeout,
+	})
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("ssh dial failed (user=%s target=%s): %w", sshUser, session.Target, err)
+	}
+
+	tokenPath := resolveRelayRemoteTokenPath(cfg.TokenPath, sshUser)
+	upstreamToken, tokenErr := fetchRelayDaemonToken(client, tokenPath)
+	if tokenErr != nil {
+		_ = client.Close()
+		return nil, nil, "", fmt.Errorf("token fetch failed (user=%s path=%s): %w", sshUser, tokenPath, tokenErr)
+	}
+
+	socketPath := resolveRelayRemoteSocketPath(cfg.SocketPath, sshUser)
+	conn, err := client.Dial("unix", socketPath)
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, "", fmt.Errorf("ssh dial unix socket failed (user=%s path=%s): %w", sshUser, socketPath, err)
+	}
+	return conn, func() { _ = client.Close() }, upstreamToken, nil
+}
+
+func resolveRelayRemoteSocketPath(rawPath string, sshUser string) string {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" {
+		trimmed = "~/.obsidian-remote/server.sock"
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		return "/home/" + sshUser + trimmed[1:]
+	}
+	return trimmed
+}
+
+func resolveRelayRemoteTokenPath(rawPath string, sshUser string) string {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" {
+		trimmed = "~/.obsidian-remote/token"
+	}
+	if strings.HasPrefix(trimmed, "~/") {
+		return "/home/" + sshUser + trimmed[1:]
+	}
+	return trimmed
+}
+
+func fetchRelayDaemonToken(client *ssh.Client, tokenPath string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("ssh new session failed: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	out, err := session.Output("cat " + shellSingleQuote(tokenPath))
+	if err != nil {
+		return "", fmt.Errorf("read relay token failed (%s): %w", tokenPath, err)
+	}
+	token := strings.TrimSpace(string(out))
+	if token == "" {
+		return "", fmt.Errorf("relay token file is empty: %s", tokenPath)
+	}
+	return token, nil
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+func (cfg relaySSHBridgeConfig) hasAuthMethod() bool {
+	if strings.TrimSpace(cfg.Password) != "" {
+		return true
+	}
+	if strings.TrimSpace(cfg.PrivateKey) != "" {
+		return true
+	}
+	if strings.TrimSpace(cfg.PrivateKeyBase64) != "" {
+		return true
+	}
+	if strings.TrimSpace(cfg.PrivateKeyFile) != "" {
+		return true
+	}
+	return false
+}
+
+func (cfg relaySSHBridgeConfig) authMethods() ([]ssh.AuthMethod, error) {
+	methods := make([]ssh.AuthMethod, 0, 2)
+	keyPEM, err := cfg.resolvePrivateKeyPEM()
+	if err != nil {
+		return nil, err
+	}
+	if keyPEM != "" {
+		signer, signerErr := ssh.ParsePrivateKey([]byte(keyPEM))
+		if signerErr != nil {
+			return nil, fmt.Errorf("invalid private key: %w", signerErr)
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+	if strings.TrimSpace(cfg.Password) != "" {
+		methods = append(methods, ssh.Password(cfg.Password))
+		methods = append(methods, ssh.KeyboardInteractive(
+			func(_ string, _ string, questions []string, _ []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i := range questions {
+					answers[i] = cfg.Password
+				}
+				return answers, nil
+			},
+		))
+	}
+	if len(methods) == 0 {
+		return nil, errors.New("no ssh auth method configured")
+	}
+	return methods, nil
+}
+
+func (cfg relaySSHBridgeConfig) resolvePrivateKeyPEM() (string, error) {
+	if s := strings.TrimSpace(cfg.PrivateKey); s != "" {
+		return s, nil
+	}
+	if s := strings.TrimSpace(cfg.PrivateKeyBase64); s != "" {
+		decoded, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return "", fmt.Errorf("RELAY_SSH_PRIVATE_KEY_BASE64 decode failed: %w", err)
+		}
+		return strings.TrimSpace(string(decoded)), nil
+	}
+	if p := strings.TrimSpace(cfg.PrivateKeyFile); p != "" {
+		content, err := os.ReadFile(p)
+		if err != nil {
+			return "", fmt.Errorf("read private key file failed: %w", err)
+		}
+		return strings.TrimSpace(string(content)), nil
+	}
+	return "", nil
+}
+
+func (cfg relaySSHBridgeConfig) hostKeyCallback() (ssh.HostKeyCallback, error) {
+	if !cfg.InsecureIgnoreHostKey {
+		return knownhosts.New(cfg.KnownHostsFile)
+	}
+	if strings.TrimSpace(cfg.KnownHostsFile) != "" {
+		cb, err := knownhosts.New(cfg.KnownHostsFile)
+		if err == nil {
+			return cb, nil
+		}
+		log.Printf("known_hosts load failed (%s), fallback to insecure host key callback: %v", cfg.KnownHostsFile, err)
+	}
+	return ssh.InsecureIgnoreHostKey(), nil
+}
+
+func resolveDefaultEnv(key string, fallback string) string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func parseEnvBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func resolveEnvDurationMS(key string, fallbackMs int) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return time.Duration(fallbackMs) * time.Millisecond
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return time.Duration(fallbackMs) * time.Millisecond
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+func proxyRelayRPCFramed(sessionID string, conn *websocket.Conn, targetConn net.Conn, upstreamAuthToken string, remotePath string) error {
 	reader := bufio.NewReader(targetConn)
 	for {
 		messageType, payload, readErr := conn.ReadMessage()
@@ -432,28 +716,300 @@ func proxyRelayRPCFramed(conn *websocket.Conn, targetConn net.Conn) error {
 			continue
 		}
 
-		reqID := extractRelayRPCID(payload)
-		if !json.Valid(payload) {
-			writeRelayRPCError(conn, reqID, "invalid json-rpc payload")
+		var req relayJSONRPCRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			writeRelayRPCError(conn, nil, "invalid json-rpc payload")
 			continue
 		}
+		reqID := req.ID
+		if strings.TrimSpace(req.Method) == "" {
+			writeRelayRPCError(conn, reqID, "invalid json-rpc request: method is required")
+			continue
+		}
+		originalMethod := req.Method
+
+		rewritten, rewriteErr := rewriteRelayAuthRequest(payload, upstreamAuthToken)
+		if rewriteErr != nil {
+			if req.Method == "auth" {
+				log.Printf("relay rpc auth rewrite failed session=%s err=%v", sessionID, rewriteErr)
+			}
+			writeRelayRPCError(conn, reqID, rewriteErr.Error())
+			continue
+		}
+		if len(rewritten) > 0 {
+			payload = rewritten
+			if req.Method == "auth" {
+				log.Printf("relay rpc auth rewrite applied session=%s", sessionID)
+			}
+		}
+
+		compatRewritten, compatErr := rewriteRelayCompatRequest(payload, remotePath)
+		if compatErr != nil {
+			writeRelayRPCError(conn, reqID, compatErr.Error())
+			continue
+		}
+		if len(compatRewritten) > 0 {
+			payload = compatRewritten
+			if originalMethod == "fs.read" {
+				log.Printf("relay rpc fs.read rewrite applied session=%s", sessionID)
+			}
+		}
+
 		if err := rpcframe.WriteFrame(targetConn, payload); err != nil {
+			if req.Method == "auth" {
+				log.Printf("relay rpc auth upstream write failed session=%s err=%v", sessionID, err)
+			}
 			writeRelayRPCError(conn, reqID, fmt.Sprintf("failed to write upstream rpc frame: %v", err))
 			continue
 		}
 
 		responsePayload, err := readRelayRPCUpstreamFrame(reader, conn)
 		if err != nil {
+			if req.Method == "auth" {
+				log.Printf("relay rpc auth upstream read failed session=%s err=%v", sessionID, err)
+			}
 			writeRelayRPCError(conn, reqID, fmt.Sprintf("failed to read upstream rpc frame: %v", err))
 			continue
 		}
 		if len(responsePayload) == 0 {
 			continue
 		}
+		if req.Method == "auth" {
+			normalized, normErr := normalizeRelayAuthResponse(responsePayload)
+			if normErr != nil {
+				log.Printf("relay rpc auth upstream normalize failed session=%s err=%v", sessionID, normErr)
+			} else {
+				responsePayload = normalized
+			}
+			logRelayAuthResponseSummary(sessionID, responsePayload)
+		}
+		if originalMethod == "fs.read" {
+			normalized, normErr := normalizeRelayFsReadResponse(responsePayload, req.Params)
+			if normErr != nil {
+				log.Printf("relay rpc fs.read normalize failed session=%s err=%v", sessionID, normErr)
+			} else {
+				responsePayload = normalized
+			}
+		}
 		if err := conn.WriteMessage(websocket.TextMessage, responsePayload); err != nil {
 			return err
 		}
 	}
+}
+
+func rewriteRelayCompatRequest(payload []byte, remotePath string) ([]byte, error) {
+	var req relayJSONRPCRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid compatibility rewrite payload: %w", err)
+	}
+
+	if changed, err := relativizeRelayPathParam(&req, remotePath); err != nil {
+		return nil, err
+	} else if changed {
+		rewritten, marshalErr := json.Marshal(req)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("compatibility rewrite marshal failed: %w", marshalErr)
+		}
+		payload = rewritten
+	}
+
+	if req.Method != "fs.read" {
+		if len(payload) > 0 {
+			return payload, nil
+		}
+		return nil, nil
+	}
+	req.Method = "fs.readText"
+	rewritten, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("compatibility rewrite marshal failed: %w", err)
+	}
+	return rewritten, nil
+}
+
+func relativizeRelayPathParam(req *relayJSONRPCRequest, remotePath string) (bool, error) {
+	switch req.Method {
+	case "fs.read", "fs.readText", "fs.write":
+	default:
+		return false, nil
+	}
+
+	if strings.TrimSpace(remotePath) == "" {
+		return false, nil
+	}
+
+	params := map[string]any{}
+	if err := json.Unmarshal(req.Params, &params); err != nil {
+		return false, nil
+	}
+	rawPath, ok := params["path"].(string)
+	if !ok {
+		return false, nil
+	}
+	relPath, changed := relativizeRelayPath(rawPath, remotePath)
+	if !changed {
+		return false, nil
+	}
+	params["path"] = relPath
+	marshaled, err := json.Marshal(params)
+	if err != nil {
+		return false, fmt.Errorf("compatibility rewrite marshal params failed: %w", err)
+	}
+	req.Params = marshaled
+	return true, nil
+}
+
+func relativizeRelayPath(inputPath string, remotePath string) (string, bool) {
+	in := strings.TrimSpace(strings.ReplaceAll(inputPath, "\\", "/"))
+	root := strings.TrimSpace(strings.ReplaceAll(remotePath, "\\", "/"))
+	if in == "" || root == "" {
+		return inputPath, false
+	}
+	in = path.Clean(in)
+	root = path.Clean(root)
+	if !strings.HasPrefix(in, "/") {
+		return inputPath, false
+	}
+	if in == root {
+		return ".", true
+	}
+	prefix := root + "/"
+	if strings.HasPrefix(in, prefix) {
+		return strings.TrimPrefix(in, prefix), true
+	}
+	return inputPath, false
+}
+
+func normalizeRelayAuthResponse(payload []byte) ([]byte, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, fmt.Errorf("unmarshal envelope: %w", err)
+	}
+	if errRaw, ok := envelope["error"]; ok && len(errRaw) > 0 && string(errRaw) != "null" {
+		return payload, nil
+	}
+	resultRaw, ok := envelope["result"]
+	if !ok || len(resultRaw) == 0 || string(resultRaw) == "null" {
+		return payload, nil
+	}
+
+	result := map[string]any{}
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return payload, nil
+	}
+	if v, ok := result["status"]; ok {
+		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+			return payload, nil
+		}
+	}
+	if okValue, ok := result["ok"].(bool); ok {
+		if okValue {
+			result["status"] = "success"
+		} else {
+			result["status"] = "failed"
+		}
+	} else {
+		return payload, nil
+	}
+
+	normalizedResultRaw, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal normalized result: %w", err)
+	}
+	envelope["result"] = normalizedResultRaw
+	normalizedPayload, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("marshal normalized envelope: %w", err)
+	}
+	return normalizedPayload, nil
+}
+
+func normalizeRelayFsReadResponse(payload []byte, requestParams json.RawMessage) ([]byte, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return nil, fmt.Errorf("unmarshal envelope: %w", err)
+	}
+	if errRaw, ok := envelope["error"]; ok && len(errRaw) > 0 && string(errRaw) != "null" {
+		return payload, nil
+	}
+	resultRaw, ok := envelope["result"]
+	if !ok || len(resultRaw) == 0 || string(resultRaw) == "null" {
+		return payload, nil
+	}
+
+	result := map[string]any{}
+	if err := json.Unmarshal(resultRaw, &result); err != nil {
+		return payload, nil
+	}
+	if _, ok := result["path"]; ok {
+		return payload, nil
+	}
+
+	var params struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(requestParams, &params); err != nil {
+		return payload, nil
+	}
+	if strings.TrimSpace(params.Path) == "" {
+		return payload, nil
+	}
+	result["path"] = params.Path
+
+	normalizedResultRaw, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal normalized result: %w", err)
+	}
+	envelope["result"] = normalizedResultRaw
+	normalizedPayload, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("marshal normalized envelope: %w", err)
+	}
+	return normalizedPayload, nil
+}
+
+func logRelayAuthResponseSummary(sessionID string, payload []byte) {
+	var envelope struct {
+		Result struct {
+			Status string `json:"status"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		log.Printf("relay rpc auth upstream response parse failed session=%s err=%v", sessionID, err)
+		return
+	}
+	if envelope.Error != nil {
+		log.Printf("relay rpc auth upstream error session=%s code=%d message=%q", sessionID, envelope.Error.Code, envelope.Error.Message)
+		return
+	}
+	log.Printf("relay rpc auth upstream result session=%s status=%q", sessionID, strings.TrimSpace(envelope.Result.Status))
+}
+
+func rewriteRelayAuthRequest(payload []byte, upstreamAuthToken string) ([]byte, error) {
+	if strings.TrimSpace(upstreamAuthToken) == "" {
+		return nil, nil
+	}
+	var req relayJSONRPCRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid auth rewrite payload: %w", err)
+	}
+	if req.Method != "auth" {
+		return nil, nil
+	}
+	paramsRaw, err := json.Marshal(map[string]string{"token": upstreamAuthToken})
+	if err != nil {
+		return nil, fmt.Errorf("auth rewrite marshal failed: %w", err)
+	}
+	req.Params = paramsRaw
+	rewritten, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("auth rewrite marshal failed: %w", err)
+	}
+	return rewritten, nil
 }
 
 func readRelayRPCUpstreamFrame(reader *bufio.Reader, conn *websocket.Conn) ([]byte, error) {

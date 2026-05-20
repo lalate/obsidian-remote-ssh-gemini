@@ -15,8 +15,26 @@ SSH/RPCブリッジ本体はまだ未実装ですが、API形と認証導線を�
 - `GET /v1/stream/:sessionId` WebSocket ストリーム（接続時 `session.ready` を送信）
   - `RELAY_RPC_MODE=stub`（既定）: 最小 JSON-RPC スタブ（auth/server.info/fs.write/fs.read）
   - `RELAY_RPC_MODE=framed`: WebSocket JSON-RPC を target 側の framed JSON-RPC（Content-Length 形式）へ中継
+  - `RELAY_RPC_MODE=ssh-framed`: SSH で target に接続し、remote Unix socket（既定 `~/.obsidian-remote/server.sock`）へ framed JSON-RPC 中継
 - 任意の Bearer token 認証 (`RELAY_PROBE_TOKEN`)
 - CORS ヘッダ付与 (`ALLOW_ORIGIN`)
+
+## ssh-framed モード（obsidian-ssh-server 接続）
+
+`RELAY_RPC_MODE=ssh-framed` では、relay が次の手順で上流へ接続します。
+
+1. `/v1/connect` で受けた `host:port` と `username` を使って SSH 接続
+2. remote の Unix socket（既定 `~/.obsidian-remote/server.sock`）を開く
+3. WebSocket JSON-RPC を framed JSON-RPC へ変換して双方向中継
+
+主な環境変数:
+
+- `RELAY_SSH_SOCKET_PATH`（既定 `~/.obsidian-remote/server.sock`）
+- `RELAY_SSH_TOKEN_PATH`（既定 `~/.obsidian-remote/token`）
+- `RELAY_SSH_PRIVATE_KEY_BASE64` または `RELAY_SSH_PRIVATE_KEY_FILE` または `RELAY_SSH_PASSWORD`
+- `RELAY_SSH_KNOWN_HOSTS_FILE`
+- `RELAY_SSH_INSECURE_IGNORE_HOST_KEY`（既定 `true`）
+- `RELAY_SSH_CONNECT_TIMEOUT_MS`（既定 `5000`）
 
 ## クイックスタート
 
@@ -145,4 +163,5 @@ Relay endpoint URL (HTTPS/Caddy): https://192.168.1.188:8443/healthz
 - `POST /v1/connect` は target への TCP 到達プリチェックを行います。
 - `RELAY_RPC_MODE=framed` は、target が **framed JSON-RPC（Content-Length 形式）** を話す前提です。
 - target が `openssh-server`（SSH 生プロトコル）だけの場合、`RELAY_RPC_MODE=framed` では JSON-RPC は成立しません。
-  SSH 経由で `obsidian-remote-server` の Unix socket へ中継するブリッジは別実装が必要です。
+- `openssh-server` へ接続する場合は `RELAY_RPC_MODE=ssh-framed` を使ってください。
+- 本番では `RELAY_SSH_INSECURE_IGNORE_HOST_KEY=false` + `RELAY_SSH_KNOWN_HOSTS_FILE` を推奨します。
