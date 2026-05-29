@@ -9,6 +9,7 @@ import { DEFAULT_BACKOFF } from './transport/Backoff';
 import { ServerDeployer, resolveRemotePath } from './transport/ServerDeployer';
 import { tryReuseExistingDaemon } from './transport/DaemonProbe';
 import { establishRpcConnection } from './transport/RpcConnection';
+import type { RelayWsConnection } from './transport/RelayWsConnection';
 import { normalizeRemotePath, sameRemotePath } from './util/pathUtils';
 import { logger } from './util/logger';
 import { errorMessage } from './util/errorMessage';
@@ -41,6 +42,7 @@ export class ConnectionManager {
   activeProfile: SshProfile | null = null;
   activeRemoteBasePath: string | null = null;
   rpcConnection: RpcConnectionHandle | null = null;
+  relayConnection: RelayWsConnection | null = null;
   daemonDeployer: ServerDeployer | null = null;
   reconnectManager: ReconnectManager | null = null;
 
@@ -149,8 +151,16 @@ export class ConnectionManager {
     );
   }
 
-  /** Close RPC tunnel, stop daemon, disconnect SSH. */
+  /** Close RPC tunnel, stop daemon, disconnect SSH/relay. */
   async disconnectTransport(): Promise<void> {
+    if (this.relayConnection) {
+      try { this.relayConnection.close(); }
+      catch (e) { logger.warn(`relayConnection.close: ${errorMessage(e)}`); }
+      this.relayConnection = null;
+      this.activeProfile = null;
+      this.activeRemoteBasePath = null;
+      return;
+    }
     if (this.rpcConnection) {
       try { this.rpcConnection.close(); }
       catch (e) { logger.warn(`rpcConnection.close: ${errorMessage(e)}`); }
@@ -241,12 +251,17 @@ export class ConnectionManager {
 
   /** Build an appropriate RemoteFsClient for the current transport. */
   buildFsClient(): RemoteFsClient {
-    return this.rpcConnection
-      ? new RpcRemoteFsClient(this.rpcConnection.rpc)
-      : new SftpRemoteFsClient(this.client);
+    if (this.rpcConnection) return new RpcRemoteFsClient(this.rpcConnection.rpc);
+    if (this.relayConnection) {
+      // RelayWsRpcClient is structurally compatible with RpcClient
+      // for the subset of methods RpcRemoteFsClient actually calls.
+      return new RpcRemoteFsClient(this.relayConnection.rpc as unknown as import('./transport/RpcClient').RpcClient);
+    }
+    return new SftpRemoteFsClient(this.client);
   }
 
   isAlive(): boolean {
+    if (this.relayConnection) return !this.relayConnection.rpc.isClosed();
     return this.client.isAlive();
   }
 

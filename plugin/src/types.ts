@@ -7,7 +7,7 @@ export type AuthMethod = 'password' | 'privateKey' | 'agent';
  * opt in to `'rpc'` per profile when they want auto-deploy of the
  * daemon at connect time.
  */
-export type RemoteTransport = 'sftp' | 'rpc';
+export type RemoteTransport = 'sftp' | 'rpc' | 'relay-rpc';
 
 export enum SyncState {
   IDLE         = 'idle',
@@ -61,6 +61,17 @@ export interface SshProfile {
    * `.obsidian-remote/token`.
    */
   rpcTokenPath?: string;
+  /**
+   * Relay server base URL for relay-rpc transport
+   * (e.g. "https://relay.example.com"). Required when transport is
+   * 'relay-rpc'.
+   */
+  relayUrl?: string;
+  /**
+   * Optional HTTP bearer token for relay API authentication
+   * (e.g. POST /v1/connect).
+   */
+  relayAuthToken?: string;
   /**
    * Directory names to skip when walking the remote tree into the
    * vault model. A match is by exact basename anywhere in the tree

@@ -12,6 +12,8 @@ import { PendingEditsBar } from './ui/PendingEditsBar';
 import { RpcRemoteFsClient } from './adapter/RpcRemoteFsClient';
 import { AdapterManager } from './adapter/AdapterManager';
 import { establishRpcConnection } from './transport/RpcConnection';
+import { establishRelayWsConnection } from './transport/RelayWsConnection';
+import type { RelayConnectInputs } from './transport/RelayWsConnection';
 import { ServerDeployer } from './transport/ServerDeployer';
 import type { ReconnectState } from './transport/ReconnectManager';
 import * as fs from 'fs';
@@ -437,38 +439,79 @@ export default class RemoteSshPlugin extends Plugin {
       return;
     }
     this.setState(SyncState.CONNECTING);
-    try {
-      await this.conn.connectSsh(profile);
-    } catch (e) {
-      this.setState(SyncState.ERROR);
-      const { notice, classified } = classifyToNotice(e);
-      logger.error(`Connect failed: ${classified.title}`, {
-        category: classified.category, code: classified.code,
-        original: classified.original.message, profileId: profile.id,
-      });
-      new Notice(notice);
-      try { await this.conn.client.disconnect(); } catch { /* ignore */ }
-      return;
-    }
 
     const transport = profile.transport ?? 'sftp';
     let rpcSummary = '';
-    if (transport === 'rpc') {
+
+    if (transport === 'relay-rpc') {
+      // Relay path: no SSH, connect via WebSocket to the relay server.
+      if (!profile.relayUrl) {
+        this.setState(SyncState.ERROR);
+        new Notice('Remote SSH: relayUrl is required for relay-rpc transport');
+        return;
+      }
       try {
-        await this.conn.startRpcSession(profile, this.conn.activeRemoteBasePath!);
-        const caps = this.conn.rpcConnection?.info.capabilities.length ?? 0;
-        const ver  = this.conn.rpcConnection?.info.version ?? '?';
-        rpcSummary = ` — daemon ${ver}, ${caps} capabilities`;
+        const effectivePath = normalizeRemotePath(profile.remotePath);
+        const inputs: RelayConnectInputs = {
+          baseUrl: profile.relayUrl,
+          target: {
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            remotePath: effectivePath,
+          },
+          authToken: profile.relayAuthToken,
+          rpcCredentials: {
+            username: profile.username,
+            password: profile.passwordRef ?? '',
+          },
+          timeoutMs: profile.connectTimeoutMs,
+        };
+        const conn = await establishRelayWsConnection(inputs);
+        this.conn.relayConnection = conn;
+        this.conn.activeRemoteBasePath = effectivePath;
+        this.conn.activeProfile = profile;
+        rpcSummary = ` — relay-rpc session ${conn.sessionId}`;
+      } catch (e) {
+        this.setState(SyncState.ERROR);
+        const msg = errorMessage(e);
+        logger.error(`Relay-RPC connect failed: ${msg}`, { profileId: profile.id });
+        new Notice(`Remote SSH: relay connect failed — ${msg}`);
+        return;
+      }
+    } else {
+      // SSH-based path (sftp / rpc).
+      try {
+        await this.conn.connectSsh(profile);
       } catch (e) {
         this.setState(SyncState.ERROR);
         const { notice, classified } = classifyToNotice(e);
-        logger.error(`RPC startup failed: ${classified.title}`, {
+        logger.error(`Connect failed: ${classified.title}`, {
           category: classified.category, code: classified.code,
           original: classified.original.message, profileId: profile.id,
         });
         new Notice(notice);
         try { await this.conn.client.disconnect(); } catch { /* ignore */ }
         return;
+      }
+
+      if (transport === 'rpc') {
+        try {
+          await this.conn.startRpcSession(profile, this.conn.activeRemoteBasePath!);
+          const caps = this.conn.rpcConnection?.info.capabilities.length ?? 0;
+          const ver  = this.conn.rpcConnection?.info.version ?? '?';
+          rpcSummary = ` — daemon ${ver}, ${caps} capabilities`;
+        } catch (e) {
+          this.setState(SyncState.ERROR);
+          const { notice, classified } = classifyToNotice(e);
+          logger.error(`RPC startup failed: ${classified.title}`, {
+            category: classified.category, code: classified.code,
+            original: classified.original.message, profileId: profile.id,
+          });
+          new Notice(notice);
+          try { await this.conn.client.disconnect(); } catch { /* ignore */ }
+          return;
+        }
       }
     }
 

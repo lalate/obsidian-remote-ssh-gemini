@@ -123,7 +123,7 @@ export class AdapterManager {
     // fall back to the direct-SFTP wrapper. The adapter itself is
     // unaware of the choice — both clients implement RemoteFsClient.
     const fsClient = this.conn.buildFsClient();
-    const transportLabel = this.conn.rpcConnection ? 'RPC' : 'SFTP';
+    const transportLabel = this.conn.rpcConnection ? 'RPC' : this.conn.relayConnection ? 'RELAY-RPC' : 'SFTP';
     // Per-client path remapping: client-private files like
     // .obsidian/workspace.json get redirected into a per-client subtree
     // on the remote so two machines on the same vault don't trample
