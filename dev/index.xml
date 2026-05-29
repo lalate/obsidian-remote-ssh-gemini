@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<rss version="2.0">
+    <channel>
+      <title>obsidian-remote-ssh</title>
+      <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev</link>
+      <description>Last 10 notes on obsidian-remote-ssh</description>
+      <generator>Quartz -- quartz.jzhao.xyz</generator>
+      <item>
+    <title>Bidirectional sync gap — design analysis (issues</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/bidirectional-sync-gap</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/bidirectional-sync-gap</guid>
+    <description><![CDATA[ How the shadow-vault adapter's one-way write-through surfaces as two separate user-facing bugs, and the test framework that captures the asymmetry. ]]></description>
+    <pubDate>Tue, 12 May 2026 00:33:49 GMT</pubDate>
+  </item><item>
+    <title>Architecture: collab safety epic (E2)</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/collab</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/collab</guid>
+    <description><![CDATA[ Design record for obsidian-remote-ssh's collab + offline-resilience epic: conflict surface design, write preconditions, queue-on-disconnect, watcher resubscription. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Architecture: performance epic (E1)</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/perf</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/perf</guid>
+    <description><![CDATA[ Design record for obsidian-remote-ssh's performance epic: SSH RTT amortisation, daemon thumbnail cache, fs.walk + fs.thumbnail design, batched RPC, profiling results. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Release &amp; deploy pipeline</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/release-pipeline</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/release-pipeline</guid>
+    <description><![CDATA[ Release &amp; deploy pipeline End-to-end design of how a code change goes from a merged PR to a signed binary running on a user’s remote host. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Architecture: Shadow Vault Approach</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/shadow-vault</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/architecture/shadow-vault</guid>
+    <description><![CDATA[ How obsidian-remote-ssh's shadow vault architecture works: separate Obsidian vault per profile, lazy fetch from the remote, why monkey-patching the adapter was retired. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Backup &amp; restore</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/backup-restore</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/backup-restore</guid>
+    <description><![CDATA[ Back up and restore your remote Obsidian vault with rsync, restic, or borg. Covers daily snapshots, off-site replication, single-note recovery, full disaster restore. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Hardware-key SSH auth (YubiKey, TouchID, Secure Enclave)</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/hardware-key</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/hardware-key</guid>
+    <description><![CDATA[ Use a YubiKey, Nitrokey, macOS Secure Enclave, or Windows Hello to sign SSH connections to your Obsidian vault. FIDO2 ed25519-sk + Apple keychain + TPM recipes. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Migrating between hosts</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/host-migration</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/host-migration</guid>
+    <description><![CDATA[ Move your Obsidian vault from one remote host to another (Pi to NAS, home to VPS) with rsync, profile re-target, and host-key trust handoff. Zero-data-loss recipe. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Editing multiple vaults from one Obsidian</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/multi-vault</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/multi-vault</guid>
+    <description><![CDATA[ Edit work, personal, and family Obsidian vaults from a single Obsidian install. Multiple SSH profiles, separate shadow vaults, shared launcher vault. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item><item>
+    <title>Raspberry Pi vault from scratch</title>
+    <link>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/raspberry-pi-vault</link>
+    <guid>https://codes.sota-shimozono.com/obsidian-remote-ssh/dev/en/cookbook/raspberry-pi-vault</guid>
+    <description><![CDATA[ Set up a Raspberry Pi as your home Obsidian vault server from scratch — OS install, SSH key, vault directory, network access, and the matching plugin profile. ]]></description>
+    <pubDate>Sun, 10 May 2026 15:30:51 GMT</pubDate>
+  </item>
+    </channel>
+  </rss>
