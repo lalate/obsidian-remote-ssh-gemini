@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import { RelayWsRpcClient } from './RelayWsRpcClient';
 
 export interface RelayConnectTarget {
@@ -55,20 +56,27 @@ export async function establishRelayWsConnection(
     headers['Authorization'] = `Bearer ${inputs.authToken}`;
   }
 
-  const connectResp = await fetch(connectUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      host: inputs.target.host,
-      port: inputs.target.port,
-      username: inputs.target.username,
-      remotePath: inputs.target.remotePath,
-    }),
-  });
-  if (!connectResp.ok) {
+  let connectResp;
+  try {
+    connectResp = await requestUrl({
+      url: connectUrl,
+      method: 'POST',
+      contentType: 'application/json',
+      headers,
+      body: JSON.stringify({
+        host: inputs.target.host,
+        port: inputs.target.port,
+        username: inputs.target.username,
+        remotePath: inputs.target.remotePath,
+      }),
+    });
+  } catch (cause) {
+    throw new Error(`relay /v1/connect request failed`, { cause });
+  }
+  if (connectResp.status < 200 || connectResp.status >= 300) {
     throw new Error(`relay /v1/connect failed: HTTP ${connectResp.status}`);
   }
-  const connectJson = await connectResp.json() as {
+  const connectJson = connectResp.json as {
     code?: string;
     sessionId?: string;
     streamUrl?: string;
@@ -86,7 +94,7 @@ export async function establishRelayWsConnection(
     let settled = false;
     const ws = new WebSocket(streamUrl);
 
-    const timer = setTimeout(() => {
+    const timer = activeWindow.setTimeout(() => {
       if (settled) return;
       settled = true;
       try { ws.close(); } catch { /* ignore */ }
@@ -99,7 +107,7 @@ export async function establishRelayWsConnection(
         const frame = JSON.parse(evt.data) as { type?: string };
         if (frame.type === 'session.ready') {
           settled = true;
-          clearTimeout(timer);
+          activeWindow.clearTimeout(timer);
           // Hand the already-open socket to RelayWsRpcClient.
           // The constructor immediately overrides ws.onmessage so all
           // subsequent frames are handled by the RPC client.
@@ -112,13 +120,13 @@ export async function establishRelayWsConnection(
     ws.onerror = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      activeWindow.clearTimeout(timer);
       reject(new Error('relay WebSocket error before session.ready'));
     };
     ws.onclose = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      activeWindow.clearTimeout(timer);
       reject(new Error('relay WebSocket closed before session.ready'));
     };
   });
