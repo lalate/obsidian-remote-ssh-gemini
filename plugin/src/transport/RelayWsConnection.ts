@@ -70,8 +70,8 @@ export async function establishRelayWsConnection(
         remotePath: inputs.target.remotePath,
       }),
     });
-  } catch (cause) {
-    throw new Error(`relay /v1/connect request failed`, { cause });
+  } catch {
+    throw new Error(`relay /v1/connect request failed`);
   }
   if (connectResp.status < 200 || connectResp.status >= 300) {
     throw new Error(`relay /v1/connect failed: HTTP ${connectResp.status}`);
