@@ -38,6 +38,41 @@ export interface RemoteEntry {
 
 export type CloseListener = (event: { unexpected: boolean }) => void;
 
+export interface ExtensionInvokeParams {
+  tool: string;
+  args?: Record<string, string>;
+  workingDir?: string;
+  persist?: boolean;
+  resumeFrom?: number;
+}
+
+export interface ExtensionInvokeResult {
+  invocationId: string;
+  accepted: boolean;
+}
+
+export interface CliOutputParams {
+  invocationId: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+  seq?: number;
+}
+
+export interface CliOutputBatchParams {
+  invocationId: string;
+  items: Array<{ stream: 'stdout' | 'stderr'; data: string; seq?: number }>;
+}
+
+export interface CliDoneParams {
+  invocationId: string;
+  exitCode: number;
+  signal?: string;
+}
+
+export type CliOutputHandler = (params: CliOutputParams) => void;
+export type CliOutputBatchHandler = (params: CliOutputBatchParams) => void;
+export type CliDoneHandler = (params: CliDoneParams) => void;
+
 /**
  * WsRemoteFsClient speaks to the Go daemon via WsRpcClient over a
  * browser WebSocket + relay. It mirrors RpcRemoteFsClient (desktop)
@@ -122,6 +157,24 @@ export class WsRemoteFsClient {
 
   async copy(srcPath: string, destPath: string): Promise<void> {
     await this.rpc.call('fs.copy', { srcPath, destPath });
+  }
+
+  // ─── extensions ────────────────────────────────────────────────────────
+
+  async invokeExtension(params: ExtensionInvokeParams): Promise<ExtensionInvokeResult> {
+    return this.rpc.call('extension.invoke', params as unknown as Record<string, unknown>) as Promise<ExtensionInvokeResult>;
+  }
+
+  onCliOutput(handler: CliOutputHandler): () => void {
+    return this.rpc.onNotification('cli.output', handler as (p: unknown) => void);
+  }
+
+  onCliOutputBatch(handler: CliOutputBatchHandler): () => void {
+    return this.rpc.onNotification('cli.output.batch', handler as (p: unknown) => void);
+  }
+
+  onCliDone(handler: CliDoneHandler): () => void {
+    return this.rpc.onNotification('cli.done', handler as (p: unknown) => void);
   }
 }
 

@@ -4,6 +4,7 @@ import { RpcError } from './RpcError.js';
 // MethodName duplicated from next/proto/types to avoid cross-package import.
 export type MethodName =
   | 'auth' | 'server.info'
+  | 'extension.schema' | 'extension.invoke'
   | 'fs.stat' | 'fs.exists' | 'fs.list' | 'fs.walk'
   | 'fs.readText' | 'fs.readBinary' | 'fs.readBinaryRange' | 'fs.thumbnail'
   | 'fs.write' | 'fs.writeBinary' | 'fs.append' | 'fs.appendBinary'
