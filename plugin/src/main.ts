@@ -41,6 +41,7 @@ import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
 import { telemetry, telemetryLogPath } from "./util/Telemetry";
+import { ChatUI } from "./chat";
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -97,6 +98,7 @@ export default class RemoteSshPlugin extends Plugin {
    * two terminal leaves with two RemoteShell channels.
    */
   private openingTerminal = false;
+  private chatUI!: ChatUI;
 
   async onload() {
     await this.loadSettings();
@@ -162,6 +164,9 @@ export default class RemoteSshPlugin extends Plugin {
       () => this.settings,
       this.transferTracker,
     );
+
+    this.chatUI = new ChatUI(this.app, this.conn, this);
+    this.chatUI.enable();
 
     // #341 follow-up: a writer rename reflects into the model fine,
     // but Obsidian's own post-adapter `Vault.rename` reconcile crashes
@@ -349,6 +354,7 @@ export default class RemoteSshPlugin extends Plugin {
     this.statusBar?.remove();
     this.pendingEditsBar?.remove();
     this.largeTransferBar?.remove();
+    this.chatUI?.disable();
     this.observability?.uninstall();
     // F22 — flush any in-memory counters before the process tears down.
     void telemetry.setEnabled(false);
