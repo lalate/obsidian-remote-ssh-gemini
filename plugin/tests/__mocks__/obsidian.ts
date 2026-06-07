@@ -458,6 +458,21 @@ export type HeadingCache = unknown;
 export type ListItemCache = unknown;
 export type PluginManifest = Plugin['manifest'];
 
+export interface EditorPosition {
+  line: number;
+  ch: number;
+}
+
+export interface EditorSuggestTriggerInfo {
+  start: EditorPosition;
+  end: EditorPosition;
+  query: string;
+}
+
+export interface EditorSuggestContext extends EditorSuggestTriggerInfo {
+  editor: Editor;
+}
+
 // Augment the global HTMLElement with the Obsidian DOM helpers so
 // production source code typechecks against this mock.
 declare global {
@@ -476,6 +491,16 @@ declare global {
     appendText(t: string): void;
     toggleClass(c: string | string[], on: boolean): void;
   }
+}
+
+// ─── EditorSuggest mock ────────────────────────────────────────────────
+
+export abstract class EditorSuggest<T> {
+  constructor(public app: App) {}
+  abstract onTrigger(cursor: EditorPosition, editor: Editor, file: TFile | null): EditorSuggestTriggerInfo | null;
+  abstract getSuggestions(context: EditorSuggestContext): T[] | Promise<T[]>;
+  abstract renderSuggestion(value: T, el: HTMLElement): void;
+  abstract selectSuggestion(value: T, evt: MouseEvent | KeyboardEvent): void;
 }
 
 // ─── Test helpers ────────────────────────────────────────────────────
