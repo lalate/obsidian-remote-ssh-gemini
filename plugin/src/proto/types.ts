@@ -53,6 +53,8 @@ export interface Entry {
 export type MethodName =
   | 'auth'
   | 'server.info'
+  | 'extension.schema'
+  | 'extension.invoke'
   | 'fs.stat'
   | 'fs.exists'
   | 'fs.list'
@@ -77,6 +79,8 @@ export type MethodName =
 export interface MethodMap {
   'auth':            { params: AuthParams;            result: AuthResult };
   'server.info':     { params: Record<string, never>; result: ServerInfo };
+  'extension.schema':{ params: Record<string, never>; result: ExtensionSchemaResult };
+  'extension.invoke':{ params: ExtensionInvokeParams; result: ExtensionInvokeResult };
 
   'fs.stat':         { params: PathOnlyParams;        result: Stat | null };
   'fs.exists':       { params: PathOnlyParams;        result: ExistsResult };
@@ -233,6 +237,70 @@ export interface WatchParams { path: string; recursive?: boolean }
 export interface WatchResult { subscriptionId: string }
 export interface UnwatchParams { subscriptionId: string }
 
+// ─── extension types ──────────────────────────────────────────────────────────
+
+export interface ExtensionArgRule {
+  name: string;
+  required?: boolean;
+  pattern?: string;
+  maxLength?: number;
+  allowFlags?: boolean;
+}
+
+export interface ExtensionCapability {
+  tool: string;
+  description?: string;
+  command: string;
+  sha256: string;
+  args?: ExtensionArgRule[];
+  allowWorkingDir?: boolean;
+  persistDefault?: boolean;
+  outputMode?: 'batch' | 'single';
+}
+
+export interface ExtensionSchemaResult {
+  version: number;
+  manifestSha256: string;
+  extensions: ExtensionCapability[];
+}
+
+export interface ExtensionInvokeParams {
+  tool: string;
+  args?: Record<string, string>;
+  workingDir?: string;
+  persist?: boolean;
+  resumeFrom?: number;
+}
+
+export interface ExtensionInvokeResult {
+  invocationId: string;
+  accepted: boolean;
+}
+
+export interface CliOutputParams {
+  invocationId: string;
+  stream: 'stdout' | 'stderr';
+  data: string;
+  seq?: number;
+}
+
+export interface CliOutputBatchItem {
+  stream: 'stdout' | 'stderr';
+  data: string;
+  seq?: number;
+}
+
+export interface CliOutputBatchParams {
+  invocationId: string;
+  items: CliOutputBatchItem[];
+}
+
+export interface CliDoneParams {
+  invocationId: string;
+  exitCode: number;
+  signal?: string;
+}
+
 // ─── server-push notifications ───────────────────────────────────────────────
 
 export type FsChangeEvent = 'created' | 'modified' | 'deleted' | 'renamed';
@@ -248,6 +316,9 @@ export interface FsChangedParams {
 
 export interface ServerNotificationMap {
   'fs.changed': FsChangedParams;
+  'cli.output': CliOutputParams;
+  'cli.output.batch': CliOutputBatchParams;
+  'cli.done': CliDoneParams;
 }
 
 export type ServerNotificationName = keyof ServerNotificationMap;
