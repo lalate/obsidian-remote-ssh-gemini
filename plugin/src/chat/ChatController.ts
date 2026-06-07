@@ -10,7 +10,6 @@ type RemoteFsClient = RpcRemoteFsClient | SftpRemoteFsClient;
 function assertRpcClient(c: RemoteFsClient): asserts c is RpcRemoteFsClient {
   if (!('invokeExtension' in c)) throw new Error('Extension invoke not supported on this transport');
 }
-
 const CHAT_TAIL_BYTES = 64 * 1024; // 64KB - enough for recent messages
 
 type Disposer = () => void;
@@ -115,7 +114,6 @@ export class ChatController {
 
   private setupStreamHandlers(editor: Editor, _file: TFile): void {
     assertRpcClient(this.client);
-
     const onBatch = (params: CliOutputBatchParams) => {
       if (params.invocationId !== this.currentInvocationId) return;
       for (const item of params.items) {
