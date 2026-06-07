@@ -51,3 +51,6 @@ docker/test-vault/*
 public/
 # Quartz framework source — fetched in CI from docs/quartz-framework branch
 quartz/
+
+# Local pipeline helper logs
+pipeline_helper.log
