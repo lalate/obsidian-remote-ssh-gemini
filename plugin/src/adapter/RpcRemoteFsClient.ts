@@ -1,7 +1,7 @@
 import type { RemoteEntry, RemoteStat } from '../types';
 import type { RpcClient } from '../transport/RpcClient';
 import type { CloseListener, RemoteFsClient } from './RemoteFsClient';
-import type { Entry, Stat } from '../proto/types';
+import type { Entry, Stat, ExtensionInvokeParams, ExtensionInvokeResult, CliOutputParams, CliOutputBatchParams, CliDoneParams } from '../proto/types';
 import { RpcError } from '../transport/RpcError';
 import { withPerfTrace } from '../util/PerfTracer';
 
@@ -125,6 +125,24 @@ export class RpcRemoteFsClient implements RemoteFsClient {
     await withPerfTrace('S.rpc', { method: 'fs.copy', path: srcPath, destPath }, () =>
       this.rpc.call('fs.copy', { srcPath, destPath }),
     );
+  }
+
+  // ─── extensions ────────────────────────────────────────────────────────
+
+  async invokeExtension(params: ExtensionInvokeParams): Promise<ExtensionInvokeResult> {
+    return this.rpc.call('extension.invoke', params);
+  }
+
+  onCliOutput(handler: (params: CliOutputParams) => void): () => void {
+    return this.rpc.onNotification('cli.output', handler);
+  }
+
+  onCliOutputBatch(handler: (params: CliOutputBatchParams) => void): () => void {
+    return this.rpc.onNotification('cli.output.batch', handler);
+  }
+
+  onCliDone(handler: (params: CliDoneParams) => void): () => void {
+    return this.rpc.onNotification('cli.done', handler);
   }
 }
 

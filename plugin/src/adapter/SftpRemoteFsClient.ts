@@ -1,6 +1,7 @@
 import type { RemoteEntry, RemoteStat } from '../types';
 import type { SftpClient } from '../ssh/SftpClient';
 import type { CloseListener, RemoteFsClient } from './RemoteFsClient';
+import type { ExtensionInvokeParams, ExtensionInvokeResult, CliOutputParams, CliOutputBatchParams, CliDoneParams } from '../proto/types';
 
 /**
  * SftpRemoteFsClient adapts the existing `SftpClient` (a direct
@@ -41,6 +42,10 @@ export class SftpRemoteFsClient implements RemoteFsClient {
     return this.client.readBinary(path);
   }
 
+  readBinaryRange(path: string, offset: number, length: number, _expectedMtime?: number): Promise<{ data: Buffer; mtime: number; size: number }> {
+    return this.client.readBinaryRange(path, offset, length);
+  }
+
   writeBinary(path: string, data: Buffer, _expectedMtime?: number): Promise<void> {
     // SFTP has no atomic precondition surface — there's no way to ask
     // the server "only write if mtime equals N" without a roundtrip
@@ -67,5 +72,23 @@ export class SftpRemoteFsClient implements RemoteFsClient {
 
   copy(srcPath: string, destPath: string): Promise<void> {
     return this.client.copy(srcPath, destPath);
+  }
+
+  // ─── extensions (not supported over SFTP) ────────────────────────────
+
+  invokeExtension(_params: ExtensionInvokeParams): Promise<ExtensionInvokeResult> {
+    return Promise.reject(new Error('Extension invoke not supported over SFTP transport'));
+  }
+
+  onCliOutput(_handler: (params: CliOutputParams) => void): () => void {
+    return () => {};
+  }
+
+  onCliOutputBatch(_handler: (params: CliOutputBatchParams) => void): () => void {
+    return () => {};
+  }
+
+  onCliDone(_handler: (params: CliDoneParams) => void): () => void {
+    return () => {};
   }
 }

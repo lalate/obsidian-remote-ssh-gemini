@@ -502,6 +502,23 @@ export class SftpClient {
     });
   }
 
+  async readBinaryRange(remotePath: string, offset: number, length: number): Promise<{ data: Buffer; mtime: number; size: number }> {
+    const sftp = this.requireSftp();
+    const stat = await this.stat(remotePath);
+    const totalSize = stat.size;
+    const end = Math.min(offset + length, totalSize) - 1;
+    if (offset >= totalSize) {
+      return { data: Buffer.alloc(0), mtime: stat.mtime, size: totalSize };
+    }
+    return new Promise((resolve, reject) => {
+      const stream = sftp.createReadStream(remotePath, { start: offset, end });
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('error', (err: Error) => reject(asError(err)));
+      stream.on('end', () => resolve({ data: Buffer.concat(chunks), mtime: stat.mtime, size: totalSize }));
+    });
+  }
+
   async readText(remotePath: string, encoding: SftpEncoding = 'utf8'): Promise<string> {
     const buf = await this.readBinary(remotePath);
     return buf.toString(encoding);

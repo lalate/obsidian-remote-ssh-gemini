@@ -1,4 +1,5 @@
 import type { RemoteEntry, RemoteStat } from '../types';
+import type { ExtensionInvokeParams, ExtensionInvokeResult, CliOutputParams, CliOutputBatchParams, CliDoneParams } from '../proto/types';
 
 /**
  * The surface `SftpDataAdapter` (and friends) need from whatever is
@@ -28,6 +29,7 @@ export interface RemoteFsClient {
   exists(path: string): Promise<boolean>;
   list(path: string): Promise<RemoteEntry[]>;
   readBinary(path: string): Promise<Buffer>;
+  readBinaryRange(path: string, offset: number, length: number, expectedMtime?: number): Promise<{ data: Buffer; mtime: number; size: number }>;
 
   // ─── write side ───────────────────────────────────────────────────────
   /**
@@ -52,6 +54,20 @@ export interface RemoteFsClient {
   rmdir(path: string, recursive?: boolean): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   copy(srcPath: string, destPath: string): Promise<void>;
+
+  // ─── extensions ────────────────────────────────────────────────────────
+
+  /** Invoke a remote extension tool (e.g., LLM CLI). Returns invocation ID. */
+  invokeExtension(params: ExtensionInvokeParams): Promise<ExtensionInvokeResult>;
+
+  /** Register handler for streaming stdout/stderr from an extension. */
+  onCliOutput(handler: (params: CliOutputParams) => void): () => void;
+
+  /** Register handler for batched streaming output. */
+  onCliOutputBatch(handler: (params: CliOutputBatchParams) => void): () => void;
+
+  /** Register handler for extension completion. */
+  onCliDone(handler: (params: CliDoneParams) => void): () => void;
 }
 
 /** Called with `{unexpected:true}` when the connection dropped without a clean disconnect. */
