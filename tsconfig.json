@@ -1,0 +1,10 @@
+{
+  "extends": "./plugin/tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "typeRoots": ["./node_modules/@types", "./plugin/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["plugin/src/**/*.ts"]
+}
