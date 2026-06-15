@@ -18,7 +18,23 @@ export type RpcConnectionHandle = Awaited<ReturnType<typeof establishRpcConnecti
 
 export interface ConnectionDeps {
   locateDaemonBinary: () => string | null;
+  /**
+   * Download + cache the daemon binary for the remote's arch when it isn't
+   * staged locally (community-store installs don't ship it). Returns the
+   * local path, or null when the remote arch is unsupported or the user
+   * declined the download — the caller then downgrades to SFTP.
+   */
+  ensureDaemonBinary: (client: SftpClient) => Promise<string | null>;
 }
+
+/**
+ * Raised by {@link ConnectionManager.startRpcSession} when no daemon binary
+ * could be obtained: an unsupported remote arch, a declined download, or a
+ * benign download failure (network / 404). The connect AND reconnect flows
+ * catch it and fall back to SFTP transport. (A sha256/integrity failure is
+ * NOT this error — that surfaces loudly as a generic connect error.)
+ */
+export class DaemonUnavailableError extends Error {}
 
 /**
  * Hooks the reconnect attempt calls after re-establishing the transport
@@ -70,10 +86,14 @@ export class ConnectionManager {
    * and `daemonDeployer` are populated.
    */
   async startRpcSession(profile: SshProfile, effectivePath: string): Promise<void> {
-    const localBinaryPath = this.deps.locateDaemonBinary();
+    // Prefer a locally-staged binary (dev builds); otherwise download +
+    // cache the right per-arch binary from the GitHub release (the path
+    // community-store installs take, since the package can't ship it).
+    const localBinaryPath =
+      this.deps.locateDaemonBinary() ?? (await this.deps.ensureDaemonBinary(this.client));
     if (!localBinaryPath) {
-      throw new Error(
-        'daemon binary not staged. Run `npm run build:server` (or `build:full`) and reload the plugin.',
+      throw new DaemonUnavailableError(
+        'daemon binary unavailable: the remote arch is unsupported or the download was declined.',
       );
     }
 
@@ -220,7 +240,21 @@ export class ConnectionManager {
     }
     if (transport === 'rpc') {
       const effectivePath = this.activeRemoteBasePath ?? normalizeRemotePath(profile.remotePath);
-      await this.startRpcSession(profile, effectivePath);
+      try {
+        await this.startRpcSession(profile, effectivePath);
+      } catch (e) {
+        // Same downgrade the initial connect does (main.ts connectProfile):
+        // a permanent daemon-unavailable condition (unsupported arch /
+        // declined / download failed) must NOT be retried by
+        // ReconnectManager. Continue with rpcConnection still null so
+        // buildFsClient() yields an SFTP client. Any other error propagates
+        // to the reconnect retry loop as before.
+        if (e instanceof DaemonUnavailableError) {
+          logger.warn(`reconnectAttempt: daemon unavailable, continuing on SFTP: ${e.message}`);
+        } else {
+          throw e;
+        }
+      }
     }
 
     hooks.swapClient(this.buildFsClient());
