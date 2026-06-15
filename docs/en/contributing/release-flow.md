@@ -21,27 +21,50 @@ Every merge to `next` becomes a beta release. As a contributor you do not run an
 3. Commit, push, get review, merge.
 4. `release.yml` fires on the `next` push and publishes `vX.Y.Z-beta.N` as a GitHub prerelease with cosign-signed daemon binaries. BRAT consumers pick it up on next launch.
 
-## Stable releases — promotion via release branch
+## Stable releases — promote `next` → `main`
 
-When `next` has accumulated enough verified work to ship as the next stable, the **promotion flow** is:
+**`main` only ever receives merges from `next`. There is no `release/*` branch.**
+To cut a stable release you bump `next` to the stable version *first*, then
+promote `next` to `main` directly.
 
 ```bash
-git checkout -b release/X.Y.Z next
+# 1. Bump next to the stable version — a normal branch, PR'd INTO next.
+git checkout -b release-X.Y.Z next
 cd plugin
-npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops -beta suffix)
-git commit -am "release: prepare X.Y.Z promotion"
-git push origin release/X.Y.Z
-gh pr create --base main --head release/X.Y.Z \
-  --title "release: promote next → main (X.Y.Z)"
+npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops the -beta suffix)
+git commit -am "release: X.Y.Z (stable)"
+git push origin release-X.Y.Z
+gh pr create --base next --head release-X.Y.Z --title "release: X.Y.Z (stable)"
 ```
 
-The release branch is critical — it gives the bump commit a place to be CI-validated (commitlint, version-check, lint, type-check, tests, integration) **before** it reaches `main`. No admin override on `next` or `main` is needed.
+The bump is fully CI-validated by its PR **into `next`** — commitlint,
+version-check (which accepts a plain `X.Y.Z` on `next` as a *promotion-staging*
+shape), lint, type-check, tests. No admin override needed. `release.yml` does
+**not** publish on this `next` push: a stable version on `next` is recognised
+as a staging commit and skipped; the `main` push is what releases.
 
-After the PR is reviewed and merged into `main`:
+Once it merges (`next` now carries the stable `X.Y.Z`), promote:
 
-1. `release.yml` fires on the main push → publishes **vX.Y.Z** stable + cosign-signed binaries + GitHub Release marked latest.
-2. `sync-main-to-next.yml` fires on the same main push → opens an auto-merging PR `main → next` so the merge commit rejoins.
-3. The next beta cycle starts on a normal `feat/...` branch with `npm run bump:beta:start` (`X.Y.Z → X.Y.(Z+1)-beta.0`).
+```bash
+gh pr create --base main --head next --title "promote: next → main (X.Y.Z)"
+```
+
+After the promotion merges into `main`:
+
+1. `release.yml` fires on the main push → publishes **vX.Y.Z** stable +
+   cosign-signed binaries + the GitHub Release (notes auto-generated across the
+   whole beta cycle).
+2. `sync-main-to-next.yml` opens an auto-merging `main → next` PR. Because
+   `next` and `main` are now the **same** `X.Y.Z`, it merges with **no version
+   conflict**.
+3. Start the next beta cycle with `npm run bump:beta:start`
+   (`X.Y.Z → X.Y.(Z+1)-beta.0`) on the first feature branch.
+
+> **Why bump on `next` rather than a `release/` branch → `main`?** Keeping the
+> stable bump on `next` means `main` and `next` never diverge on the version
+> files, so the post-release `main → next` sync is a clean auto-merge instead of
+> a manual version-file conflict on every release. The bump still goes through
+> full CI (via its PR into `next`), and `main` only ever merges from `next`.
 
 ## What `bump:stable` does
 
@@ -60,14 +83,19 @@ graph LR
 
 The script (`plugin/scripts/bump-stable.mjs`) reads the current `-beta.N` suffix, strips it, runs `npm version <stripped>`. The `version` lifecycle hook calls `bump-version.mjs` which detects the plain version and updates **all** five manifest files (vs. a beta bump which only touches the bundled manifest + the BRAT mirror — see [[en/architecture/release-pipeline|Release pipeline]] for why).
 
-## Hot-fixing main without going through next
+## Hot-fixing a shipped stable release
 
-If `main` has a critical bug that can't wait for the next promotion:
+`main` only ever merges from `next`, so even an urgent fix goes through
+`next` — just fast-tracked, not branched off `main`:
 
-1. Branch off `main` directly: `git checkout -b hotfix/X.Y.Z main`
-2. Make the fix + bump: `npm version patch --no-git-tag-version` to go `1.0.44 → 1.0.45`. (`bump:stable` won't help here — there's no `-beta` suffix to strip.)
-3. PR into `main`. version-check requires the head version to be plain `X.Y.Z` strictly greater than base — same rule as a normal promotion.
-4. After merge, the `sync-main-to-next.yml` workflow back-syncs to `next` automatically.
+1. Branch off `next`: `git checkout -b hotfix-X.Y.Z next`.
+2. Make the fix and bump to the patch stable: `cd plugin && npm version patch
+   --no-git-tag-version` (`1.0.44 → 1.0.45`; `bump:stable` doesn't apply —
+   there's no `-beta` suffix to strip).
+3. PR **into `next`** (version-check accepts the plain `X.Y.Z` promotion-staging
+   shape), merge, then immediately promote `next → main` as above.
+4. The `main → next` sync afterwards is a clean auto-merge — same version on
+   both branches.
 
 ## Pre-release sanity checks
 
