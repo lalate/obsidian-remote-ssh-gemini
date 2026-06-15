@@ -222,6 +222,63 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
     expect(after.autoConnectProfileId).toBe('p1');
   });
 
+  it('#399: re-bootstrap propagates a NEW source secret the shadow lacks (was: shadow opens empty / "No password stored")', async () => {
+    // Field bug #399: the password is entered/persisted in the SOURCE
+    // (local) vault AFTER the shadow vault was first bootstrapped. The
+    // shadow's data.json secrets stayed empty because readBaseDataJson
+    // prefers the existing shadow file and never re-reads source — so
+    // the shadow auto-connect died with "No password stored for
+    // profile" and the vault opened empty.
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1', authMethod: 'password', passwordRef: 'p1:password' });
+
+    // First bootstrap: source has no secret yet → shadow gets none.
+    const first = await r.bootstrap(profile, [profile]);
+    const afterFirst = JSON.parse(fs.readFileSync(first.layout.pluginDataFile, 'utf-8'));
+    expect(afterFirst.secrets?.['p1:password']).toBeUndefined();
+
+    // The user now types the password in the SOURCE vault; saveSettings
+    // flushes the encrypted blob into the source plugin's data.json.
+    fs.writeFileSync(path.join(scratch.sourceDir, 'data.json'), JSON.stringify({
+      secrets: { 'p1:password': { iv: 'aa', tag: 'bb', data: 'cc' } },
+    }), 'utf-8');
+
+    // Re-bootstrap (user clicks Connect again, or the shadow re-spawns).
+    await r.bootstrap(profile, [profile]);
+
+    const afterSecond = JSON.parse(fs.readFileSync(first.layout.pluginDataFile, 'utf-8'));
+    expect(afterSecond.secrets?.['p1:password']).toEqual({ iv: 'aa', tag: 'bb', data: 'cc' });
+  });
+
+  it('#399: secrets merge is a union — shadow-only entries survive, source wins on a conflicting ref', async () => {
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1', authMethod: 'password', passwordRef: 'p1:password' });
+    const first = await r.bootstrap(profile, [profile]);
+
+    // Shadow accumulated its own secret (e.g. a passphrase typed
+    // directly in the shadow window) AND holds a now-stale copy of a
+    // ref the user just re-entered in the source vault.
+    const shadow = JSON.parse(fs.readFileSync(first.layout.pluginDataFile, 'utf-8'));
+    shadow.secrets = {
+      'shadow-only:passphrase': { iv: '00', tag: '00', data: 'shadow' },
+      'p1:password':            { iv: '00', tag: '00', data: 'stale' },
+    };
+    fs.writeFileSync(first.layout.pluginDataFile, JSON.stringify(shadow, null, 2), 'utf-8');
+
+    // Source holds the authoritative (latest) blob for the shared ref.
+    fs.writeFileSync(path.join(scratch.sourceDir, 'data.json'), JSON.stringify({
+      secrets: { 'p1:password': { iv: 'ff', tag: 'ff', data: 'fresh' } },
+    }), 'utf-8');
+
+    await r.bootstrap(profile, [profile]);
+
+    const merged = JSON.parse(fs.readFileSync(first.layout.pluginDataFile, 'utf-8')).secrets;
+    // shadow-only entry preserved (union, not overwrite)
+    expect(merged['shadow-only:passphrase']).toEqual({ iv: '00', tag: '00', data: 'shadow' });
+    // source wins on the conflicting ref — it's the user's latest password
+    expect(merged['p1:password']).toEqual({ iv: 'ff', tag: 'ff', data: 'fresh' });
+  });
+
   it('regression: source plugin\'s data.json is NEVER touched by install, even on re-bootstrap', async () => {
     // Stage a sentinel data.json in the SOURCE plugin dir — this
     // mirrors the dev-vault setup where the developer's hostKeyStore /

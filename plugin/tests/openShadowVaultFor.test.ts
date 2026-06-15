@@ -115,3 +115,43 @@ describe('openShadowVaultFor — shadowSpawnInFlight guard (#352)', () => {
     expect(recordedNotices().some((n) => /still opening/.test(n))).toBe(true);
   });
 });
+
+describe('openShadowVaultFor — secret flush before spawn (#399)', () => {
+  beforeEach(() => {
+    openShadowForMock.mockReset();
+    clearNotices();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  it('persists settings (flushing the in-memory password into data.json) BEFORE spawning the shadow', async () => {
+    const plugin = makePlugin();
+    openShadowForMock.mockResolvedValue(okResult());
+
+    // Obsidian's Plugin.saveData is the disk sink saveSettings() writes
+    // through; the mock Plugin base doesn't model it, so install a spy.
+    const saveData = vi.fn().mockResolvedValue(undefined);
+    (plugin as unknown as { saveData: typeof saveData }).saveData = saveData;
+
+    // Mirror ConnectModal: the user types a password, which the plugin's
+    // own authResolver persists into its in-memory SecretStore — but NOT
+    // yet to disk. The flush is what carries it to the source data.json
+    // that ShadowVaultBootstrap then reads.
+    (plugin as unknown as { authResolver: { persistSecret(ref: string, v: string): void } })
+      .authResolver.persistSecret('p1:password', 'hunter2');
+
+    await plugin.openShadowVaultFor(profile);
+
+    // The flush must happen, and BEFORE the shadow spawn — otherwise the
+    // bootstrap reads a source data.json whose secrets are still empty
+    // and the shadow auto-connect dies with "No password stored".
+    expect(saveData).toHaveBeenCalledTimes(1);
+    const written = saveData.mock.calls[0][0] as { secrets?: Record<string, unknown> };
+    expect(written.secrets?.['p1:password']).toBeDefined();
+    expect(saveData.mock.invocationCallOrder[0])
+      .toBeLessThan(openShadowForMock.mock.invocationCallOrder[0]);
+  });
+});
