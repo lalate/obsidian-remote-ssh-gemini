@@ -36,7 +36,12 @@ export interface DaemonDownloaderDeps {
   cacheHit: (absPath: string) => boolean;
   /** `owner/repo` for the release URL. */
   repo: string;
-  /** Release tag to fetch from (= plugin version, e.g. `1.1.3`). */
+  /**
+   * Release tag to fetch from. This is `manifest.version` verbatim, so on
+   * the beta channel it carries the pre-release suffix (e.g. `1.1.3-beta.1`)
+   * and a GitHub release with exactly that tag must exist and carry the
+   * daemon assets.
+   */
   version: string;
 }
 
@@ -83,6 +88,14 @@ function sha256Hex(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/** True when `v` is a plain `{ filename: sha256hex }` string map. */
+function isShaManifest(v: unknown): v is Record<string, string> {
+  return (
+    typeof v === 'object' && v !== null && !Array.isArray(v) &&
+    Object.values(v as Record<string, unknown>).every((x) => typeof x === 'string')
+  );
+}
+
 /** Thrown when a downloaded binary fails sha256 verification. */
 export class DaemonVerificationError extends Error {}
 
@@ -105,15 +118,24 @@ export async function ensureDaemonBinary(
   const base = `https://github.com/${deps.repo}/releases/download/${deps.version}`;
 
   const manifestRaw = await deps.fetchText(`${base}/${MANIFEST_NAME}`);
-  let manifest: Record<string, string>;
+  let parsed: unknown;
   try {
-    manifest = JSON.parse(manifestRaw) as Record<string, string>;
+    parsed = JSON.parse(manifestRaw);
   } catch (e) {
     throw new DaemonVerificationError(
       `${MANIFEST_NAME} is not valid JSON (release ${deps.version}): ${(e as Error).message}`,
     );
   }
-  const expected = manifest[filename];
+  // Validate the shape rather than trusting an `as` cast: a manifest whose
+  // values aren't strings (e.g. an HTTP error body that happened to parse,
+  // or a numeric sha) would otherwise reach `.toLowerCase()` and throw a
+  // non-DaemonVerificationError that the caller can't classify.
+  if (!isShaManifest(parsed)) {
+    throw new DaemonVerificationError(
+      `${MANIFEST_NAME} is malformed — expected a { filename: sha256 } object (release ${deps.version})`,
+    );
+  }
+  const expected = parsed[filename];
   if (!expected) {
     throw new DaemonVerificationError(
       `${MANIFEST_NAME} has no entry for ${filename} (release ${deps.version})`,
@@ -122,7 +144,7 @@ export async function ensureDaemonBinary(
 
   const bytes = await deps.fetchBinary(`${base}/${filename}`);
   const got = sha256Hex(bytes);
-  if (got !== expected.toLowerCase()) {
+  if (got.toLowerCase() !== expected.toLowerCase()) {
     throw new DaemonVerificationError(
       `daemon binary sha256 mismatch for ${filename}: expected ${expected}, got ${got}`,
     );
@@ -130,4 +152,28 @@ export async function ensureDaemonBinary(
 
   await deps.writeExecutable(dest, bytes);
   return dest;
+}
+
+/**
+ * Decide whether the daemon auto-download may proceed, persisting the
+ * user's choice so the consent prompt is shown at most once (#397).
+ *
+ * - Already consented → proceed without prompting.
+ * - Not yet decided → prompt, then persist the answer. The decline is
+ *   persisted too (not just the accept), so "Use SFTP" is durable and
+ *   does not re-prompt on every connect / Obsidian restart — the gap
+ *   the #406 review flagged.
+ *
+ * Pure and dependency-injected so the gate is unit-testable without an
+ * Obsidian Modal or a live plugin settings harness.
+ */
+export async function resolveDaemonConsent(
+  alreadyConsented: boolean,
+  prompt: () => Promise<boolean>,
+  persist: (consented: boolean) => Promise<void>,
+): Promise<boolean> {
+  if (alreadyConsented) return true;
+  const consented = await prompt();
+  await persist(consented);
+  return consented;
 }

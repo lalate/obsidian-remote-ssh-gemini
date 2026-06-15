@@ -29,8 +29,10 @@ export interface ConnectionDeps {
 
 /**
  * Raised by {@link ConnectionManager.startRpcSession} when no daemon binary
- * could be obtained (unsupported remote arch, or the user declined the
- * download). The connect flow catches it and falls back to SFTP transport.
+ * could be obtained: an unsupported remote arch, a declined download, or a
+ * benign download failure (network / 404). The connect AND reconnect flows
+ * catch it and fall back to SFTP transport. (A sha256/integrity failure is
+ * NOT this error — that surfaces loudly as a generic connect error.)
  */
 export class DaemonUnavailableError extends Error {}
 
@@ -238,7 +240,21 @@ export class ConnectionManager {
     }
     if (transport === 'rpc') {
       const effectivePath = this.activeRemoteBasePath ?? normalizeRemotePath(profile.remotePath);
-      await this.startRpcSession(profile, effectivePath);
+      try {
+        await this.startRpcSession(profile, effectivePath);
+      } catch (e) {
+        // Same downgrade the initial connect does (main.ts connectProfile):
+        // a permanent daemon-unavailable condition (unsupported arch /
+        // declined / download failed) must NOT be retried by
+        // ReconnectManager. Continue with rpcConnection still null so
+        // buildFsClient() yields an SFTP client. Any other error propagates
+        // to the reconnect retry loop as before.
+        if (e instanceof DaemonUnavailableError) {
+          logger.warn(`reconnectAttempt: daemon unavailable, continuing on SFTP: ${e.message}`);
+        } else {
+          throw e;
+        }
+      }
     }
 
     hooks.swapClient(this.buildFsClient());

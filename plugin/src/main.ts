@@ -37,14 +37,19 @@ import { normalizeRemotePath } from './util/pathUtils';
 import * as path from 'path';
 import { errorMessage } from "./util/errorMessage";
 import { ConnectionManager, DaemonUnavailableError } from "./ConnectionManager";
-import { detectRemoteTarget, ensureDaemonBinary as downloadDaemonBinary } from './transport/DaemonDownloader';
-
-/** GitHub `owner/repo` the daemon binaries are released from. */
-const DAEMON_RELEASE_REPO = 'sotashimozono/obsidian-remote-ssh';
+import {
+  detectRemoteTarget,
+  ensureDaemonBinary as downloadDaemonBinary,
+  resolveDaemonConsent,
+  DaemonVerificationError,
+} from './transport/DaemonDownloader';
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
 import { telemetry, telemetryLogPath } from "./util/Telemetry";
+
+/** GitHub `owner/repo` the daemon binaries are released from. */
+const DAEMON_RELEASE_REPO = 'sotashimozono/obsidian-remote-ssh';
 
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
@@ -910,12 +915,11 @@ export default class RemoteSshPlugin extends Plugin {
   async openShadowVaultFor(profile: SshProfile): Promise<void> {
     // Source dir: where this running plugin lives, so the shadow
     // vault's plugin install symlinks the same bundle.
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) {
+    const sourcePluginDir = this.pluginDir();
+    if (!sourcePluginDir) {
       new Notice('Remote SSH: vault is not file-system-backed; cannot locate plugin source');
       return;
     }
-    const sourcePluginDir = path.join(adapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
 
     // The spawned window can take several seconds to surface while
     // Obsidian keeps THIS (source) window focused. Without this guard
@@ -1106,20 +1110,28 @@ export default class RemoteSshPlugin extends Plugin {
   }
 
   /**
-   * Resolve the staged Linux/amd64 daemon binary that lives next to
-   * `main.js` in the plugin's vault folder. Returns the absolute path
-   * or `null` if the binary hasn't been built (run `npm run
-   * build:server` to populate it). Other architectures land in
-   * follow-up phases.
+   * Absolute path to THIS running plugin's folder
+   * (`<vault>/.obsidian/plugins/<id>`), or `null` when the vault isn't
+   * file-system-backed. Single source for the call sites that need it
+   * (shadow-vault plugin source, dev binary, daemon binary cache).
    */
-  private locateDaemonBinary(): string | null {
+  private pluginDir(): string | null {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return null;
-    const candidate = path.join(
-      adapter.getBasePath(),
-      this.app.vault.configDir, 'plugins', this.manifest.id,
-      'server-bin', 'obsidian-remote-server-linux-amd64',
-    );
+    return path.join(adapter.getBasePath(), this.app.vault.configDir, 'plugins', this.manifest.id);
+  }
+
+  /**
+   * Resolve the staged Linux/amd64 daemon binary that lives next to
+   * `main.js` in the plugin's vault folder — the dev-build path (`npm run
+   * build:server` populates it). Returns the absolute path or `null` if
+   * absent; `ensureDaemonBinary` then downloads the matching per-arch
+   * binary at connect time.
+   */
+  private locateDaemonBinary(): string | null {
+    const pluginDir = this.pluginDir();
+    if (!pluginDir) return null;
+    const candidate = path.join(pluginDir, 'server-bin', 'obsidian-remote-server-linux-amd64');
     return fs.existsSync(candidate) ? candidate : null;
   }
 
@@ -1127,33 +1139,49 @@ export default class RemoteSshPlugin extends Plugin {
    * Acquire a daemon binary for the REMOTE's os/arch when one isn't staged
    * locally. Community-store installs don't ship `server-bin/`, so we probe
    * the remote with `uname`, download the matching binary from this plugin's
-   * GitHub release, verify it against `daemon-manifest.json` (sha256), and
-   * cache it under `server-bin/`. Returns null (→ caller downgrades to SFTP)
-   * for unsupported arches, a declined download, or any failure.
+   * GitHub release, and verify it against `daemon-manifest.json` (sha256)
+   * before caching it under `server-bin/`. Returns `null` (→ caller
+   * downgrades to SFTP) for an unsupported arch, a failed probe, a declined
+   * download, or a benign download failure. A sha256/integrity failure is
+   * NOT swallowed — it throws so the connect surfaces it loudly.
    */
   private async ensureDaemonBinary(client: SftpClient): Promise<string | null> {
-    const target = await detectRemoteTarget(async (cmd) => (await client.exec(cmd)).stdout);
-    if (!target) {
-      logger.warn('ensureDaemonBinary: unsupported remote os/arch (uname); staying on SFTP');
+    // Probe the remote os/arch. A FAILED probe (non-zero exit / SSH exec
+    // error) is logged distinctly from an UNSUPPORTED arch — both stay on
+    // SFTP, but conflating them hid real exec failures behind a misleading
+    // "unsupported arch" message (#406 review).
+    let target: Awaited<ReturnType<typeof detectRemoteTarget>>;
+    try {
+      target = await detectRemoteTarget(async (cmd) => {
+        const r = await client.exec(cmd);
+        if (r.exitCode !== 0) {
+          throw new Error(`'${cmd}' exited ${r.exitCode}: ${r.stderr.trim() || '(no stderr)'}`);
+        }
+        return r.stdout;
+      });
+    } catch (e) {
+      logger.warn(`ensureDaemonBinary: remote uname probe failed (${errorMessage(e)}); staying on SFTP`);
       return null;
     }
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) return null;
-    const cacheDir = path.join(
-      adapter.getBasePath(),
-      this.app.vault.configDir, 'plugins', this.manifest.id, 'server-bin',
-    );
+    if (!target) {
+      logger.warn('ensureDaemonBinary: unsupported remote os/arch; staying on SFTP');
+      return null;
+    }
 
-    // Consent gate: Obsidian discourages silent external downloads, so ask
-    // once and remember the answer in settings.
-    if (!this.settings.daemonDownloadConsented) {
-      const consented = await this.confirmDaemonDownload(this.manifest.version);
-      if (!consented) {
-        logger.info('ensureDaemonBinary: user declined daemon download; staying on SFTP');
-        return null;
-      }
-      this.settings.daemonDownloadConsented = true;
-      await this.saveSettings();
+    const pluginDir = this.pluginDir();
+    if (!pluginDir) return null;
+    const cacheDir = path.join(pluginDir, 'server-bin');
+
+    // Consent gate (asked once; the decision — accept OR decline — is
+    // persisted so a decline doesn't re-prompt on every connect / restart).
+    const consented = await resolveDaemonConsent(
+      this.settings.daemonDownloadConsented === true,
+      () => this.confirmDaemonDownload(this.manifest.version),
+      async (c) => { this.settings.daemonDownloadConsented = c; await this.saveSettings(); },
+    );
+    if (!consented) {
+      logger.info('ensureDaemonBinary: user declined daemon download; staying on SFTP');
+      return null;
     }
 
     try {
@@ -1164,9 +1192,14 @@ export default class RemoteSshPlugin extends Plugin {
           cacheDir,
           cacheHit: (abs) => fs.existsSync(abs),
           writeExecutable: async (abs, bytes) => {
+            // Atomic: write a temp sibling, chmod, then rename. A crash
+            // mid-write can't then leave a torn binary that a later cacheHit
+            // would hand back unverified (#406 review).
             await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-            await fs.promises.writeFile(abs, bytes);
-            await fs.promises.chmod(abs, 0o755);
+            const tmp = `${abs}.${process.pid}.tmp`;
+            await fs.promises.writeFile(tmp, bytes);
+            await fs.promises.chmod(tmp, 0o755);
+            await fs.promises.rename(tmp, abs);
           },
           repo: DAEMON_RELEASE_REPO,
           version: this.manifest.version,
@@ -1176,7 +1209,12 @@ export default class RemoteSshPlugin extends Plugin {
       new Notice(`Remote SSH: downloaded daemon for ${target.os}/${target.arch}.`);
       return local;
     } catch (e) {
-      logger.error(`ensureDaemonBinary: download/verify failed: ${errorMessage(e)}`);
+      // A sha256 mismatch / malformed manifest (DaemonVerificationError) is a
+      // tamper/integrity signal — rethrow so the connect surfaces it loudly
+      // (ERROR state + classified Notice) instead of a quiet "Using SFTP".
+      // Only benign failures (network / 404) downgrade silently.
+      if (e instanceof DaemonVerificationError) throw e;
+      logger.error(`ensureDaemonBinary: download failed: ${errorMessage(e)}`);
       new Notice(`Remote SSH: daemon download failed — ${errorMessage(e)}. Using SFTP.`);
       return null;
     }
@@ -1191,8 +1229,9 @@ export default class RemoteSshPlugin extends Plugin {
         text:
           `Remote SSH can download a small helper daemon (release ${version}) from ` +
           'this plugin’s GitHub release. It is uploaded to your SSH host and ' +
-          'verified by sha256, and enables fast sync, live watch, and image/PDF ' +
-          'preview. Decline to stay on plain SFTP (these extras are then off).',
+          'verified by sha256, and enables faster directory listing, live file ' +
+          'watch, and image/PDF previews. Decline to stay on plain SFTP (these ' +
+          'extras are then off).',
       });
       let decided = false;
       const buttons = modal.contentEl.createDiv({ cls: 'modal-button-container' });

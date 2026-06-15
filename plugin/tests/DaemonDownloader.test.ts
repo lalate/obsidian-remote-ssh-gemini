@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'crypto';
 import {
   parseUname,
   binaryFilename,
   detectRemoteTarget,
   ensureDaemonBinary,
+  resolveDaemonConsent,
   DaemonVerificationError,
   type DaemonDownloaderDeps,
   type DaemonTarget,
@@ -141,5 +142,38 @@ describe('ensureDaemonBinary', () => {
       'https://github.com/sotashimozono/obsidian-remote-ssh/releases/download/1.1.3/daemon-manifest.json',
       'https://github.com/sotashimozono/obsidian-remote-ssh/releases/download/1.1.3/obsidian-remote-server-linux-amd64',
     ]);
+  });
+
+  it('accepts an UPPERCASE manifest sha (case-insensitive compare)', async () => {
+    const deps = makeDeps({
+      fetchText: async () => JSON.stringify({ [filename]: sha.toUpperCase() }),
+    });
+    const p = await ensureDaemonBinary(deps, target);
+    expect(p).toContain(filename);
+    expect(deps.written.get(p)).toEqual(bytes);
+  });
+});
+
+describe('resolveDaemonConsent', () => {
+  it('skips the prompt and returns true when already consented', async () => {
+    const prompt = vi.fn();
+    const persist = vi.fn();
+    expect(await resolveDaemonConsent(true, prompt, persist)).toBe(true);
+    expect(prompt).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it('prompts and persists an ACCEPT', async () => {
+    const persisted: boolean[] = [];
+    const r = await resolveDaemonConsent(false, async () => true, async (c) => { persisted.push(c); });
+    expect(r).toBe(true);
+    expect(persisted).toEqual([true]);
+  });
+
+  it('prompts and PERSISTS a decline so it does not re-prompt next time (#406 review)', async () => {
+    const persisted: boolean[] = [];
+    const r = await resolveDaemonConsent(false, async () => false, async (c) => { persisted.push(c); });
+    expect(r).toBe(false);
+    expect(persisted).toEqual([false]);
   });
 });
