@@ -177,3 +177,11 @@ describe('resolveDaemonConsent', () => {
     expect(persisted).toEqual([false]);
   });
 });
+
+// Deferred #406-review hardening, kept as executable specs (runnable TODOs)
+// in place of tracking issues — unskip and implement when prioritized.
+describe('deferred hardening (#406 review)', () => {
+  it.todo('verifies the cosign .bundle (sigstore) against the GitHub OIDC identity before deploy — closes the MITM gap that sha256-from-the-same-channel leaves open');
+  it.todo('shares the daemon binary cache across vaults/profiles (e.g. ~/.obsidian-remote/server-bin) so a second profile reuses the first download + single consent');
+  it.todo('re-verifies a cache-hit binary against its sha256 before reuse — defends post-write on-disk corruption (the atomic tmp+rename write already closes the mid-download crash window)');
+});

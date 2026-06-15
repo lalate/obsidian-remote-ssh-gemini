@@ -207,4 +207,30 @@ describe('ConnectionManager.startRpcSession — daemon binary fallback (#397)', 
     expect(ensureDaemonBinary).not.toHaveBeenCalled();
     expect(deployMock.mock.calls[0][0]).toMatchObject({ localBinaryPath: '/local/daemon' });
   });
+
+  it('#406 I-1: a reconnect downgrades to SFTP when the daemon is unavailable (does NOT throw into the retry loop)', async () => {
+    const ensureDaemonBinary = vi.fn().mockResolvedValue(null);
+    const client = { isAlive: vi.fn().mockReturnValue(true) } as unknown as ConstructorParameters<typeof ConnectionManager>[0];
+    const mgr = new ConnectionManager(client, { locateDaemonBinary: () => null, ensureDaemonBinary });
+    // reconnectAttempt reads activeProfile; seed an RPC one directly.
+    (mgr as unknown as { activeProfile: SshProfile }).activeProfile = { ...profile, transport: 'rpc' } as SshProfile;
+    const hooks = {
+      swapClient: vi.fn(),
+      prepareListenerForReconnect: vi.fn(),
+      resumeListenerAfterReconnect: vi.fn(),
+    };
+
+    // reconnectAttempt is private — invoke via cast. It must RESOLVE, not
+    // reject: a DaemonUnavailableError on reconnect is caught and the session
+    // continues on SFTP, rather than bubbling to ReconnectManager's retry loop
+    // (which would burn maxRetries and surface a misleading "reconnect failed"
+    // instead of switching to SFTP).
+    await expect(
+      (mgr as unknown as { reconnectAttempt(h: typeof hooks): Promise<void> }).reconnectAttempt(hooks),
+    ).resolves.toBeUndefined();
+
+    expect(ensureDaemonBinary).toHaveBeenCalledTimes(1);
+    expect(mgr.rpcConnection).toBeNull();              // stayed on SFTP
+    expect(hooks.swapClient).toHaveBeenCalledTimes(1); // rebound to the SFTP fs client
+  });
 });
