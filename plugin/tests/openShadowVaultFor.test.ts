@@ -155,3 +155,38 @@ describe('openShadowVaultFor — secret flush before spawn (#399)', () => {
       .toBeLessThan(openShadowForMock.mock.invocationCallOrder[0]);
   });
 });
+
+describe('openShadowVaultFor — new-vault restart guidance', () => {
+  beforeEach(() => {
+    openShadowForMock.mockReset();
+    clearNotices();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.runOnlyPendingTimers();
+    vi.useRealTimers();
+  });
+
+  it('tells the user to restart when the shadow vault was newly registered', async () => {
+    const plugin = makePlugin();
+    openShadowForMock.mockResolvedValue({ ...okResult(), registryCreated: true });
+
+    await plugin.openShadowVaultFor(profile);
+
+    // A freshly-registered vault can't open until Obsidian restarts (it caches
+    // obsidian.json at startup) — the user must be told, not shown a misleading
+    // "opened in new window" for a window that never appeared.
+    expect(recordedNotices().some((n) => /restart|quit and reopen/i.test(n))).toBe(true);
+    expect(recordedNotices().some((n) => /opened .* in new window/i.test(n))).toBe(false);
+  });
+
+  it('reports the opened window (no restart notice) when the vault was reused', async () => {
+    const plugin = makePlugin();
+    openShadowForMock.mockResolvedValue({ ...okResult(), registryCreated: false });
+
+    await plugin.openShadowVaultFor(profile);
+
+    expect(recordedNotices().some((n) => /opened .* in new window/i.test(n))).toBe(true);
+    expect(recordedNotices().some((n) => /restart|quit and reopen/i.test(n))).toBe(false);
+  });
+});
