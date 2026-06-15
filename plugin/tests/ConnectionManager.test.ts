@@ -223,7 +223,8 @@ describe('ConnectionManager.startRpcSession — daemon binary fallback (#397)', 
     // reconnectAttempt is private — invoke via cast. It must RESOLVE, not
     // reject: a DaemonUnavailableError on reconnect is caught and the session
     // continues on SFTP, rather than bubbling to ReconnectManager's retry loop
-    // (which would burn maxRetries and re-prompt consent).
+    // (which would burn maxRetries and surface a misleading "reconnect failed"
+    // instead of switching to SFTP).
     await expect(
       (mgr as unknown as { reconnectAttempt(h: typeof hooks): Promise<void> }).reconnectAttempt(hooks),
     ).resolves.toBeUndefined();
