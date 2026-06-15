@@ -10,7 +10,7 @@ description: "What happens when you click Connect: SSH handshake, daemon auto-de
 
 obsidian-remote-ssh does not edit your remote files directly through Obsidian's vault layer. Instead it:
 
-1. Creates a **local shadow vault** under `<plugin-dir>/shadow-vaults/<profile-id>/`. This is a real Obsidian vault on your local disk.
+1. Creates a **local shadow vault** under `~/.obsidian-remote/vaults/<profile-id>/`. This is a real Obsidian vault on your local disk.
 2. Mirrors the remote vault's files into that shadow vault (lazily — large files are fetched on first open).
 3. Watches both sides for changes and syncs them through the SSH-tunneled daemon RPC.
 
@@ -78,6 +78,11 @@ sequenceDiagram
   D-->>P: {version, protocolVersion, vaultRoot}
   P->>U: open shadow vault window
 ```
+
+> [!important] The first connect to a new profile needs an Obsidian restart
+> The shadow vault is added to Obsidian's vault list (`obsidian.json`) the first time you connect a profile. A **running** Obsidian only reads that list **at startup**, so the brand-new vault window can't open in the current session — clicking Connect appears to do nothing (the SSH connection itself succeeds; only the window doesn't appear).
+>
+> **Fully quit and reopen Obsidian, then click Connect again.** This is a one-time step per profile — every later connect opens the window immediately.
 
 ## After connect
 
