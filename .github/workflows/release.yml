@@ -294,31 +294,49 @@ jobs:
           }
           console.log("Dynamic code execution guard passed.");'
 
+      # Changelog range depends on the release channel:
+      #   • beta   → `--unreleased` = commits since the previous tag (the
+      #     prior beta), so each beta release lists only its own new commits.
+      #   • stable → the previous tag is the last BETA of this cycle, so
+      #     `--unreleased` would capture only the promote-plumbing commits
+      #     (all filtered by cliff.toml) → an EMPTY changelog. Instead span
+      #     the whole cycle since the last STABLE tag, so the stable release
+      #     notes carry everything accumulated across the betas.
+      # (`--tag` shows the about-to-be-created version in the heading; the tag
+      # itself doesn't exist yet — softprops creates it below. `--strip
+      # header` drops cliff's own `# Changelog` header.)
+      - name: Compute changelog range
+        id: clog_range
+        shell: bash
+        run: |
+          VER="${{ needs.precheck.outputs.version }}"
+          if [ "${{ needs.precheck.outputs.is_beta }}" = "true" ]; then
+            echo "args=--unreleased --tag $VER --strip header" >> "$GITHUB_OUTPUT"
+          else
+            LAST_STABLE=$(git tag --sort=-v:refname | grep -vE -- '-beta\.' | head -1)
+            echo "Last stable tag: ${LAST_STABLE:-<none>}"
+            if [ -n "$LAST_STABLE" ]; then
+              # `--ignore-tags beta`: the intermediate beta tags of this cycle
+              # sit inside the range; without this git-cliff splits the output
+              # per-tag (repeated group headings). Ignoring them consolidates
+              # everything under the single stable version heading.
+              echo "args=--tag $VER --strip header --ignore-tags beta ${LAST_STABLE}..HEAD" >> "$GITHUB_OUTPUT"
+            else
+              echo "args=--unreleased --tag $VER --strip header" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Generate changelog (git-cliff, grouped by Conventional Commits type)
         id: changelog
-        # `--unreleased` (NOT `--latest`): the new tag for this run
-        # doesn't exist at this step — softprops creates it below —
-        # so `--latest` would resolve to the *previous* tag and emit
-        # the *previous* version's changelog (broken in 0.4.61). We
-        # want everything between the most recent tag and HEAD, which
-        # is exactly what `--unreleased` returns. `--tag` lets git-cliff
-        # show the about-to-be-created version in headings.
-        # `--strip header` drops cliff's own `# Changelog` header so
-        # the body slots cleanly under the "## What's changed" line
-        # the release body builds below.
-        # cliff.toml at repo root holds the grouping config (✨ Features
-        # / 🐛 Bug Fixes / 🚧 CI / etc.) and the Dependabot-noise
-        # suppression.
-        #
-        # Pinned to @v4 (not @v3): @v3's Dockerfile sits on the
-        # Debian Buster base image, and Buster reached EOL in
-        # 2024-06 — `deb.debian.org` now returns 404 for its
-        # `apt-get install jq` step, breaking every release run.
-        # @v4 is on a current Debian base.
+        # Pinned to @v4 (not @v3): @v3's Dockerfile sits on the Debian Buster
+        # base image (EOL 2024-06) — `deb.debian.org` now 404s its
+        # `apt-get install jq` step, breaking every release run. @v4 is on a
+        # current Debian base. cliff.toml holds the grouping + Dependabot /
+        # version-bump suppression.
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --unreleased --tag ${{ needs.precheck.outputs.version }} --strip header
+          args: ${{ steps.clog_range.outputs.args }}
 
       - name: Create GitHub Release (creates tag too)
         uses: softprops/action-gh-release@v3

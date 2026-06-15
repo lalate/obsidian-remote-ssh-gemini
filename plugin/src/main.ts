@@ -961,11 +961,28 @@ export default class RemoteSshPlugin extends Plugin {
       const result = await manager.openShadowFor(profile, this.settings.profiles);
       const how = result.pluginInstallMethod;
       const reg = result.registryCreated ? 'newly registered' : 'reused';
-      new Notice(`Remote SSH: opened ${profile.name} in new window (${how}, ${reg})`);
       logger.info(
         `openShadowVaultFor: profile=${profile.name}, vault=${result.layout.vaultDir}, ` +
         `registry id=${result.registryId} (${reg}), plugin=${how}`,
       );
+      if (result.registryCreated) {
+        // First-ever open of this profile: the vault was just added to
+        // obsidian.json, but the already-running Obsidian only reads that
+        // file at startup — so the obsidian://open we just fired is a no-op
+        // and no window appears. Surface a PERSISTENT notice (duration 0)
+        // telling the user to restart, rather than the misleading "opened in
+        // new window" that never actually opened. Only happens once per
+        // profile (subsequent connects hit the `reused` branch).
+        new Notice(
+          `Remote SSH: "${profile.name}" is a newly registered vault. Obsidian only ` +
+          'loads new vaults at startup, so it cannot open it this session — fully ' +
+          'quit and reopen Obsidian, then click Connect again. (Only needed the ' +
+          'first time you open a profile.)',
+          0,
+        );
+      } else {
+        new Notice(`Remote SSH: opened ${profile.name} in new window (${how})`);
+      }
       // Spawn SUCCEEDED. The new window can take several seconds to
       // surface while Obsidian keeps THIS one focused — hold the guard
       // ~15s so an impatient double/triple-click can't fire a second

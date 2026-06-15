@@ -58,6 +58,7 @@ commit_parsers = [
   { message = "^revert",   group = "⏪ Reverts" },
   { message = "^style",    skip = true },           # whitespace / formatting only
   { message = "^chore\\(deps", skip = true },        # Dependabot noise — drop entirely
+  { message = "^chore\\(release", skip = true },      # version-bump commits (chore(release): X-beta.N / X.Y.Z) — drop; plumbing, not user-facing changes
   { message = "^chore",    group = "🧹 Chores" },   # other chore commits (incl. scoped) — keep
   { message = "^release",  skip = true },           # auto-tag commits (legacy, kept defensively)
 ]
