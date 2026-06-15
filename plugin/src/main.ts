@@ -922,6 +922,23 @@ export default class RemoteSshPlugin extends Plugin {
     const manager = new ShadowVaultManager(bootstrap, spawner);
 
     try {
+      // #399: flush the in-memory SecretStore to the SOURCE data.json
+      // BEFORE the bootstrap reads it. A password typed in ConnectModal
+      // lives only in `secretStore` memory until a save; without this
+      // the bootstrap seeds the shadow vault with empty secrets and its
+      // auto-connect fails with "No password stored for profile",
+      // opening an empty vault. Also persists the profile's freshly-set
+      // passwordRef. On the Settings-button path (no password typed)
+      // this is a harmless idempotent re-write of the current settings.
+      // A transient save failure must NOT abort the spawn (the shadow
+      // may still connect from previously-persisted secrets), so it is
+      // logged and swallowed rather than surfaced as a spawn failure.
+      try {
+        await this.saveSettings();
+      } catch (e) {
+        logger.warn(`openShadowVaultFor: pre-spawn settings flush failed (${errorMessage(e)}); continuing to spawn`);
+      }
+
       const result = await manager.openShadowFor(profile, this.settings.profiles);
       const how = result.pluginInstallMethod;
       const reg = result.registryCreated ? 'newly registered' : 'reused';
