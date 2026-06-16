@@ -18,6 +18,12 @@ Most failures fall into a small number of buckets. This page maps symptom to lik
 | `Connection timeout` | Network / firewall | Same hop reachable via `ping`? sshd port open in firewall? |
 | `Daemon failed to start` (after binary upload) | Daemon crashed at startup | See **Daemon won't start** below |
 
+## Clicked Connect but no window opened (new profile)
+
+The **first** time you connect a newly-added profile, the remote vault window may not appear even though the connection itself succeeded (the plugin log shows `SSH ready`). The new shadow vault is registered in Obsidian's vault list (`obsidian.json`), but a running Obsidian only reads that list **at startup** — so it can't open the brand-new vault in the current session.
+
+**Fix:** fully quit and reopen Obsidian, then click Connect again. This is a one-time step per profile; every later connect opens the window immediately.
+
 ## Daemon won't start
 
 Check the daemon log: **Settings** → **Daemon** → "View log", or directly:

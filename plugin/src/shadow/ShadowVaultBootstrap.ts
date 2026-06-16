@@ -21,6 +21,18 @@ function isNonEmptyArray(v: unknown): boolean {
 }
 
 /**
+ * Narrow an unknown `secrets` (or `hostKeyStore`) blob to a plain
+ * string-keyed record, defaulting to `{}` for anything that isn't a
+ * non-array object. Keeps the #399 secret-merge below total even when a
+ * data.json holds a malformed `secrets` value.
+ */
+function asSecretRecord(v: unknown): Record<string, unknown> {
+  return (v && typeof v === 'object' && !Array.isArray(v))
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/**
  * Where the shadow vault for a given profile lives on disk.
  */
 export interface ShadowVaultLayout {
@@ -163,6 +175,25 @@ export class ShadowVaultBootstrap {
       activeProfileId: profile.id,
       autoConnectProfileId: profile.id,
     };
+
+    // #399: a password entered in the SOURCE (local) vault must reach
+    // the shadow vault that actually runs the connect. `readBaseDataJson`
+    // prefers the EXISTING shadow data.json, so a secret persisted to
+    // source AFTER the first bootstrap would otherwise never propagate —
+    // the shadow's auto-connect then dies with "No password stored for
+    // profile" and the vault opens empty. Union the source's secrets
+    // over whatever the shadow has accumulated: source wins on a
+    // conflicting ref (it's the user's latest, just flushed by
+    // openShadowVaultFor before this bootstrap), while a secret typed
+    // directly in the shadow window (a ref absent from source) survives.
+    const mergedSecrets = {
+      ...asSecretRecord(baseData.secrets),
+      ...this.readSourceSecrets(),
+    };
+    if (Object.keys(mergedSecrets).length > 0) {
+      data.secrets = mergedSecrets;
+    }
+
     if (isFirstBootstrap) {
       const pending = this.collectPendingPluginSuggestions();
       if (pending.length > 0) {
@@ -600,6 +631,35 @@ export class ShadowVaultBootstrap {
           'continuing without it',
         );
       }
+    }
+    return {};
+  }
+
+  /**
+   * Read just the `secrets` blob from the SOURCE vault's data.json.
+   *
+   * Used to propagate a password persisted in the source (local) vault
+   * into the shadow that runs the connect (#399). Unlike
+   * `readBaseDataJson` — which prefers the shadow's own copy so its
+   * accumulated state survives — this always reads source, so the merge
+   * in `bootstrapSync` can let the source's latest secret win.
+   *
+   * Returns `{}` when source has no data.json, it can't be parsed, or it
+   * carries no (well-formed) secrets — all benign "nothing to add" cases.
+   */
+  private readSourceSecrets(): Record<string, unknown> {
+    const sourceDataPath = path.join(this.sourcePluginDir, 'data.json');
+    if (!fs.existsSync(sourceDataPath)) return {};
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(sourceDataPath, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return asSecretRecord((parsed as Record<string, unknown>).secrets);
+      }
+    } catch (e) {
+      logger.warn(
+        `ShadowVaultBootstrap: failed to read source secrets (${errorMessage(e)}); ` +
+        'shadow will rely on its own accumulated secrets',
+      );
     }
     return {};
   }

@@ -10,6 +10,10 @@ name: Version check
 #                       (root) and versions.json must stay pinned to the
 #                       last stable so the Obsidian Community Plugins store
 #                       isn't accidentally advanced to a prerelease.
+#                       EXCEPTION: a plain `X.Y.Z` head on a `next` PR is a
+#                       stable promotion-staging bump — `main` only ever merges
+#                       from `next`, so the stable bump lives on `next` first
+#                       (validated by the STABLE shape rule, not the beta one).
 #
 #   • PR into `main`  → STABLE channel.  head version must be plain
 #                       `X.Y.Z` (no -beta suffix), strictly greater than
@@ -95,6 +99,12 @@ jobs:
           echo "base_manifest=$base_manifest"     >> "$GITHUB_OUTPUT"
           echo "base_root=$base_root"             >> "$GITHUB_OUTPUT"
 
+          # A `-beta.N` head is a beta-channel bump; a plain X.Y.Z head on a
+          # `next` PR is a stable promotion-staging bump (the stable bump lives
+          # on next first because main only ever merges from next).
+          if [[ "$head_manifest" == *-beta.* ]]; then head_is_beta=true; else head_is_beta=false; fi
+          echo "head_is_beta=$head_is_beta"       >> "$GITHUB_OUTPUT"
+
           echo "base manifest.json (plugin):     $base_manifest"
           echo "head manifest.json (plugin):     $head_manifest"
           echo "head package.json:               $head_package"
@@ -132,9 +142,10 @@ jobs:
       - name: BETA channel (PR → next) — root manifest.json must stay pinned
         # On a beta PR the Obsidian Community Plugins store manifest must NOT
         # move; only manifest-beta.json + plugin/manifest.json may advance.
-        # Also exclude sync-shape PRs since those legitimately carry main's
-        # stable version state into next.
-        if: github.base_ref == 'next' && steps.sync_check.outputs.is_sync != 'true'
+        # Exclude sync-shape PRs (they carry main's stable state into next) and
+        # stable promotion-staging PRs (a plain X.Y.Z bump on next, validated by
+        # the STABLE shape step below) — both legitimately advance root manifest.
+        if: github.base_ref == 'next' && steps.sync_check.outputs.is_sync != 'true' && steps.versions.outputs.head_is_beta == 'true'
         run: |
           if [ "${{ steps.versions.outputs.head_root }}" != "${{ steps.versions.outputs.base_root }}" ]; then
             echo "::error::Beta PRs must not modify root manifest.json."\
@@ -151,8 +162,12 @@ jobs:
             exit 1
           fi
 
-      - name: STABLE channel (PR → main) — head version must be plain X.Y.Z
-        if: github.base_ref == 'main' && steps.sync_check.outputs.is_sync != 'true'
+      - name: STABLE shape — head plain X.Y.Z, all manifests agree
+        # Applies to main PRs AND to a stable promotion-staging bump that lands
+        # on next first (head_is_beta == false). main only ever merges from
+        # next, so the stable bump lives on next, gets validated here, then the
+        # next → main promotion carries it.
+        if: steps.sync_check.outputs.is_sync != 'true' && (github.base_ref == 'main' || steps.versions.outputs.head_is_beta == 'false')
         run: |
           head="${{ steps.versions.outputs.head_manifest }}"
           if [[ "$head" == *-beta.* ]]; then
