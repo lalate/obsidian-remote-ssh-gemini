@@ -82,8 +82,8 @@ This repo runs a two-channel release model. Pick the right base for your PR:
 | You're doing… | Base your PR on | Version shape |
 |---|---|---|
 | New feature / refactor / bug fix / docs / chore | **`next`** ← almost everything | `X.Y.Z-beta.N` |
-| Emergency hotfix for a shipped stable release | **`main`** (then back-port to `next`) | `X.Y.Z` |
-| Promotion of accumulated betas to stable (release cut) | **`main`** ← `next` | `X.Y.Z` (suffix dropped) |
+| Emergency hotfix for a shipped stable release | **`next`** (fast-tracked, then promote) | `X.Y.Z` |
+| Promotion of accumulated betas to stable (release cut) | **`next`** (bump to stable, then `next` → `main`) | `X.Y.Z` (suffix dropped) |
 
 Why this exists:
 
@@ -93,26 +93,38 @@ Why this exists:
 
 #### Cutting a promotion (next → main)
 
-When `next` has accumulated enough verified work to ship, do the version bump on a **release branch**, not directly on `next`. This keeps every commit lint-checked + CI-validated without requiring branch-protection bypass:
+**`main` only ever merges from `next` — there is no `release/*` branch.** Bump
+`next` to the stable version first (on a normal branch, PR'd **into `next`**),
+then promote `next` to `main`:
 
 ```bash
-git checkout -b release/X.Y.Z next
+# 1. Bump next to the stable version.
+git checkout -b release-X.Y.Z next
 cd plugin
-npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops -beta suffix)
-git commit -am "release: prepare X.Y.Z promotion"
-git push origin release/X.Y.Z
-gh pr create --base main --head release/X.Y.Z \
-  --title "release: promote next → main (X.Y.Z)"
+npm run bump:stable          # 1.0.44-beta.5 → 1.0.44 (drops the -beta suffix)
+git commit -am "release: X.Y.Z (stable)"
+git push origin release-X.Y.Z
+gh pr create --base next --head release-X.Y.Z --title "release: X.Y.Z (stable)"
 ```
 
-CI runs the full suite (commitlint, version-check, lint, type-check, tests) on the release branch's head before merge — no admin override.
+The bump runs the full suite (commitlint, version-check, lint, type-check,
+tests) on its PR **into `next`** — `version-check.yml` accepts a plain `X.Y.Z`
+on `next` as a promotion-staging shape, and `release.yml` skips publishing a
+stable version pushed to `next` (the `main` push is what releases). No admin
+override, no separate release branch.
 
-After CI green and merge:
-- `release.yml` fires on the main push → publishes **v X.Y.Z** stable + cosign-signed binaries.
-- `sync-main-to-next.yml` fires on the main push → opens + auto-merges `sync: main → next` so `next` gets the merge commit.
-- Your next beta cycle starts with `npm run bump:beta:start` (`X.Y.Z → X.Y.(Z+1)-beta.0`) on a normal `feat/...` branch.
+After it merges (`next` now carries the stable `X.Y.Z`), promote directly:
 
-> Why a release branch? Pre-2026-05 the docs said "push directly to `next`, then PR next → main". That worked but required admin bypass on `next`'s branch protection (the bump commit hadn't been through CI yet). Branch protection on `main` and `next` now disallows admin bypass, so the bump must live on its own branch + go through CI.
+```bash
+gh pr create --base main --head next --title "promote: next → main (X.Y.Z)"
+```
+
+On the main push: `release.yml` publishes **vX.Y.Z** stable + cosign-signed
+binaries; `sync-main-to-next.yml` opens + auto-merges `main → next`. Because
+`next` and `main` are now the **same** `X.Y.Z`, that sync has **no version
+conflict** — which is exactly why the bump lives on `next` and not on a branch
+that diverges from it. Then start the next cycle with `npm run bump:beta:start`
+(`X.Y.Z → X.Y.(Z+1)-beta.0`) on a `feat/...` branch.
 
 ### Commit messages — Conventional Commits, enforced
 
@@ -159,7 +171,7 @@ Each script:
 
 Commit the staged files alongside your code change.
 
-`version-check.yml` is **branch-aware**: PRs into `next` must keep `manifest.json` (root) pinned to the last stable, and PRs into `main` must carry a plain `X.Y.Z` (no beta suffix) with all manifests in agreement. If your PR sits open while another lands on the same base, rebase + run the same `bump:` script again.
+`version-check.yml` is **branch-aware**: beta PRs into `next` must keep `manifest.json` (root) pinned to the last stable — **except a stable promotion-staging bump (a plain `X.Y.Z` landed on `next`), which is validated with the same all-manifests-agree rule as a `main` PR**. PRs into `main` must carry a plain `X.Y.Z` (no beta suffix) with all manifests in agreement. If your PR sits open while another lands on the same base, rebase + run the same `bump:` script again.
 
 ## Pull request etiquette
 
