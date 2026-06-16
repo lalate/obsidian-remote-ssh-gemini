@@ -302,10 +302,9 @@ for filesystem ops.
 
 ## Support
 
-Remote SSH is, for now, maintained by a single individual. Sponsoring it isn't a
-priority-support deal — it simply helps sustain the **continued maintenance and
-ongoing issue responses** over time, which genuinely matters for a one-person
-project. Hugely appreciated 🙏
+Remote SSH is, for now, maintained by a single individual. Sponsoring it helps
+sustain the **continued maintenance and ongoing issue responses** over time,
+which genuinely matters for a one-person project. Hugely appreciated 🙏
 
 - ☕ [Buy Me a Coffee](https://www.buymeacoffee.com/sotashimozono)
 - 💖 [GitHub Sponsors](https://github.com/sponsors/sotashimozono)
