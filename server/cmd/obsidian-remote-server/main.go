@@ -100,7 +100,7 @@ func run(args []string) (int, error) {
 	if err != nil {
 		return 1, fmt.Errorf("load capabilities: %w", err)
 	}
-	logStore, err := extensions.NewLogStore(defaultDir)
+	logStore, err := extensions.NewLogStore(filepath.Dir(defaultDir))
 	if err != nil {
 		return 1, fmt.Errorf("init extension log store: %w", err)
 	}

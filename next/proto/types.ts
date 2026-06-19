@@ -87,7 +87,6 @@ export interface ExtensionArgRule {
   required?: boolean;
   pattern?: string;
   maxLength?: number;
-  allowFlags?: boolean;
 }
 
 export interface ExtensionCapability {
@@ -150,16 +149,16 @@ export enum ErrorCode {
   MethodNotFound     = -32601,
   InvalidParams      = -32602,
   InternalError      = -32603,
-  AuthRequired       = -32000,
-  AuthInvalid        = -32001,
-  FileNotFound       = -32010,
-  NotADirectory      = -32011,
-  IsADirectory       = -32012,
-  Exists             = -32013,
-  PermissionDenied   = -32014,
-  PathOutsideVault   = -32015,
-  PreconditionFailed = -32020,
-  ProtocolVersionTooOld = -32021,
-  ExtensionDenied    = -32030,
-  BinaryHashMismatch = -32031,
+  AuthRequired       = -32010,
+  AuthInvalid        = -32011,
+  FileNotFound       = -32020,
+  NotADirectory      = -32021,
+  IsADirectory       = -32022,
+  Exists             = -32023,
+  PermissionDenied   = -32030,
+  PathOutsideVault   = -32031,
+  PreconditionFailed = -32040,
+  ProtocolVersionTooOld = -32050,
+  ExtensionDenied    = -32060,
+  BinaryHashMismatch = -32061,
 }

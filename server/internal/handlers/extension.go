@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,18 +25,11 @@ type extensionRunner struct {
 	logs     *extensions.LogStore
 	vaultDir string
 	seq      atomic.Int64
-	slots    chan struct{}
+	mu       sync.Mutex
 }
 
-const maxConcurrentExtensionInvocations = 4
-
 func NewExtensionRunner(mgr *extensions.Manager, logs *extensions.LogStore, vaultDir string) *extensionRunner {
-	return &extensionRunner{
-		mgr:      mgr,
-		logs:     logs,
-		vaultDir: vaultDir,
-		slots:    make(chan struct{}, maxConcurrentExtensionInvocations),
-	}
+	return &extensionRunner{mgr: mgr, logs: logs, vaultDir: vaultDir}
 }
 
 func (r *extensionRunner) Schema() rpc.Handler {
@@ -57,39 +51,20 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if !ok {
 			return nil, rpc.ErrExtensionDenied(p.Tool)
 		}
-		if err := r.mgr.VerifyToolBinary(p.Tool); err != nil {
-			return nil, rpc.ErrBinaryHashMismatch(p.Tool)
-		}
 
 		args, err := validateAndBuildArgs(cap, p.Args)
 		if err != nil {
 			return nil, rpc.ErrInvalidParams("extension.invoke: " + err.Error())
 		}
 
-		select {
-		case r.slots <- struct{}{}:
-		case <-ctx.Done():
-			return nil, rpc.ErrInternal("extension.invoke: context canceled")
-		}
-		released := false
-		releaseSlot := func() {
-			if released {
-				return
-			}
-			<-r.slots
-			released = true
-		}
-
 		cmd := exec.Command(cap.Command, args...) // #nosec G204 - command is pinned by capabilities + startup hash verification
 
 		if p.WorkingDir != "" {
 			if !cap.AllowWorkingDir {
-				releaseSlot()
 				return nil, rpc.ErrInvalidParams("extension.invoke: workingDir is not allowed for this tool")
 			}
 			wd, werr := validateWorkingDir(r.vaultDir, p.WorkingDir)
 			if werr != nil {
-				releaseSlot()
 				return nil, werr
 			}
 			cmd.Dir = wd
@@ -97,17 +72,14 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			releaseSlot()
 			return nil, rpc.ErrInternal("extension.invoke: stdout pipe: " + err.Error())
 		}
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
-			releaseSlot()
 			return nil, rpc.ErrInternal("extension.invoke: stderr pipe: " + err.Error())
 		}
 
 		if err := cmd.Start(); err != nil {
-			releaseSlot()
 			return nil, rpc.ErrInternal("extension.invoke: start: " + err.Error())
 		}
 
@@ -117,7 +89,7 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if p.Persist != nil {
 			persist = *p.Persist
 		}
-		go r.streamProcess(session, invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
+		go r.streamProcess(session, invocationID, cmd, stdout, stderr, persist, cap.OutputMode)
 
 		return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
 	}
@@ -131,9 +103,6 @@ func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]str
 	for _, rule := range cap.Args {
 		known[rule.Name] = struct{}{}
 		val := provided[rule.Name]
-		if strings.HasPrefix(strings.TrimLeft(val, " \t\r\n"), "-") && !rule.AllowFlags {
-			return nil, fmt.Errorf("arg %q must not start with '-'; set allowFlags to opt in", rule.Name)
-		}
 		if rule.Required && strings.TrimSpace(val) == "" {
 			return nil, fmt.Errorf("arg %q is required", rule.Name)
 		}
@@ -164,8 +133,7 @@ func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]str
 	return out, nil
 }
 
-func (r *extensionRunner) streamProcess(session *server.Session, invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
-	defer releaseSlot()
+func (r *extensionRunner) streamProcess(session *server.Session, invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string) {
 	itemsCh := make(chan proto.CliOutputBatchItem, 256)
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -181,31 +149,25 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 	defer ticker.Stop()
 
 	batch := make([]proto.CliOutputBatchItem, 0, 50)
-	flush := func() bool {
+	flush := func() {
 		if len(batch) == 0 {
-			return true
+			return
 		}
 		payload := append([]proto.CliOutputBatchItem(nil), batch...)
 		if outputMode == "single" {
 			for _, it := range payload {
-				if err := session.SendNotification("cli.output", proto.CliOutputParams{
+				_ = session.SendNotification("cli.output", proto.CliOutputParams{
 					InvocationID: invocationID,
 					Stream:       it.Stream,
 					Data:         it.Data,
 					Seq:          it.Seq,
-				}); err != nil {
-					_ = cmd.Process.Kill()
-					return false
-				}
+				})
 			}
 		} else {
-			if err := session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
+			_ = session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
 				InvocationID: invocationID,
 				Items:        payload,
-			}); err != nil {
-				_ = cmd.Process.Kill()
-				return false
-			}
+			})
 		}
 		if persistEnabled {
 			ok, err := r.logs.AppendBatch(invocationID, payload)
@@ -214,17 +176,13 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 			}
 		}
 		batch = batch[:0]
-		return true
 	}
 
 	for {
 		select {
 		case it, ok := <-itemsCh:
 			if !ok {
-				if !flush() {
-					_ = cmd.Wait()
-					return
-				}
+				flush()
 				exitCode := 0
 				sig := ""
 				if err := cmd.Wait(); err != nil {
@@ -244,16 +202,10 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 			}
 			batch = append(batch, it)
 			if len(batch) >= 50 {
-					if !flush() {
-						_ = cmd.Wait()
-						return
-					}
+				flush()
 			}
 		case <-ticker.C:
-			if !flush() {
-				_ = cmd.Wait()
-				return
-			}
+			flush()
 		}
 	}
 }
@@ -273,3 +225,11 @@ func (r *extensionRunner) scanStream(wg *sync.WaitGroup, src io.Reader, stream s
 	}
 }
 
+func sortedKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

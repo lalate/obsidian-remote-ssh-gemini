@@ -125,8 +125,8 @@ type ReadBinaryRangeResult struct {
 }
 
 type WriteTextParams struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	Path          string `json:"path"`
+	Content       string `json:"content"`
 	// ExpectedMtime, when non-zero, causes the write to fail with
 	// PreconditionFailed if the remote file's mtime differs.
 	ExpectedMtime int64 `json:"expectedMtime,omitempty"`
@@ -173,10 +173,6 @@ type WalkParams struct {
 	Path       string `json:"path"`
 	Recursive  bool   `json:"recursive,omitempty"`
 	MaxEntries int    `json:"maxEntries,omitempty"`
-	// Offset skips the first N walk results. Useful for paging.
-	Offset int `json:"offset,omitempty"`
-	// Ignore is a list of path prefixes (vault-relative) to skip.
-	Ignore []string `json:"ignore,omitempty"`
 }
 
 // WalkEntry is one row in fs.walk's flat output. Unlike fs.list's
@@ -244,27 +240,25 @@ type ExtensionArgRule struct {
 	Required  bool   `json:"required,omitempty"`
 	Pattern   string `json:"pattern,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
-	// AllowFlags permits values that start with '-' for this arg.
-	AllowFlags bool `json:"allowFlags,omitempty"`
 }
 
 // ExtensionCapability defines one executable tool from capabilities.json.
 type ExtensionCapability struct {
-	Tool            string             `json:"tool"`
-	Description     string             `json:"description,omitempty"`
-	Command         string             `json:"command"`
-	SHA256          string             `json:"sha256"`
-	Args            []ExtensionArgRule `json:"args,omitempty"`
-	AllowWorkingDir bool               `json:"allowWorkingDir,omitempty"`
-	PersistDefault  bool               `json:"persistDefault,omitempty"`
-	OutputMode      string             `json:"outputMode,omitempty"` // "batch" (default) or "single"
+	Tool           string             `json:"tool"`
+	Description    string             `json:"description,omitempty"`
+	Command        string             `json:"command"`
+	SHA256         string             `json:"sha256"`
+	Args           []ExtensionArgRule `json:"args,omitempty"`
+	AllowWorkingDir bool              `json:"allowWorkingDir,omitempty"`
+	PersistDefault bool               `json:"persistDefault,omitempty"`
+	OutputMode     string             `json:"outputMode,omitempty"` // "batch" (default) or "single"
 }
 
 // ExtensionSchemaResult returns the current dynamic capabilities document.
 type ExtensionSchemaResult struct {
-	Version        int                   `json:"version"`
-	ManifestSHA256 string                `json:"manifestSha256"`
-	Extensions     []ExtensionCapability `json:"extensions"`
+	Version      int                   `json:"version"`
+	ManifestSHA256 string              `json:"manifestSha256"`
+	Extensions   []ExtensionCapability `json:"extensions"`
 }
 
 // ExtensionInvokeParams is the generic command invocation contract.

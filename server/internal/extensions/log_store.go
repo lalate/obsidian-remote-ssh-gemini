@@ -7,24 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 )
 
 const (
-	maxLogBytes    int64 = 50 * 1024 * 1024
-	maxLogAgeHours       = 24
+	maxLogBytes     int64 = 50 * 1024 * 1024
+	maxLogAgeHours        = 24
 )
 
 type LogStore struct {
 	dir string
-	mu  sync.Mutex
 }
 
-func NewLogStore(stateDir string) (*LogStore, error) {
-	dir := filepath.Join(stateDir, "logs", "extensions")
+func NewLogStore(home string) (*LogStore, error) {
+	dir := filepath.Join(home, ".gemini-cli", "logs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir log dir: %w", err)
 	}
@@ -44,8 +42,6 @@ func (s *LogStore) AppendBatch(invocationID string, items []proto.CliOutputBatch
 	if len(items) == 0 {
 		return true, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	fp := s.filePath(invocationID)
 	f, err := os.OpenFile(fp, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {

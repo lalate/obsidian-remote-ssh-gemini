@@ -123,15 +123,3 @@ func (m *Manager) ResolveTool(tool string) (proto.ExtensionCapability, bool) {
 	ext, ok := m.byTool[tool]
 	return ext, ok
 }
-
-// VerifyToolBinary re-checks the executable digest for a configured tool.
-func (m *Manager) VerifyToolBinary(tool string) error {
-	ext, ok := m.byTool[tool]
-	if !ok {
-		return fmt.Errorf("tool not found")
-	}
-	if err := verifyBinarySHA256(ext.Command, ext.SHA256); err != nil {
-		return err
-	}
-	return nil
-}
