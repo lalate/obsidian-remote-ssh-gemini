@@ -244,10 +244,10 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 			}
 			batch = append(batch, it)
 			if len(batch) >= 50 {
-					if !flush() {
-						_ = cmd.Wait()
-						return
-					}
+				if !flush() {
+					_ = cmd.Wait()
+					return
+				}
 			}
 		case <-ticker.C:
 			if !flush() {
@@ -272,4 +272,3 @@ func (r *extensionRunner) scanStream(wg *sync.WaitGroup, src io.Reader, stream s
 		out <- proto.CliOutputBatchItem{Stream: "stderr", Data: "[stream error] " + err.Error() + "\n", Seq: seq}
 	}
 }
-

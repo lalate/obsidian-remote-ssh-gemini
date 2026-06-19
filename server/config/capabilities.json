@@ -13,8 +13,7 @@
         {
           "name": "prompt",
           "required": true,
-          "maxLength": 65535,
-          "pattern": "^(?!\\s*-)[\\s\\S]+$"
+          "maxLength": 65535
         }
       ]
     }

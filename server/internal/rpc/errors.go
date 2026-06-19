@@ -37,8 +37,8 @@ func ErrInternal(msg string) *Error { return Err(proto.ErrorInternalError, msg, 
 // ErrAuthRequired and friends are convenience builders for the custom
 // error codes defined in proto/types.go.
 
-func ErrAuthRequired() *Error    { return Err(proto.ErrorAuthRequired, "auth required", nil) }
-func ErrAuthInvalid() *Error     { return Err(proto.ErrorAuthInvalid, "invalid token", nil) }
+func ErrAuthRequired() *Error { return Err(proto.ErrorAuthRequired, "auth required", nil) }
+func ErrAuthInvalid() *Error  { return Err(proto.ErrorAuthInvalid, "invalid token", nil) }
 func ErrFileNotFound(p string) *Error {
 	return Err(proto.ErrorFileNotFound, "no such file: "+p, nil)
 }
