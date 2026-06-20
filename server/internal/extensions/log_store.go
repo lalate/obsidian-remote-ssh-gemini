@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,13 @@ const (
 type LogStore struct {
 	dir string
 	mu  sync.Mutex
+}
+
+type logLine struct {
+	TS     string `json:"ts"`
+	Stream string `json:"stream"`
+	Data   string `json:"data"`
+	Seq    int64  `json:"seq,omitempty"`
 }
 
 func NewLogStore(stateDir string) (*LogStore, error) {
@@ -55,12 +63,7 @@ func (s *LogStore) AppendBatch(invocationID string, items []proto.CliOutputBatch
 
 	w := bufio.NewWriter(f)
 	for _, it := range items {
-		line, err := json.Marshal(struct {
-			TS     string `json:"ts"`
-			Stream string `json:"stream"`
-			Data   string `json:"data"`
-			Seq    int64  `json:"seq,omitempty"`
-		}{
+		line, err := json.Marshal(logLine{
 			TS:     time.Now().UTC().Format(time.RFC3339Nano),
 			Stream: it.Stream,
 			Data:   it.Data,
@@ -88,6 +91,51 @@ func (s *LogStore) AppendBatch(invocationID string, items []proto.CliOutputBatch
 		return false, nil
 	}
 	return true, nil
+}
+
+// ReplayFrom returns persisted output rows whose seq is greater than resumeFrom.
+// The boolean return value is false when no log file exists for invocationID.
+func (s *LogStore) ReplayFrom(invocationID string, resumeFrom int64) ([]proto.CliOutputBatchItem, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	fp := s.filePath(invocationID)
+	f, err := os.Open(fp)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	out := make([]proto.CliOutputBatchItem, 0, 128)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var row logLine
+		if err := json.Unmarshal(line, &row); err != nil {
+			return nil, true, err
+		}
+		if row.Seq <= resumeFrom {
+			continue
+		}
+		out = append(out, proto.CliOutputBatchItem{
+			Stream: row.Stream,
+			Data:   row.Data,
+			Seq:    row.Seq,
+		})
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return nil, true, err
+	}
+	return out, true, nil
 }
 
 func (s *LogStore) CleanupExpired() error {

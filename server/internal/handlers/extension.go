@@ -33,8 +33,10 @@ type extensionRunner struct {
 }
 
 type activeInvocation struct {
-	owner *server.Session
-	stop  func() error
+	owner      *server.Session
+	session    *server.Session
+	stop       func() error
+	outputMode string
 }
 
 const maxConcurrentExtensionInvocations = 4
@@ -60,6 +62,9 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		var p proto.ExtensionInvokeParams
 		if e := decodeParams("extension.invoke", raw, &p); e != nil {
 			return nil, e
+		}
+		if strings.TrimSpace(p.InvocationID) != "" {
+			return r.resumeInvoke(ctx, p)
 		}
 		if strings.TrimSpace(p.Tool) == "" {
 			return nil, rpc.ErrInvalidParams("extension.invoke: tool is required")
@@ -128,16 +133,43 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if p.Persist != nil {
 			persist = *p.Persist
 		}
-		r.registerInvocation(invocationID, session, func() error {
+		r.registerInvocation(invocationID, session, cap.OutputMode, func() error {
 			if cmd.Process == nil {
 				return nil
 			}
 			return cmd.Process.Kill()
 		})
-		go r.streamProcess(session, invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
+		go r.streamProcess(invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
 
 		return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
 	}
+}
+
+func (r *extensionRunner) resumeInvoke(ctx context.Context, p proto.ExtensionInvokeParams) (interface{}, *rpc.Error) {
+	if p.ResumeFrom < 0 {
+		return nil, rpc.ErrInvalidParams("extension.invoke: resumeFrom must be >= 0")
+	}
+
+	invocationID := strings.TrimSpace(p.InvocationID)
+	session := server.SessionFromContext(ctx)
+	inv, ok := r.rebindInvocation(invocationID, session)
+	if !ok {
+		return nil, rpc.ErrInvalidParams("extension.invoke: unknown invocationId for resume")
+	}
+
+	if r.logs != nil {
+		items, _, err := r.logs.ReplayFrom(invocationID, p.ResumeFrom)
+		if err != nil {
+			return nil, rpc.ErrInternal("extension.invoke: replay: " + err.Error())
+		}
+		if len(items) > 0 {
+			if err := sendReplay(session, inv.outputMode, invocationID, items); err != nil {
+				return nil, rpc.ErrInternal("extension.invoke: replay notify: " + err.Error())
+			}
+		}
+	}
+
+	return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
 }
 
 func (r *extensionRunner) Kill() rpc.Handler {
@@ -173,10 +205,10 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 	}
 }
 
-func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, stop func() error) {
+func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, outputMode string, stop func() error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.active[invocationID] = activeInvocation{owner: session, stop: stop}
+	r.active[invocationID] = activeInvocation{owner: session, session: session, outputMode: outputMode, stop: stop}
 }
 
 func (r *extensionRunner) lookupInvocation(invocationID string) (activeInvocation, bool) {
@@ -190,6 +222,29 @@ func (r *extensionRunner) unregisterInvocation(invocationID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.active, invocationID)
+}
+
+func (r *extensionRunner) rebindInvocation(invocationID string, session *server.Session) (activeInvocation, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok {
+		return activeInvocation{}, false
+	}
+	inv.session = session
+	inv.owner = session
+	r.active[invocationID] = inv
+	return inv, true
+}
+
+func (r *extensionRunner) currentInvocationSession(invocationID string) *server.Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok {
+		return nil
+	}
+	return inv.session
 }
 
 func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]string) ([]string, error) {
@@ -233,7 +288,7 @@ func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]str
 	return out, nil
 }
 
-func (r *extensionRunner) streamProcess(session *server.Session, invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
+func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
 	defer releaseSlot()
 	defer r.unregisterInvocation(invocationID)
 	itemsCh := make(chan proto.CliOutputBatchItem, 256)
@@ -254,6 +309,11 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 	flush := func() bool {
 		if len(batch) == 0 {
 			return true
+		}
+		session := r.currentInvocationSession(invocationID)
+		if session == nil {
+			_ = cmd.Process.Kill()
+			return false
 		}
 		payload := append([]proto.CliOutputBatchItem(nil), batch...)
 		if outputMode == "single" {
@@ -305,11 +365,14 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 						sig = err.Error()
 					}
 				}
-				_ = session.SendNotification("cli.done", proto.CliDoneParams{
-					InvocationID: invocationID,
-					ExitCode:     exitCode,
-					Signal:       sig,
-				})
+				session := r.currentInvocationSession(invocationID)
+				if session != nil {
+					_ = session.SendNotification("cli.done", proto.CliDoneParams{
+						InvocationID: invocationID,
+						ExitCode:     exitCode,
+						Signal:       sig,
+					})
+				}
 				return
 			}
 			batch = append(batch, it)
@@ -326,6 +389,26 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 			}
 		}
 	}
+}
+
+func sendReplay(session *server.Session, outputMode, invocationID string, items []proto.CliOutputBatchItem) error {
+	if outputMode == "single" {
+		for _, it := range items {
+			if err := session.SendNotification("cli.output", proto.CliOutputParams{
+				InvocationID: invocationID,
+				Stream:       it.Stream,
+				Data:         it.Data,
+				Seq:          it.Seq,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
+		InvocationID: invocationID,
+		Items:        items,
+	})
 }
 
 func (r *extensionRunner) scanStream(wg *sync.WaitGroup, src io.Reader, stream string, out chan<- proto.CliOutputBatchItem) {
