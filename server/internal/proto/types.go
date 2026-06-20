@@ -282,6 +282,17 @@ type ExtensionInvokeResult struct {
 	Accepted     bool   `json:"accepted"`
 }
 
+// ExtensionKillParams requests termination of an active invocation.
+type ExtensionKillParams struct {
+	InvocationID string `json:"invocationId"`
+}
+
+// ExtensionKillResult reports whether the target invocation was terminated.
+type ExtensionKillResult struct {
+	InvocationID string `json:"invocationId"`
+	Killed       bool   `json:"killed"`
+}
+
 // ─── server-push notifications ──────────────────────────────────────────────
 
 // FsChangeEvent is the kind of change the server observed on a watched path.

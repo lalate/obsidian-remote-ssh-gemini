@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -25,6 +27,14 @@ type extensionRunner struct {
 	vaultDir string
 	seq      atomic.Int64
 	slots    chan struct{}
+
+	mu     sync.Mutex
+	active map[string]activeInvocation
+}
+
+type activeInvocation struct {
+	owner *server.Session
+	stop  func() error
 }
 
 const maxConcurrentExtensionInvocations = 4
@@ -35,6 +45,7 @@ func NewExtensionRunner(mgr *extensions.Manager, logs *extensions.LogStore, vaul
 		logs:     logs,
 		vaultDir: vaultDir,
 		slots:    make(chan struct{}, maxConcurrentExtensionInvocations),
+		active:   map[string]activeInvocation{},
 	}
 }
 
@@ -117,10 +128,68 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if p.Persist != nil {
 			persist = *p.Persist
 		}
+		r.registerInvocation(invocationID, session, func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Kill()
+		})
 		go r.streamProcess(session, invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
 
 		return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
 	}
+}
+
+func (r *extensionRunner) Kill() rpc.Handler {
+	return r.killForMethod("extension.kill")
+}
+
+func (r *extensionRunner) KillCompat() rpc.Handler {
+	return r.killForMethod("cli.kill")
+}
+
+func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
+	return func(ctx context.Context, raw json.RawMessage) (interface{}, *rpc.Error) {
+		var p proto.ExtensionKillParams
+		if e := decodeParams(methodName, raw, &p); e != nil {
+			return nil, e
+		}
+		if strings.TrimSpace(p.InvocationID) == "" {
+			return nil, rpc.ErrInvalidParams(methodName + ": invocationId is required")
+		}
+
+		session := server.SessionFromContext(ctx)
+		inv, ok := r.lookupInvocation(p.InvocationID)
+		if !ok || inv.owner != session {
+			return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: false}, nil
+		}
+
+		err := inv.stop()
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return nil, rpc.ErrInternal(methodName + ": " + err.Error())
+		}
+		r.unregisterInvocation(p.InvocationID)
+		return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: true}, nil
+	}
+}
+
+func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, stop func() error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active[invocationID] = activeInvocation{owner: session, stop: stop}
+}
+
+func (r *extensionRunner) lookupInvocation(invocationID string) (activeInvocation, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	return inv, ok
+}
+
+func (r *extensionRunner) unregisterInvocation(invocationID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.active, invocationID)
 }
 
 func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]string) ([]string, error) {
@@ -166,6 +235,7 @@ func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]str
 
 func (r *extensionRunner) streamProcess(session *server.Session, invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
 	defer releaseSlot()
+	defer r.unregisterInvocation(invocationID)
 	itemsCh := make(chan proto.CliOutputBatchItem, 256)
 	var wg sync.WaitGroup
 	wg.Add(2)
