@@ -95,7 +95,7 @@ The default-recommended transport mode — plugin auto-deploys the daemon and sp
 The current factory default transport — uses SSH's SFTP subsystem directly (no daemon). Higher per-op latency, no `fs.watch`, but works on hosts where you cannot deploy a binary.
 
 **Shadow vault**
-A local Obsidian vault under `~/.obsidian-remote/vaults/<profile-id>/` whose file adapter is patched so reads and writes go **directly to the remote** over SSH. It is **not** a synced local copy: only `.obsidian/` config + plugin binaries live on local disk, while the notes are served *virtually* from the remote — the single source of truth, with no local copy to diverge (so no `(conflicted copy)`). Obsidian treats it as a normal local vault. (Plugins that bypass the vault API and hit Node `fs` directly are the exception — their writes stay local; see #429.) See [[en/architecture/shadow-vault|Shadow vault architecture]].
+A local Obsidian vault under `~/.obsidian-remote/vaults/<profile-id>/` whose adapter sends every read/write straight to the remote — the single source of truth, **not** a synced copy. Only `.obsidian/` is on disk; notes are virtual. Exception: plugins writing via raw Node `fs` instead of the vault API stay local (#429). See [[en/architecture/shadow-vault|Shadow vault architecture]].
 
 **Sync workflow** — *`.github/workflows/sync-main-to-next.yml`*
 After every push to `main`, opens a PR `main → next` and enables auto-merge so the histories rejoin. Prevents drift between channels.
