@@ -24,8 +24,23 @@ export class ShadowVaultManager {
   async openShadowFor(
     profile: SshProfile,
     allProfiles: ReadonlyArray<SshProfile>,
+    onBootstrapped?: (result: BootstrapResult) => Promise<void>,
   ): Promise<BootstrapResult> {
     const result = await this.bootstrap.bootstrap(profile, allProfiles);
+    // #429b / Phase B-3: optional pre-spawn step — e.g. pull the remote
+    // `.obsidian/` into the freshly-created shadow dir so the window
+    // boots on canonical config + plugins instead of the stale local
+    // copy. Best-effort BY CONTRACT: a throw here must never block the
+    // spawn, so the shadow window's own connect still catches up (the
+    // pre-B3 behaviour). The hook owns its own timeout.
+    if (onBootstrapped) {
+      try {
+        await onBootstrapped(result);
+      } catch {
+        // swallowed — spawn proceeds regardless (fallback to open-now,
+        // sync-inside-the-window).
+      }
+    }
     this.spawner.spawn(result.layout.vaultDir);
     return result;
   }

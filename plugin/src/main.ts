@@ -27,6 +27,7 @@ import { BulkWalker } from './vault/BulkWalker';
 import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
+import type { SharedConfigReader, BootstrapResult } from './shadow/ShadowVaultBootstrap';
 import { SharedConfigWatcher } from './shadow/SharedConfigWatcher';
 import { ShadowVaultManager } from './shadow/ShadowVaultManager';
 import { WindowSpawner } from './shadow/WindowSpawner';
@@ -34,6 +35,7 @@ import { ShadowStartupCoordinator } from './shadow/ShadowStartupCoordinator';
 import * as os from 'os';
 import { ObservabilityInstaller } from './util/ObservabilityInstaller';
 import { normalizeRemotePath } from './util/pathUtils';
+import { withTimeout } from './util/withTimeout';
 import * as path from 'path';
 import { errorMessage } from "./util/errorMessage";
 import { ConnectionManager, DaemonUnavailableError } from "./ConnectionManager";
@@ -1008,7 +1010,13 @@ export default class RemoteSshPlugin extends Plugin {
         logger.warn(`openShadowVaultFor: pre-spawn settings flush failed (${errorMessage(e)}); continuing to spawn`);
       }
 
-      const result = await manager.openShadowFor(profile, this.settings.profiles);
+      const result = await manager.openShadowFor(
+        profile, this.settings.profiles,
+        // #429b / Phase B-3: pull canonical .obsidian/ before the window
+        // boots. Best-effort + time-boxed inside preSpawnPull; the manager
+        // swallows any throw so a slow/failed pull never blocks the spawn.
+        (r) => this.preSpawnPull(profile, r),
+      );
       const how = result.pluginInstallMethod;
       const reg = result.registryCreated ? 'newly registered' : 'reused';
       logger.info(
@@ -1048,6 +1056,58 @@ export default class RemoteSshPlugin extends Plugin {
       const msg = errorMessage(e);
       logger.error(`openShadowVaultFor: ${msg}`);
       new Notice(`Remote SSH: shadow vault failed — ${msg}`);
+    }
+  }
+
+  /**
+   * Pre-spawn pull (#429b / Phase B-3). Before the shadow window opens,
+   * pull the remote `.obsidian/` — shared config (#342), the enabled-
+   * plugins list, and plugin binaries (#429b) — into the freshly
+   * bootstrapped shadow dir, so the window boots on the CANONICAL remote
+   * config instead of a stale local copy (no mid-session settings reload).
+   *
+   * Strictly best-effort and time-boxed. It builds a STANDALONE
+   * `SftpClient` that does NOT patch this (source) window's vault adapter,
+   * so the user's real vault is never hijacked. The kbd-interactive and
+   * host-key callbacks REJECT rather than prompt: pre-spawn must be
+   * non-interactive, so a 2FA / unknown-host connect falls through to the
+   * shadow window (which prompts exactly once) — no double prompt, no
+   * surprise modal in the source window. On ANY error or timeout it logs
+   * and returns; `ShadowVaultManager` then spawns and the shadow window's
+   * own connect catches up. Never throws.
+   */
+  private async preSpawnPull(profile: SshProfile, result: BootstrapResult): Promise<void> {
+    const localConfigDir = result.layout.configDir;
+    const remoteConfigDir = this.app.vault.configDir; // ".obsidian"
+    const remoteBase = normalizeRemotePath(profile.remotePath);
+    const toRemote = (p: string): string => (remoteBase === '.' ? p : `${remoteBase}/${p}`);
+
+    const client = new SftpClient(
+      this.authResolver,
+      this.hostKeyStore,
+      () => Promise.reject(new Error('pre-spawn: keyboard-interactive deferred to shadow window')),
+      () => Promise.reject(new Error('pre-spawn: host-key prompt deferred to shadow window')),
+    );
+    const reader: SharedConfigReader = {
+      exists: (p) => client.exists(toRemote(p)),
+      read: (p) => client.readText(toRemote(p)),
+    };
+    // Bound the whole connect+pull so a slow link can't stall the window
+    // open — beyond the budget we fall back to spawn-and-catch-up.
+    const budgetMs = (profile.connectTimeoutMs || 15_000) + 8_000;
+    try {
+      await withTimeout((async () => {
+        await client.connect(profile);
+        await ShadowVaultBootstrap.pullSharedObsidianConfig(reader, remoteConfigDir, localConfigDir);
+        await ShadowVaultBootstrap.pullCommunityPlugins(reader, remoteConfigDir, localConfigDir);
+        const enabledIds = ShadowVaultBootstrap.readEnabledPluginIds(localConfigDir);
+        await ShadowVaultBootstrap.pullPluginBinaries(reader, remoteConfigDir, localConfigDir, enabledIds);
+      })(), budgetMs, 'pre-spawn pull');
+      logger.info(`preSpawnPull: staged canonical .obsidian/ before spawn (${profile.name})`);
+    } catch (e) {
+      logger.warn(`preSpawnPull: skipped (${errorMessage(e)}); shadow window will sync after open`);
+    } finally {
+      try { await client.disconnect(); } catch { /* best effort */ }
     }
   }
 
