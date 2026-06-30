@@ -1095,14 +1095,23 @@ export default class RemoteSshPlugin extends Plugin {
     // Bound the whole connect+pull so a slow link can't stall the window
     // open — beyond the budget we fall back to spawn-and-catch-up.
     const budgetMs = (profile.connectTimeoutMs || 15_000) + 8_000;
+    // Run as a standalone promise: if the budget fires first, `finally`
+    // disconnects the client and any read still in flight then throws
+    // "not connected". That settles `pull` a SECOND time, after the race
+    // already lost — an unhandledrejection in the renderer unless we keep
+    // a handler on it. The real-error diagnostics still flow through the
+    // `withTimeout` race into the catch below; this handler only mops up
+    // the expected post-disconnect noise.
+    const pull = (async () => {
+      await client.connect(profile);
+      await ShadowVaultBootstrap.pullSharedObsidianConfig(reader, remoteConfigDir, localConfigDir);
+      await ShadowVaultBootstrap.pullCommunityPlugins(reader, remoteConfigDir, localConfigDir);
+      const enabledIds = ShadowVaultBootstrap.readEnabledPluginIds(localConfigDir);
+      await ShadowVaultBootstrap.pullPluginBinaries(reader, remoteConfigDir, localConfigDir, enabledIds);
+    })();
+    pull.catch(() => { /* post-timeout teardown error — handled via the race */ });
     try {
-      await withTimeout((async () => {
-        await client.connect(profile);
-        await ShadowVaultBootstrap.pullSharedObsidianConfig(reader, remoteConfigDir, localConfigDir);
-        await ShadowVaultBootstrap.pullCommunityPlugins(reader, remoteConfigDir, localConfigDir);
-        const enabledIds = ShadowVaultBootstrap.readEnabledPluginIds(localConfigDir);
-        await ShadowVaultBootstrap.pullPluginBinaries(reader, remoteConfigDir, localConfigDir, enabledIds);
-      })(), budgetMs, 'pre-spawn pull');
+      await withTimeout(pull, budgetMs, 'pre-spawn pull');
       logger.info(`preSpawnPull: staged canonical .obsidian/ before spawn (${profile.name})`);
     } catch (e) {
       logger.warn(`preSpawnPull: skipped (${errorMessage(e)}); shadow window will sync after open`);

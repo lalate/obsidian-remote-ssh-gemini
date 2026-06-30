@@ -10,7 +10,10 @@
  * shadow window and letting it catch up.
  */
 export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  let timer: ReturnType<typeof window.setTimeout> | undefined;
+  // `window.setTimeout` returns a number in the Obsidian renderer (DOM),
+  // not a NodeJS.Timeout — type it as such so @types/node's global
+  // overload doesn't leak in.
+  let timer: number | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = window.setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
   });

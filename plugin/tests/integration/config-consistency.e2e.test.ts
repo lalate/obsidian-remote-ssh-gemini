@@ -190,19 +190,25 @@ describe('Config consistency across connect cycles (#429 / #342)', () => {
       .toBe('/* local-only code v2 */\n');
   });
 
-  it('pullPluginBinaries never overwrites a local plugin file (local is authoritative, real SSH)', async () => {
+  it('pullPluginBinaries never DOWNGRADES a newer local plugin (older remote, real SSH)', async () => {
     const id = 'conflict-plugin';
-    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/main.js`, '/* REMOTE code */\n');
+    // Remote carries an OLDER version.
+    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/manifest.json`,
+      JSON.stringify({ id, version: '1.0.0', name: 'Conflict', minAppVersion: '1.5.0' }));
+    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/main.js`, '/* REMOTE v1 */\n');
 
     const profile = profileFor('bin-conflict');
     const { layout } = await freshSession().bootstrap(profile, [profile]);
     const dir = path.join(layout.configDir, 'plugins', id);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'main.js'), '/* LOCAL code */\n');
+    // Local has a strictly NEWER version — the pull must leave it alone.
+    fs.writeFileSync(path.join(dir, 'manifest.json'),
+      JSON.stringify({ id, version: '2.0.0', name: 'Conflict', minAppVersion: '1.5.0' }));
+    fs.writeFileSync(path.join(dir, 'main.js'), '/* LOCAL v2 */\n');
 
     await ShadowVaultBootstrap.pullPluginBinaries(remoteClient.adapter, REMOTE_CFG, layout.configDir, [id]);
 
-    expect(fs.readFileSync(path.join(dir, 'main.js'), 'utf-8'), 'local file must not be clobbered by pull')
-      .toBe('/* LOCAL code */\n');
+    expect(fs.readFileSync(path.join(dir, 'main.js'), 'utf-8'), 'older remote must not downgrade newer local')
+      .toBe('/* LOCAL v2 */\n');
   });
 });

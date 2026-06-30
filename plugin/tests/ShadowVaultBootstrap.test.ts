@@ -1137,10 +1137,13 @@ describe('ShadowVaultBootstrap plugin-binary round-trip (#429b — BRAT / non-ma
     return { rw, store };
   }
 
-  it('pulls a plugin enabled on another machine into the shadow (code staged on disk)', async () => {
+  // A manifest.json body carrying the version the round-trip orders on.
+  const manifest = (id: string, version: string) => JSON.stringify({ id, version });
+
+  it('pulls a plugin that is ABSENT locally (fresh install from the remote)', async () => {
     const cfg = makeLocalConfigDir();
     const { rw } = makeRW({
-      '.obsidian/plugins/brat-x/manifest.json': '{"id":"brat-x"}',
+      '.obsidian/plugins/brat-x/manifest.json': manifest('brat-x', '1.0.0'),
       '.obsidian/plugins/brat-x/main.js': '/* brat code */\n',
     });
 
@@ -1151,67 +1154,142 @@ describe('ShadowVaultBootstrap plugin-binary round-trip (#429b — BRAT / non-ma
     expect(fs.existsSync(pluginFile(cfg, 'brat-x', 'manifest.json'))).toBe(true);
   });
 
-  it('never overwrites a local plugin file (local install is authoritative)', async () => {
+  it('UPGRADES a local plugin when the remote is a strictly newer version', async () => {
     const cfg = makeLocalConfigDir();
-    seedLocal(cfg, 'p', 'main.js', '/* LOCAL */\n');
-    const { rw } = makeRW({ '.obsidian/plugins/p/main.js': '/* REMOTE */\n' });
+    seedLocal(cfg, 'p', 'manifest.json', manifest('p', '1.0.0'));
+    seedLocal(cfg, 'p', 'main.js', '/* OLD v1 */\n');
+    const { rw } = makeRW({
+      '.obsidian/plugins/p/manifest.json': manifest('p', '2.0.0'),
+      '.obsidian/plugins/p/main.js': '/* NEW v2 */\n',
+    });
 
     await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['p']);
 
-    expect(fs.readFileSync(pluginFile(cfg, 'p', 'main.js'), 'utf-8'), 'local file must win')
-      .toBe('/* LOCAL */\n');
+    expect(fs.readFileSync(pluginFile(cfg, 'p', 'main.js'), 'utf-8'), 'newer remote must upgrade local')
+      .toBe('/* NEW v2 */\n');
+  });
+
+  it('does NOT downgrade a local plugin when the remote is OLDER (#429b clobber guard)', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'p', 'manifest.json', manifest('p', '2.0.0'));
+    seedLocal(cfg, 'p', 'main.js', '/* NEW v2 */\n');
+    const { rw } = makeRW({
+      '.obsidian/plugins/p/manifest.json': manifest('p', '1.0.0'),
+      '.obsidian/plugins/p/main.js': '/* OLD v1 */\n',
+    });
+
+    await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['p']);
+
+    expect(fs.readFileSync(pluginFile(cfg, 'p', 'main.js'), 'utf-8'), 'older remote must NOT clobber newer local')
+      .toBe('/* NEW v2 */\n');
+  });
+
+  it('is a no-op when the remote has no manifest (nothing to pull)', async () => {
+    const cfg = makeLocalConfigDir();
+    const { rw } = makeRW({ '.obsidian/plugins/p/main.js': '/* orphan main, no manifest */\n' });
+
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['p']);
+
+    expect(pulled).not.toContain('p');
+    expect(fs.existsSync(pluginFile(cfg, 'p', 'main.js'))).toBe(false);
   });
 
   it('skips remote-ssh on pull — the plugin manages its own install', async () => {
     const cfg = makeLocalConfigDir();
-    const { rw } = makeRW({ '.obsidian/plugins/remote-ssh/main.js': '/* ignore me */\n' });
+    const { rw } = makeRW({ '.obsidian/plugins/remote-ssh/manifest.json': manifest('remote-ssh', '9.9.9') });
 
     const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['remote-ssh']);
 
     expect(pulled).not.toContain('remote-ssh');
-    expect(fs.existsSync(pluginFile(cfg, 'remote-ssh', 'main.js'))).toBe(false);
+    expect(fs.existsSync(pluginFile(cfg, 'remote-ssh', 'manifest.json'))).toBe(false);
   });
 
-  it('pushes a locally-installed plugin so other machines can pull it', async () => {
+  it('seeds the remote when it LACKS the plugin (push)', async () => {
     const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'q', 'manifest.json', manifest('q', '1.0.0'));
     seedLocal(cfg, 'q', 'main.js', '/* q code */\n');
-    seedLocal(cfg, 'q', 'manifest.json', '{"id":"q"}');
     const { rw, store } = makeRW();
 
     const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['q']);
 
     expect(pushed).toContain('q');
     expect(store['.obsidian/plugins/q/main.js']).toBe('/* q code */\n');
-    expect(store['.obsidian/plugins/q/manifest.json']).toBe('{"id":"q"}');
+    expect(store['.obsidian/plugins/q/manifest.json']).toBe(manifest('q', '1.0.0'));
   });
 
-  it('push is a no-op when the remote copy is already identical (avoid churn)', async () => {
+  it('pushes an UPGRADE when the local copy is a strictly newer version', async () => {
     const cfg = makeLocalConfigDir();
-    seedLocal(cfg, 'r', 'main.js', '/* same */\n');
-    const { rw } = makeRW({ '.obsidian/plugins/r/main.js': '/* same */\n' });
-    let writes = 0;
-    const origWrite = rw.write;
-    rw.write = (p, c) => { writes++; return origWrite(p, c); };
+    seedLocal(cfg, 'q', 'manifest.json', manifest('q', '2.0.0'));
+    seedLocal(cfg, 'q', 'main.js', '/* NEW v2 */\n');
+    const { rw, store } = makeRW({
+      '.obsidian/plugins/q/manifest.json': manifest('q', '1.0.0'),
+      '.obsidian/plugins/q/main.js': '/* OLD v1 */\n',
+    });
+
+    const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['q']);
+
+    expect(pushed).toContain('q');
+    expect(store['.obsidian/plugins/q/main.js'], 'newer local must upgrade the remote').toBe('/* NEW v2 */\n');
+  });
+
+  it('does NOT downgrade the remote when the local copy is OLDER (#429b clobber guard)', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'q', 'manifest.json', manifest('q', '1.0.0'));
+    seedLocal(cfg, 'q', 'main.js', '/* OLD v1 */\n');
+    const { rw, store } = makeRW({
+      '.obsidian/plugins/q/manifest.json': manifest('q', '2.0.0'),
+      '.obsidian/plugins/q/main.js': '/* NEW v2 */\n',
+    });
+
+    const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['q']);
+
+    expect(pushed).not.toContain('q');
+    expect(store['.obsidian/plugins/q/main.js'], 'older local must NOT clobber newer remote').toBe('/* NEW v2 */\n');
+  });
+
+  it('push is skipped when the local plugin has no manifest', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'r', 'main.js', '/* code, no manifest */\n');
+    const { rw, store } = makeRW();
 
     const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['r']);
 
     expect(pushed).not.toContain('r');
-    expect(writes, 'identical content must not be re-written').toBe(0);
+    expect(store['.obsidian/plugins/r/main.js']).toBeUndefined();
   });
 
-  it('a per-file SSH error is swallowed and does not abort the rest', async () => {
+  it('CONVERGES without ping-pong: pull an upgrade, then push is a no-op', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'c', 'manifest.json', manifest('c', '1.0.0'));
+    seedLocal(cfg, 'c', 'main.js', '/* v1 */\n');
+    const { rw, store } = makeRW({
+      '.obsidian/plugins/c/manifest.json': manifest('c', '2.0.0'),
+      '.obsidian/plugins/c/main.js': '/* v2 */\n',
+    });
+
+    // Round 1 pull: the newer remote upgrades local to v2.
+    await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['c']);
+    expect(fs.readFileSync(pluginFile(cfg, 'c', 'main.js'), 'utf-8')).toBe('/* v2 */\n');
+
+    // Then push: local == remote (both v2) → nothing pushed, no oscillation.
+    const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['c']);
+    expect(pushed, 'after converging on v2 the push must be a no-op').not.toContain('c');
+    expect(store['.obsidian/plugins/c/main.js']).toBe('/* v2 */\n');
+  });
+
+  it('a per-plugin SSH error is swallowed and does not abort the batch', async () => {
     const cfg = makeLocalConfigDir();
     const { rw } = makeRW({
-      '.obsidian/plugins/x/manifest.json': '{"id":"x"}',
-      '.obsidian/plugins/x/main.js': '/* x */\n',
+      '.obsidian/plugins/bad/manifest.json': manifest('bad', '1.0.0'),
+      '.obsidian/plugins/good/manifest.json': manifest('good', '1.0.0'),
+      '.obsidian/plugins/good/main.js': '/* good */\n',
     });
     const origRead = rw.read;
-    rw.read = (p) => (p.endsWith('manifest.json') ? Promise.reject(new Error('SSH hiccup')) : origRead(p));
+    rw.read = (p) => (p.includes('/bad/') ? Promise.reject(new Error('SSH hiccup')) : origRead(p));
 
-    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['x']);
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['bad', 'good']);
 
-    expect(pulled, 'main.js still pulls after manifest read fails').toContain('x');
-    expect(fs.readFileSync(pluginFile(cfg, 'x', 'main.js'), 'utf-8')).toBe('/* x */\n');
-    expect(fs.existsSync(pluginFile(cfg, 'x', 'manifest.json')), 'failed file is skipped').toBe(false);
+    expect(pulled, 'good pulls even though bad errored').toContain('good');
+    expect(pulled).not.toContain('bad');
   });
 });
