@@ -481,22 +481,47 @@ export class ShadowVaultBootstrap {
   }
 
   /**
-   * Push the local enabled-plugin list to the remote, with `remote-ssh`
-   * forced on. Last-write-wins (matching the v1 no-CRDT policy); the
-   * pull's union means machines still converge toward the superset.
+   * Push the local enabled-plugin list to the remote, unioned with the
+   * remote's CURRENT list and with `remote-ssh` forced on.
+   *
+   * Self-protecting against clobber: it re-reads the remote first and
+   * unions, so a stale/minimal local list (e.g. after a transient pull
+   * read-failure earlier in the same connect) can never drop a plugin
+   * another machine enabled. If the remote HAS the file but it can't be
+   * read or parsed, it aborts rather than overwrite what it couldn't
+   * see. A genuinely-absent remote file is seeded from local.
    */
   static async pushCommunityPlugins(
-    writer: SharedConfigWriter,
+    rw: SharedConfigReader & SharedConfigWriter,
     remoteConfigDir: string,
     localConfigDir: string,
   ): Promise<{ pushed: boolean }> {
     const basename = 'community-plugins.json';
-    const localPath = path.join(localConfigDir, basename);
-    const ids = ShadowVaultBootstrap.mergePluginIds(
-      ShadowVaultBootstrap.readPluginIdList(localPath), [], ShadowVaultBootstrap.SELF_PLUGIN_ID,
-    );
+    const remoteRel = `${remoteConfigDir}/${basename}`;
+    const local = ShadowVaultBootstrap.readPluginIdList(path.join(localConfigDir, basename));
+
+    let remote: string[] = [];
     try {
-      await writer.write(`${remoteConfigDir}/${basename}`, JSON.stringify(ids) + '\n');
+      if (await rw.exists(remoteRel)) {
+        const parsed = ShadowVaultBootstrap.parsePluginIdList(await rw.read(remoteRel));
+        if (parsed === null) {
+          logger.warn('pushCommunityPlugins: remote list is not a valid id array; not pushing (avoid clobber)');
+          return { pushed: false };
+        }
+        remote = parsed;
+      }
+    } catch (e) {
+      logger.warn(`pushCommunityPlugins: cannot read remote (${errorMessage(e)}); not pushing (avoid clobber)`);
+      return { pushed: false };
+    }
+
+    const ids = ShadowVaultBootstrap.mergePluginIds(remote, local, ShadowVaultBootstrap.SELF_PLUGIN_ID);
+    // No-op when the remote already equals the union — avoid churn.
+    if (remote.length === ids.length && remote.every((id, i) => id === ids[i])) {
+      return { pushed: false };
+    }
+    try {
+      await rw.write(remoteRel, JSON.stringify(ids) + '\n');
       logger.info(`pushCommunityPlugins: pushed [${ids.join(', ')}]`);
       return { pushed: true };
     } catch (e) {
