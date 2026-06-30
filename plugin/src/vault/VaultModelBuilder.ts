@@ -305,11 +305,20 @@ export class VaultModelBuilder {
    * Returns `true` if the rename happened, `false` if the source
    * wasn't in the model or the destination's parent is missing.
    */
-  renameOne(oldPath: string, newPath: string): boolean {
+  renameOne(oldPath: string, newPath: string, opts: { ensureParents?: boolean } = {}): boolean {
     if (!oldPath || !newPath || oldPath === newPath) return false;
     const target = this.vault.getAbstractFileByPath(oldPath);
     if (!target) return false;
-    const newParent = this.resolveParent(newPath);
+    // The destination subtree may not be modelled yet — e.g. a note
+    // dragged into a freshly-created folder (#423). On the writer-reflect
+    // path we synthesise the missing parent chain instead of bailing,
+    // symmetric with `insertOne({ ensureParents: true })`. The bulk
+    // `build()` path and remote-echo `FsChangeListener` leave
+    // `ensureParents` off so a missing parent stays a sanity-check error.
+    let newParent = this.resolveParent(newPath);
+    if (!newParent && opts.ensureParents) {
+      newParent = this.ensureParentFolder(newPath);
+    }
     if (!newParent) {
       logger.warn(`VaultModelBuilder.renameOne: parent missing for "${newPath}"`);
       return false;
@@ -436,7 +445,17 @@ export class VaultModelBuilder {
 
   /** Reflect a writer-side `adapter.rename`. */
   reflectRename(oldPath: string, newPath: string): void {
-    if (!this.renameOne(oldPath, newPath)) {
+    // Obsidian's own `Vault.rename` may have already relocated the entry
+    // to the new path before this writer-reflect runs. The desired end
+    // state already holds, so it's a benign no-op — not the #341/#423
+    // divergence — and must not log a misleading "stale" warning.
+    if (!this.vault.getAbstractFileByPath(oldPath) && this.vault.getAbstractFileByPath(newPath)) {
+      return;
+    }
+    // `ensureParents`: a move into a not-yet-modelled folder (#423) must
+    // synthesise the destination subtree rather than drop the file from
+    // the model (which makes it vanish from File Explorer until reopen).
+    if (!this.renameOne(oldPath, newPath, { ensureParents: true })) {
       // The open editor tab stays bound to the stale TFile — this is
       // the core #341 failure. renameOne already warns with the
       // specific cause; add the reflect context.
