@@ -38,8 +38,8 @@ Numbers in the table reflect a `~/work/VaultDev`-class remote
 | Plugin | Access pattern | Status | Notes |
 |---|---|---|---|
 | Dataview | reads every MD file via `app.vault.cachedRead` for the index, then queries against `app.metadataCache` | ✅ verified-by-harness (#124 F11) | Initial index build does N reads on connect. ReadCache absorbs subsequent queries. Watch for noticeable startup delay on bigger vaults. F11 harness scenario (`plugin/tests/compat/dataview.test.ts`) drives `dv.pages()`-shape queries against a 5-page fixture and asserts frontmatter scalars + aggregations round-trip through `metadataCache.getFileCache()`. |
-| Templater | reads templates from a configured folder, evaluates JS, writes through `app.vault.modify` / `create`. `tp.file.path(false)` and the `child_process.exec` cwd path read `adapter.basePath`. | ✅ verified-by-harness (#124 F12) | `basePath` now resolves to the shadow-vault local root via #170, so `tp.file.path(false)` returns a path whose `fs.readFileSync` finds mirrored content. JS user functions that import Node `fs` and write under `basePath` land in the shadow dir, which propagates to the remote. F12 harness scenario (`plugin/tests/compat/templater.test.ts`) drives `tp.file.create_new` against 3 fixture templates (date placeholder, frontmatter + title, no-date) and asserts `vault.create` + `vault.modify` round-trip with `metadataCache` reflecting the new frontmatter. |
-| Kanban | stores boards as MD files with YAML frontmatter; standard vault read/write on every drag. Clipboard image paste joins `(adapter as any).basePath` with the attachment path and calls `fs.copyFile`. | 🟡 expected (smoke pending after #170) | Each card move = 1 write. Network latency may show as a noticeable lag on big boards; otherwise fine. Clipboard paste is fixed by #170: `basePath` now resolves to the shadow-vault local root, so `fs.copyFile` lands in the shadow dir. |
+| Templater | reads templates from a configured folder, evaluates JS, writes through `app.vault.modify` / `create`. `tp.file.path(false)` and the `child_process.exec` cwd path read `adapter.basePath`. | ✅ verified-by-harness (#124 F12) | `basePath` now resolves to the shadow-vault local root via #170, so `tp.file.path(false)` no longer returns `undefined` and `child_process.exec`'s cwd is valid. **Caveat:** the vault tree is served virtually from the remote (not mirrored to local disk — see *Direct-disk / agentic plugins* below, #429), so a Templater JS user script that reads/writes vault notes through Node `fs` only sees the local shadow copy: such reads can miss remote notes and such writes do **not** reach the remote. The `vault.create` / `vault.modify` path *does* round-trip — F12 harness scenario (`plugin/tests/compat/templater.test.ts`) drives `tp.file.create_new` against 3 fixture templates (date placeholder, frontmatter + title, no-date) and asserts `vault.create` + `vault.modify` round-trip with `metadataCache` reflecting the new frontmatter. |
+| Kanban | stores boards as MD files with YAML frontmatter; standard vault read/write on every drag. Clipboard image paste joins `(adapter as any).basePath` with the attachment path and calls `fs.copyFile`. | 🟡 expected (smoke pending after #170) | Each card move = 1 write. Network latency may show as a noticeable lag on big boards; otherwise fine. Clipboard paste no longer crashes after #170 (`basePath` resolves to the shadow-vault local root), but `fs.copyFile` lands in the **local shadow copy only** — the pasted image does not reach the remote (the vault tree is served virtually, not mirrored; see *Direct-disk / agentic plugins*, #429). Board edits made through the vault API (card moves) do round-trip. |
 | Thino | reads/writes daily-note-style files; standard vault API | 🟡 expected | Pure vault API user. No special concerns. |
 | Commander | UI plugin: ribbon icons, hotkeys, command macros. Doesn't touch vault files for its own state (uses plugin data via `loadData`/`saveData`, which goes through the patched adapter) | 🟡 expected | If a custom command invokes a different plugin, the wrapped plugin's compatibility applies. |
 | Emoji Shortcodes | pure UI typing helper. No filesystem access | ✅ verified-by-architecture | Not affected by adapter patching at all. |
@@ -47,7 +47,7 @@ Numbers in the table reflect a `~/work/VaultDev`-class remote
 | Meta Bind | input bindings on YAML / inline frontmatter; reads / writes via vault API | 🟡 expected | Each input change writes the host note. Latency is noticeable but functional. |
 | Omnisearch | full-text indexer: reads every file in the vault on init + on changes | ⚠️ degraded (expected) | This is the most network-bound plugin in the list. Initial index build on a remote vault can take seconds-to-minutes depending on size. After the warm cache, queries are local. Recommendation: only enable Omnisearch when the connection is stable. |
 | QuickLatex | renders LaTeX inline. Pure UI, no FS access | ✅ verified-by-architecture | Not affected. |
-| Importer | converts external formats (Evernote `.enex`, etc.) to MD using `path.join(getBasePath(), folder.path)` as `outputDir` for the Yarle Evernote converter (Node `fs.writeFile`) | 🟡 expected (smoke pending after #170) | `getBasePath()` now returns the shadow-vault local root via #170, so the converter writes files into the shadow dir; the file-watcher propagates them to the remote. Initial conversion of a large `.enex` may produce many writes; watch for queue lag. |
+| Importer | converts external formats (Evernote `.enex`, etc.) to MD using `path.join(getBasePath(), folder.path)` as `outputDir` for the Yarle Evernote converter (Node `fs.writeFile`) | 🟡 expected (smoke pending after #170) | `getBasePath()` now returns the shadow-vault local root via #170, so the Yarle converter no longer crashes — but its Node `fs` writes land in the **local shadow copy only** and do **not** reach the remote (the vault tree is served virtually, not mirrored; see *Direct-disk / agentic plugins*, #429). To import into a remote vault, run the converter against a local vault and move the result over, or import via a plugin that uses the Obsidian vault API. |
 | Copilot | reads `getBasePath?.()` then falls back to `basePath` for local-context AI indexing (`src/miyo/miyoUtils.ts`) | 🟡 expected (smoke pending after #170) | Either form now resolves to the shadow-vault local root via #170, so Copilot's local-context indexing operates against the synced copy. The remote is the source of truth; the index reflects whatever has been mirrored to the shadow dir. |
 | Git (Vinzent03) | desktop hardcodes `SimpleGit` (spawns local `git` against `getBasePath()`); mobile uses `IsomorphicGit` via `MyAdapter(vault.adapter)` (pure JS, no shell-out) | ❌ broken on desktop / fixable upstream | The desktop path silently mis-routes commits to the shadow git repo, not the remote. The isomorphic-git path *would* work transparently against our remote adapter but is gated behind `Platform.isDesktopApp` with no toggle. **We won't ship a workaround** — see [#150](https://github.com/sotashimozono/obsidian-remote-ssh/issues/150) for the rationale. Users wanting git on a remote vault should use the integrated terminal pane ([#149](https://github.com/sotashimozono/obsidian-remote-ssh/issues/149)) or file a feature request at Vinzent03/obsidian-git for a `forceIsomorphicGit` toggle. |
 | Excalidraw | drawings stored as `.excalidraw.md` (JSON) or embedded markdown; embedded images go through `getResourcePath`. `pathToFileURL(adapter.basePath)` is used as a vault-membership prefix check (`src/utils/fileUtils.ts:343`). | ✅ verified-by-harness (#124 F13) | The `RPC` transport is required for the ResourceBridge to serve images. On `SFTP` transport, embedded images fall back to a broken `data:` URL. First read of a large `.excalidraw.md` pulls the whole JSON; subsequent edits stream cleanly. After #170 the prefix check stays internally consistent (both sides see the shadow path). F13 harness scenario (`plugin/tests/compat/excalidraw.test.ts`) covers `.excalidraw.md` text round-trip + binary attachment CRUD with byte-exact equality on a 1 KB cyclic blob and a 4 KB PNG-magic + xorshift32 payload. |
@@ -130,15 +130,23 @@ Things that aren't a specific plugin but trip plugins in general:
 
 - **`app.vault.adapter.basePath` and `getBasePath()`** resolve to the
   **shadow vault's** local root (e.g. `~/.obsidian-remote/vaults/<P-id>/`),
-  not the remote SSH path. Plugins that join paths against `basePath`
-  and feed them to Node `fs` directly read mirrored content and write
-  into the shadow dir; the file-watcher then propagates writes back to
-  the remote. This is the natural value of `FileSystemAdapter.basePath`
-  in the shadow window, and #170 patches both forms onto the
-  replacement adapter explicitly so the contract is stable across
-  Obsidian version upgrades. See the **basePath compat survey** section
-  below (#133, 2026-04-29) for the top-20 plugin survey, and #170 for
-  the implementation. **Exception:** plugins that shell out to a local
+  not the remote SSH path. #170 patches both forms onto the
+  replacement adapter so plugins that read `basePath` no longer crash
+  on `undefined`, and the contract is stable across Obsidian version
+  upgrades. **However, the vault tree (your notes) is served *virtually*
+  from the remote — it is NOT mirrored to local disk** (only `.obsidian/`
+  config + the plugin binaries live under that local root). So a plugin
+  that joins a vault path against `basePath` and hands it to Node `fs`
+  only ever touches the local shadow copy: reads of existing remote
+  notes won't find them, and writes create local-only files that do
+  **not** reach the remote. Only operations through the Obsidian vault
+  API (`vault.read/create/modify/...`, routed through the patched
+  adapter) round-trip; `.obsidian/` shared config round-trips via a
+  dedicated watcher (#342/#434). See *Direct-disk / agentic plugins*
+  below (#429) and the **basePath compat survey** (#133, 2026-04-29) —
+  but note the survey's "syncs up to the remote" mitigations assumed a
+  vault-tree file-watcher that was never built (see the correction in
+  that section). **Exception:** plugins that shell out to a local
   binary (notably obsidian-Git's `SimpleGit` desktop path) operate on
   the shadow git repo rather than the remote one — patching can't fix
   this from our side. obsidian-Git's bundled `IsomorphicGit` mode
@@ -163,6 +171,20 @@ Things that aren't a specific plugin but trip plugins in general:
   image-processing plugins outside the top-20 use this pattern
   (see survey section below). No webview-side URL rewriting is
   needed at this time.
+- **Direct-disk / agentic plugins** (e.g. Claude Code-style wrappers
+  such as "Claudian") — plugins that create or edit files by calling
+  Node `fs` directly, or by shelling out to a child process, bypass the
+  patched adapter entirely. Their writes land in the **local shadow
+  copy** (`~/.obsidian-remote/vaults/<id>/…`) and never reach the
+  remote — this is [#429](https://github.com/sotashimozono/obsidian-remote-ssh/issues/429).
+  There is no automatic local→remote reconciler for the vault tree
+  (only `.obsidian/` shared config and the enabled-plugins list
+  round-trip, via #342/#434); adding one would reintroduce the
+  sync/reconcile model this plugin's single-source-of-truth design
+  deliberately avoids. **Recommendation:** drive note creation through
+  plugins that use the Obsidian vault API (`vault.create` / `modify`);
+  treat direct-disk / agentic tools as operating on a *local-only* copy
+  when pointed at a remote vault.
 
 ## Why we can't auto-test all of this
 
@@ -273,6 +295,20 @@ compare, child-process cwd, etc.).
 - **Smoke verification** of Templater / Kanban / Importer / Copilot
   in a real dev vault remains a manual step; the matrix above keeps
   these at `🟡 expected (smoke pending after #170)` until run.
+
+> **⚠️ Correction (2026-06-30, #429).** The survey's recommendations
+> above repeatedly say Node-`fs` writes under `basePath` "land in the
+> shadow vault, which the file-watcher syncs up to the remote." That
+> shadow→remote file-watcher **was never built for the vault tree** —
+> the only local→remote watcher that exists is `SharedConfigWatcher`,
+> scoped to `.obsidian/` shared config (#342) and the enabled-plugins
+> list (#434). #170 made `basePath` *return* the shadow-vault local
+> root (so plugins stop crashing on `undefined`), but it did **not**
+> create a local mirror of the vault tree or a sync path. The vault
+> tree is served virtually from the remote; a plugin's `fs` write to
+> `basePath` therefore stays in the local shadow copy and does not
+> reach the remote (this is #429). Read the per-plugin "fixed by #170"
+> notes as "no longer crashes," **not** "round-trips to the remote."
 
 ### Method
 
