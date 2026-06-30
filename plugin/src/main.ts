@@ -612,6 +612,20 @@ export default class RemoteSshPlugin extends Plugin {
         );
       }
 
+      // #429b: the startup installer (prepareForAutoConnect) ran BEFORE
+      // the pull above — and not at all on a reconnect — so a plugin the
+      // pull just added to community-plugins.json has no binary staged yet
+      // and won't load. Re-run the marketplace installer now the list is
+      // current; `enablePluginAndSave` loads a marketplace plugin live, no
+      // restart. Idempotent (already-installed ids are skipped). BRAT /
+      // non-marketplace plugins still need their binary on the remote.
+      try {
+        await new ShadowStartupCoordinator(this.app, this.settings, () => this.saveSettings())
+          .installMissingShadowPlugins();
+      } catch (e) {
+        logger.warn(`runAutoConnect(${tag}): post-pull plugin install failed: ${errorMessage(e)}`);
+      }
+
       // #342 push half: pull only brought remote→local. Without this,
       // a settings change made HERE never reaches the remote, so the
       // next session's pull finds nothing and the change evaporates.

@@ -126,12 +126,18 @@ export class ShadowStartupCoordinator {
   /**
    * Read this shadow vault's community-plugins.json, find ids whose
    * binaries aren't yet installed, and download them from Obsidian's
-   * community marketplace. On first bootstrap this is a no-op (the
-   * list is just `["remote-ssh"]`); the path matters on re-bootstrap
-   * where the user has accumulated a real list and a binary went
-   * missing (vault moved disks, plugin dir purged, …).
+   * community marketplace.
+   *
+   * Called twice: once in `prepareForAutoConnect` (before connect, from
+   * the local list — re-installs a binary that went missing) and again
+   * by the connect flow right after the remote community-plugins pull,
+   * so a plugin enabled on another machine gets its binary and loads on
+   * the first reconnect rather than only after a restart (#429b).
+   * Idempotent — `installMissing` skips ids already on disk.
+   * (Non-marketplace / BRAT plugins still need their binary on the
+   * remote — out of scope here.)
    */
-  private async installMissingShadowPlugins(): Promise<void> {
+  async installMissingShadowPlugins(): Promise<void> {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
       logger.warn('installMissingShadowPlugins: vault is not FileSystemAdapter-backed; skipping');
