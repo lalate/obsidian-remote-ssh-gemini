@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ShadowVaultBootstrap } from '../src/shadow/ShadowVaultBootstrap';
+import type { SharedConfigReader, SharedConfigWriter } from '../src/shadow/ShadowVaultBootstrap';
 import { ObsidianRegistry } from '../src/shadow/ObsidianRegistry';
 import type { SshProfile, PendingPluginSuggestion } from '../src/types';
 
@@ -954,5 +955,116 @@ describe('ShadowVaultBootstrap — seedObsidianFirstRunState', () => {
 
     await r.bootstrap(profile, [profile]);
     expect(fs.readFileSync(corePath, 'utf-8')).toBe(custom);
+  });
+});
+
+// ─── community-plugins round-trip (#429 / #342 residual) ────────────────
+//
+// app/appearance/core-plugins/hotkeys already round-trip via
+// pull/pushSharedObsidianConfig, but the *enabled community-plugins*
+// list does NOT: it is only ever seeded locally as ["remote-ssh"]
+// (see the bootstrap suite above). So a plugin enabled on machine A
+// never reaches machine B's shadow vault, and reopening the vault
+// "loses" installed plugins — exactly kazink's #429 follow-up and the
+// #342 residual.
+//
+// community-plugins.json must NOT join the verbatim
+// SHARED_OBSIDIAN_CONFIG_FILES set: a remote list that happens to omit
+// `remote-ssh` would, written verbatim, disable the very plugin doing
+// the sync. The fix is a dedicated pull/push pair that round-trips the
+// list while always keeping `remote-ssh` enabled. These fail today —
+// the methods do not exist yet.
+describe('ShadowVaultBootstrap community-plugins round-trip (#429 / #342)', () => {
+  function makeLocalConfigDir(seed: string[] = ['remote-ssh']): string {
+    const dir = path.join(
+      os.tmpdir(),
+      `cp-roundtrip-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      '.obsidian',
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'community-plugins.json'), JSON.stringify(seed), 'utf-8');
+    return dir;
+  }
+  function readLocal(dir: string): string[] {
+    return JSON.parse(fs.readFileSync(path.join(dir, 'community-plugins.json'), 'utf-8'));
+  }
+
+  it('pulls the remote enabled-plugin list into the shadow vault, keeping remote-ssh enabled', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh']);
+    const remote: Record<string, string> = {
+      '.obsidian/community-plugins.json': JSON.stringify(['dataview', 'templater']),
+    };
+    const reader: SharedConfigReader = {
+      exists: (p) => Promise.resolve(p in remote),
+      read: (p) => Promise.resolve(remote[p]),
+    };
+
+    await ShadowVaultBootstrap.pullCommunityPlugins(reader, '.obsidian', localConfigDir);
+
+    expect(readLocal(localConfigDir)).toEqual(
+      expect.arrayContaining(['dataview', 'templater', 'remote-ssh']),
+    );
+  });
+
+  it('keeps remote-ssh enabled even when the remote list omits it', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh']);
+    const remote: Record<string, string> = {
+      '.obsidian/community-plugins.json': JSON.stringify(['dataview']),
+    };
+    const reader: SharedConfigReader = {
+      exists: (p) => Promise.resolve(p in remote),
+      read: (p) => Promise.resolve(remote[p]),
+    };
+
+    await ShadowVaultBootstrap.pullCommunityPlugins(reader, '.obsidian', localConfigDir);
+
+    const local = readLocal(localConfigDir);
+    expect(local, 'remote-ssh must survive a pull that omits it').toContain('remote-ssh');
+    expect(local).toContain('dataview');
+  });
+
+  it('is a benign no-op when the remote has no community-plugins.json yet', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh']);
+    const reader: SharedConfigReader = {
+      exists: () => Promise.resolve(false),
+      read: () => Promise.reject(new Error('must not read an absent file')),
+    };
+
+    await expect(
+      ShadowVaultBootstrap.pullCommunityPlugins(reader, '.obsidian', localConfigDir),
+    ).resolves.toBeDefined();
+    expect(readLocal(localConfigDir)).toEqual(['remote-ssh']);
+  });
+
+  it('does not clobber a healthy local list when the remote list is corrupt JSON', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh', 'dataview']);
+    const remote: Record<string, string> = {
+      '.obsidian/community-plugins.json': '{ this is : not json',
+    };
+    const reader: SharedConfigReader = {
+      exists: (p) => Promise.resolve(p in remote),
+      read: (p) => Promise.resolve(remote[p]),
+    };
+
+    await ShadowVaultBootstrap.pullCommunityPlugins(reader, '.obsidian', localConfigDir);
+
+    expect(readLocal(localConfigDir)).toEqual(
+      expect.arrayContaining(['remote-ssh', 'dataview']),
+    );
+  });
+
+  it('pushes the locally-enabled plugins to the remote, preserving remote-ssh', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh', 'dataview']);
+    const remote: Record<string, string> = {};
+    const writer: SharedConfigWriter = {
+      write: (p, content) => { remote[p] = content; return Promise.resolve(); },
+    };
+
+    await ShadowVaultBootstrap.pushCommunityPlugins(writer, '.obsidian', localConfigDir);
+
+    expect(remote['.obsidian/community-plugins.json'], 'a push must write the list to the remote').toBeDefined();
+    const pushed = JSON.parse(remote['.obsidian/community-plugins.json']);
+    expect(pushed).toContain('dataview');
+    expect(pushed).toContain('remote-ssh');
   });
 });

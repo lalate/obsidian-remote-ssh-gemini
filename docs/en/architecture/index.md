@@ -11,7 +11,7 @@ Design specs for the major subsystems — the **why** behind decisions, not just
 
 | Doc | What it covers |
 |---|---|
-| [[shadow-vault\|Shadow vault]] | The "local Obsidian vault that mirrors remote" model — shadow lifecycle, file routing, sync events |
+| [[shadow-vault\|Shadow vault]] | The shadow-vault model (a local vault whose patched adapter serves the remote virtually) — lifecycle, file routing, change events |
 | [[perf\|Performance]] | Sync latency budget, perf bench, the per-merge baseline tracking on `perf-baseline` branch |
 | [[collab\|Collaboration]] | Multi-client editing, conflict handling, the per-client `.obsidian/user/<id>/` workspace partition |
 | [[release-pipeline\|Release & deploy pipeline]] | Two-channel release model, `release.yml` signing flow, sync workflow, branch-aware lint/version-check, plugin-side deploy lifecycle |
@@ -28,9 +28,9 @@ The daemon is the only thing that touches the actual vault files. The plugin nev
 
 ### "Shadow vault is a real local vault"
 
-Obsidian's plugin API is opinionated about vault paths. Rather than forking Obsidian's vault layer to be remote-aware (a multi-month investment), the shadow vault model just creates a real vault on your local disk and syncs files. Every Obsidian feature works without modification.
+Obsidian's plugin API is opinionated about vault paths. Rather than forking Obsidian's vault layer to be remote-aware (a multi-month investment), the shadow vault model creates a real local vault but patches its adapter so every file op goes to the remote — the notes are never copied to local disk (only `.obsidian/` lives there). Every Obsidian feature works without modification.
 
-The cost: storage on your local machine grows with what you have opened. The plugin keeps a hot cache of recently-touched files; LRU eviction frees space for files not opened in N days.
+The cost: file ops need the remote reachable and pay per-op SSH/RPC latency. An in-memory cache (capped) speeds re-reads of recently-touched files.
 
 ### v1.x stability promises
 
