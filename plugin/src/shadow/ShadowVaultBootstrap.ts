@@ -630,6 +630,154 @@ export class ShadowVaultBootstrap {
     }
   }
 
+  // ─── plugin code round-trip (#429b — BRAT / non-marketplace) ────────────
+  //
+  // The enabled-plugins LIST round-trips (above) and the marketplace
+  // installer fetches binaries for plugins on Obsidian's registry. But a
+  // BRAT / sideloaded plugin isn't on the marketplace, so its code would
+  // never reach another machine. These methods round-trip the plugin
+  // *code* through the remote vault's `.obsidian/plugins/<id>/` (the
+  // canonical store) so such plugins load everywhere. Code only — the
+  // plugin's own `data.json` (settings, sometimes secrets) is left alone.
+  //
+  // Convergence is VERSION-ORDERED, not last-writer-wins: pull only when
+  // the remote is strictly newer (or the plugin is absent locally), push
+  // only when the local copy is strictly newer (or the remote lacks it).
+  // A plain "content differs" gate would let a machine still on an old
+  // version downgrade a plugin the rest of the fleet already upgraded,
+  // and the two sides would ping-pong forever (review: #429b).
+
+  // NOTE: synced over a UTF-8 TEXT channel (readText/writeText). Every
+  // entry MUST be text. Do NOT add binary assets (.png/.woff/…) here —
+  // the UTF-8 round-trip would corrupt them.
+  static readonly PLUGIN_BINARY_FILES = ['manifest.json', 'main.js', 'styles.css'] as const;
+
+  /**
+   * Pull a plugin's code from the remote into the local shadow when the
+   * plugin is ABSENT locally or the remote is a STRICTLY NEWER version
+   * (by manifest `version`) — so a plugin enabled/updated on another
+   * machine (incl. BRAT / non-marketplace) reaches here and loads on the
+   * next vault open. Never downgrades a local copy, never touches
+   * `data.json`. `remote-ssh` is skipped (self-managed).
+   */
+  static async pullPluginBinaries(
+    reader: SharedConfigReader,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pulled: string[] }> {
+    const pulled: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      const remoteManifest = `${remoteConfigDir}/plugins/${id}/manifest.json`;
+      try {
+        if (!(await reader.exists(remoteManifest))) continue; // no code on the remote
+        const remoteVer = ShadowVaultBootstrap.parseManifestVersion(await reader.read(remoteManifest));
+        const localManifest = path.join(localPluginDir, 'manifest.json');
+        const localVer = fs.existsSync(localManifest)
+          ? ShadowVaultBootstrap.parseManifestVersion(fs.readFileSync(localManifest, 'utf-8'))
+          : null;
+        // Skip unless absent locally, or the remote is strictly newer.
+        if (localVer !== null && !ShadowVaultBootstrap.versionGt(remoteVer, localVer)) continue;
+        let staged = false;
+        for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+          const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+          if (!(await reader.exists(remoteRel))) continue;
+          const content = await reader.read(remoteRel);
+          fs.mkdirSync(localPluginDir, { recursive: true });
+          ShadowVaultBootstrap.writeFileAtomic(path.join(localPluginDir, file), content);
+          staged = true;
+        }
+        if (staged) pulled.push(id);
+      } catch (e) {
+        logger.warn(`pullPluginBinaries: ${id} skipped (${errorMessage(e)})`);
+      }
+    }
+    if (pulled.length) logger.info(`pullPluginBinaries: staged [${pulled.join(', ')}]`);
+    return { pulled };
+  }
+
+  /**
+   * Push a plugin's local code to the remote when the remote LACKS it or
+   * the local copy is a STRICTLY NEWER version — so other machines can
+   * pull it. Never downgrades the remote, never pushes `data.json`;
+   * byte-identical files are skipped to avoid churn. `remote-ssh` skipped.
+   */
+  static async pushPluginBinaries(
+    rw: SharedConfigReader & SharedConfigWriter,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pushed: string[] }> {
+    const pushed: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      const localManifest = path.join(localPluginDir, 'manifest.json');
+      if (!fs.existsSync(localManifest)) continue; // nothing to push
+      const remoteManifest = `${remoteConfigDir}/plugins/${id}/manifest.json`;
+      try {
+        const localVer = ShadowVaultBootstrap.parseManifestVersion(fs.readFileSync(localManifest, 'utf-8'));
+        const remoteVer = (await rw.exists(remoteManifest))
+          ? ShadowVaultBootstrap.parseManifestVersion(await rw.read(remoteManifest))
+          : null;
+        // Skip unless the remote lacks it, or the local copy is newer.
+        if (remoteVer !== null && !ShadowVaultBootstrap.versionGt(localVer, remoteVer)) continue;
+        let sent = false;
+        for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+          const localFile = path.join(localPluginDir, file);
+          if (!fs.existsSync(localFile)) continue;
+          const content = fs.readFileSync(localFile, 'utf-8');
+          const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+          if ((await rw.exists(remoteRel)) && (await rw.read(remoteRel)) === content) continue; // identical
+          await rw.write(remoteRel, content);
+          sent = true;
+        }
+        if (sent) pushed.push(id);
+      } catch (e) {
+        logger.warn(`pushPluginBinaries: ${id} skipped (${errorMessage(e)})`);
+      }
+    }
+    if (pushed.length) logger.info(`pushPluginBinaries: pushed [${pushed.join(', ')}]`);
+    return { pushed };
+  }
+
+  /** Parse a manifest.json body's dotted-numeric `version` ([0] when absent/unparseable = oldest). */
+  private static parseManifestVersion(body: string): number[] {
+    try {
+      const v = (JSON.parse(body) as { version?: unknown }).version;
+      if (typeof v !== 'string') return [0];
+      const parts = v.split('.').map((s) => parseInt(s, 10)).map((n) => (Number.isFinite(n) ? n : 0));
+      return parts.length ? parts : [0];
+    } catch {
+      return [0];
+    }
+  }
+
+  /** True when dotted-numeric version `a` is strictly greater than `b` (missing segments = 0). */
+  private static versionGt(a: number[], b: number[]): boolean {
+    const len = Math.max(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+      const x = a[i] ?? 0;
+      const y = b[i] ?? 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  /** Atomic (tmp + rename) write of arbitrary file content. */
+  private static writeFileAtomic(localFile: string, content: string): void {
+    const tmp = `${localFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, content, 'utf-8');
+    try {
+      fs.renameSync(tmp, localFile);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
+  }
+
   /** Parse a community-plugins.json body into a string-id array, or null if malformed. */
   private static parsePluginIdList(content: string): string[] | null {
     try {
@@ -639,6 +787,15 @@ export class ShadowVaultBootstrap {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Enabled-plugin ids from a local `.obsidian/community-plugins.json`
+   * ([] when absent/malformed) — the set whose binaries the connect flow
+   * round-trips via {@link pullPluginBinaries}/{@link pushPluginBinaries}.
+   */
+  static readEnabledPluginIds(localConfigDir: string): string[] {
+    return ShadowVaultBootstrap.readPluginIdList(path.join(localConfigDir, 'community-plugins.json'));
   }
 
   /** Read a local community-plugins.json into an id array ([] when absent/malformed). */
