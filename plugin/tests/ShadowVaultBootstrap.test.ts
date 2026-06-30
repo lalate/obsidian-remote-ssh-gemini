@@ -1196,4 +1196,30 @@ describe('ShadowVaultBootstrap legacy→friendly migration', () => {
         .toContain('keepme');                                          // config NOT lost
     } finally { renameSpy.mockRestore(); }
   });
+
+  it('still migrates to the friendly dir when the registry update throws AFTER a successful rename', async () => {
+    // Review regression: rename succeeds (config physically moves to the
+    // friendly dir) but updatePath throws (obsidian.json briefly locked).
+    // The session must use the migrated dir — NOT fall back to legacyDir,
+    // which bootstrap would recreate empty, opening a blank vault while the
+    // real config sits orphaned.
+    const id = 'bbbb2222-3333-4444-5555-666666666666';
+    const profile = makeProfile({ id, name: 'Homelab' });
+    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'keepme']);
+    const registry = new ObsidianRegistry(scratch.configPath);
+    registry.register(legacyDir);
+    const updateSpy = vi.spyOn(registry, 'updatePath').mockImplementation(() => { throw new Error('EBUSY'); });
+    try {
+      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
+        .bootstrap(profile, [profile]);
+
+      expect(result.migrated, 'rename succeeded → migration committed').toBe(true);
+      expect(path.basename(result.layout.vaultDir)).toBe('Homelab--bbbb2222');
+      expect(fs.existsSync(legacyDir), 'legacy dir was moved, not recreated empty').toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')),
+        'config must live at the migrated dir, never orphaned',
+      ).toContain('keepme');
+    } finally { updateSpy.mockRestore(); }
+  });
 });

@@ -279,15 +279,30 @@ export class ShadowVaultBootstrap {
     if (legacyDir !== desired.vaultDir && fs.existsSync(legacyDir)) {
       try {
         fs.renameSync(legacyDir, desired.vaultDir);
-        this.registry.updatePath(legacyDir, desired.vaultDir);
-        logger.info(`ShadowVaultBootstrap: migrated legacy shadow ${legacyDir} → ${desired.vaultDir}`);
-        return { layout: desired, migrated: true };
       } catch (e) {
+        // The MOVE itself failed — the config is still at legacyDir, so
+        // use it this session; the migration retries next bootstrap.
         logger.warn(
           `ShadowVaultBootstrap: legacy shadow migration failed (${errorMessage(e)}); using ${legacyDir} this session`,
         );
         return { layout: this.layoutForDir(legacyDir), migrated: false };
       }
+      // The dir (with all its config/plugins) now lives at desired.vaultDir.
+      // Updating obsidian.json is SECONDARY: if it throws (e.g. the file is
+      // briefly locked on Windows), the path is still correct and bootstrap's
+      // later register(desired.vaultDir) re-adds it. Crucially we must NOT
+      // fall back to legacyDir here — bootstrap would recreate it empty and
+      // open a blank vault while the real config sits orphaned at desired.
+      try {
+        this.registry.updatePath(legacyDir, desired.vaultDir);
+      } catch (e) {
+        logger.warn(
+          `ShadowVaultBootstrap: registry path update failed post-migration (${errorMessage(e)}); ` +
+          `config is at ${desired.vaultDir}, registry self-heals on register()`,
+        );
+      }
+      logger.info(`ShadowVaultBootstrap: migrated legacy shadow ${legacyDir} → ${desired.vaultDir}`);
+      return { layout: desired, migrated: true };
     }
     // Brand-new profile.
     return { layout: desired, migrated: false };
@@ -302,7 +317,10 @@ export class ShadowVaultBootstrap {
     const suffix = `--${sanitiseProfileId(profileId).slice(0, 8)}`;
     let entries: string[];
     try {
-      entries = fs.readdirSync(this.baseDir);
+      // Sorted so that if (degenerately) more than one dir matches the
+      // suffix, the pick is deterministic across machines/runs rather
+      // than dependent on readdir order.
+      entries = fs.readdirSync(this.baseDir).sort();
     } catch {
       return null; // baseDir not created yet
     }
