@@ -348,7 +348,9 @@ describe('readSshConfig: IdentityAgent (#430)', () => {
     ].join('\n'));
     const entry = readSshConfig(p)[0];
     expect(entry.identityAgent).toBeDefined();
-    expect(entry.identityAgent).toContain('.1password/agent.sock');
-    expect(entry.identityAgent?.startsWith('~')).toBe(false);
+    expect(entry.identityAgent?.startsWith('~')).toBe(false); // tilde expanded
+    // Compare via path.join so the separator is OS-agnostic (Windows
+    // expands to backslashes).
+    expect(entry.identityAgent).toBe(path.join(os.homedir(), '.1password', 'agent.sock'));
   });
 });
