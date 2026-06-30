@@ -422,6 +422,131 @@ export class ShadowVaultBootstrap {
     return { pushed, skipped, errored };
   }
 
+  // ─── community-plugins list round-trip (#429 / #342) ─────────────────────
+  //
+  // `community-plugins.json` is the *enabled community plugins* list.
+  // It deliberately does NOT join SHARED_OBSIDIAN_CONFIG_FILES (whose
+  // pull/push copy bytes verbatim): a remote list that omitted
+  // `remote-ssh` would, written verbatim, disable the very plugin doing
+  // the sync. Instead these two methods round-trip the list with a
+  // forced `remote-ssh` union, so a plugin enabled on one machine
+  // reaches another machine's shadow vault and reopening no longer
+  // "loses" installed plugins. The marketplace installer re-fetches any
+  // binaries the list names but that aren't staged locally yet.
+
+  /** The plugin's own id — always kept enabled across a round-trip. */
+  static readonly SELF_PLUGIN_ID = 'remote-ssh';
+
+  /**
+   * Pull the remote enabled-plugin list into the shadow vault, merged
+   * with the local list and with `remote-ssh` forced on. A remote list
+   * that's absent or not a valid id array leaves the local list
+   * untouched (never clobbered).
+   */
+  static async pullCommunityPlugins(
+    reader: SharedConfigReader,
+    remoteConfigDir: string,
+    localConfigDir: string,
+  ): Promise<{ pulled: boolean; merged: string[] }> {
+    const basename = 'community-plugins.json';
+    const remoteRel = `${remoteConfigDir}/${basename}`;
+    const localPath = path.join(localConfigDir, basename);
+
+    fs.mkdirSync(localConfigDir, { recursive: true });
+    const local = ShadowVaultBootstrap.readPluginIdList(localPath);
+
+    let remote: string[] | null = null;
+    try {
+      if (await reader.exists(remoteRel)) {
+        remote = ShadowVaultBootstrap.parsePluginIdList(await reader.read(remoteRel));
+        if (remote === null) {
+          logger.warn(
+            `pullCommunityPlugins: remote ${basename} is not a valid id array; keeping local list`,
+          );
+        }
+      }
+    } catch (e) {
+      logger.warn(`pullCommunityPlugins: ${basename} skipped (${errorMessage(e)})`);
+    }
+
+    const merged = ShadowVaultBootstrap.mergePluginIds(
+      local, remote ?? [], ShadowVaultBootstrap.SELF_PLUGIN_ID,
+    );
+    const changed =
+      merged.length !== local.length || merged.some((id, i) => id !== local[i]);
+    if (changed) ShadowVaultBootstrap.writePluginIdListAtomic(localPath, merged);
+
+    logger.info(`pullCommunityPlugins: merged [${merged.join(', ')}] (changed=${changed})`);
+    return { pulled: remote !== null, merged };
+  }
+
+  /**
+   * Push the local enabled-plugin list to the remote, with `remote-ssh`
+   * forced on. Last-write-wins (matching the v1 no-CRDT policy); the
+   * pull's union means machines still converge toward the superset.
+   */
+  static async pushCommunityPlugins(
+    writer: SharedConfigWriter,
+    remoteConfigDir: string,
+    localConfigDir: string,
+  ): Promise<{ pushed: boolean }> {
+    const basename = 'community-plugins.json';
+    const localPath = path.join(localConfigDir, basename);
+    const ids = ShadowVaultBootstrap.mergePluginIds(
+      ShadowVaultBootstrap.readPluginIdList(localPath), [], ShadowVaultBootstrap.SELF_PLUGIN_ID,
+    );
+    try {
+      await writer.write(`${remoteConfigDir}/${basename}`, JSON.stringify(ids) + '\n');
+      logger.info(`pushCommunityPlugins: pushed [${ids.join(', ')}]`);
+      return { pushed: true };
+    } catch (e) {
+      logger.warn(`pushCommunityPlugins: push failed (${errorMessage(e)})`);
+      return { pushed: false };
+    }
+  }
+
+  /** Parse a community-plugins.json body into a string-id array, or null if malformed. */
+  private static parsePluginIdList(content: string): string[] | null {
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (!Array.isArray(parsed)) return null;
+      return (parsed as unknown[]).filter((s): s is string => typeof s === 'string');
+    } catch {
+      return null;
+    }
+  }
+
+  /** Read a local community-plugins.json into an id array ([] when absent/malformed). */
+  private static readPluginIdList(localPath: string): string[] {
+    try {
+      return ShadowVaultBootstrap.parsePluginIdList(fs.readFileSync(localPath, 'utf-8')) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Order-preserving union of `local` + `remote`, with `required` guaranteed present. */
+  private static mergePluginIds(local: string[], remote: string[], required: string): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of [...local, ...remote, required]) {
+      if (!seen.has(id)) { seen.add(id); out.push(id); }
+    }
+    return out;
+  }
+
+  /** Atomic (tmp + rename) write of an id array as JSON. */
+  private static writePluginIdListAtomic(localPath: string, ids: string[]): void {
+    const tmp = `${localPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(ids) + '\n', 'utf-8');
+    try {
+      fs.renameSync(tmp, localPath);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
+  }
+
   // ─── internals ──────────────────────────────────────────────────────────
 
   /**
