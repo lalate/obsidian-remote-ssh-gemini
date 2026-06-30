@@ -1053,18 +1053,56 @@ describe('ShadowVaultBootstrap community-plugins round-trip (#429 / #342)', () =
     );
   });
 
-  it('pushes the locally-enabled plugins to the remote, preserving remote-ssh', async () => {
-    const localConfigDir = makeLocalConfigDir(['remote-ssh', 'dataview']);
-    const remote: Record<string, string> = {};
-    const writer: SharedConfigWriter = {
-      write: (p, content) => { remote[p] = content; return Promise.resolve(); },
+  // Reader+writer fake backed by an in-memory store. `read` can be made
+  // to throw to simulate a transient SSH error mid-read.
+  function makeRemoteRW(initial?: string[], readThrows = false): {
+    rw: SharedConfigReader & SharedConfigWriter;
+    store: Record<string, string>;
+  } {
+    const store: Record<string, string> = {};
+    if (initial) store['.obsidian/community-plugins.json'] = JSON.stringify(initial);
+    const rw: SharedConfigReader & SharedConfigWriter = {
+      exists: (p) => Promise.resolve(p in store),
+      read: (p) => (readThrows ? Promise.reject(new Error('SSH hiccup')) : Promise.resolve(store[p])),
+      write: (p, c) => { store[p] = c; return Promise.resolve(); },
     };
+    return { rw, store };
+  }
 
-    await ShadowVaultBootstrap.pushCommunityPlugins(writer, '.obsidian', localConfigDir);
+  it('seeds the remote (union with local) when the remote has none yet', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh', 'dataview']);
+    const { rw, store } = makeRemoteRW();
+    await ShadowVaultBootstrap.pushCommunityPlugins(rw, '.obsidian', localConfigDir);
+    expect(store['.obsidian/community-plugins.json'], 'a push must seed the remote').toBeDefined();
+    expect(JSON.parse(store['.obsidian/community-plugins.json'])).toEqual(
+      expect.arrayContaining(['dataview', 'remote-ssh']),
+    );
+  });
 
-    expect(remote['.obsidian/community-plugins.json'], 'a push must write the list to the remote').toBeDefined();
-    const pushed = JSON.parse(remote['.obsidian/community-plugins.json']);
-    expect(pushed).toContain('dataview');
-    expect(pushed).toContain('remote-ssh');
+  it('unions with the remote list and never drops a plugin enabled elsewhere', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh', 'templater']);
+    const { rw, store } = makeRemoteRW(['remote-ssh', 'dataview']);
+    await ShadowVaultBootstrap.pushCommunityPlugins(rw, '.obsidian', localConfigDir);
+    const pushed = JSON.parse(store['.obsidian/community-plugins.json']);
+    expect(pushed, 'remote dataview must survive + local templater added')
+      .toEqual(expect.arrayContaining(['dataview', 'templater', 'remote-ssh']));
+  });
+
+  it('does NOT clobber the remote when the remote read fails (transient SSH error)', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh']); // minimal local
+    const { rw, store } = makeRemoteRW(['remote-ssh', 'dataview', 'obsidian-git'], /*readThrows*/ true);
+    const before = store['.obsidian/community-plugins.json'];
+    const r = await ShadowVaultBootstrap.pushCommunityPlugins(rw, '.obsidian', localConfigDir);
+    expect(r.pushed).toBe(false);
+    expect(store['.obsidian/community-plugins.json'], 'remote list must be untouched (no data loss)').toBe(before);
+  });
+
+  it('does NOT clobber the remote when the remote list is corrupt JSON', async () => {
+    const localConfigDir = makeLocalConfigDir(['remote-ssh']);
+    const { rw, store } = makeRemoteRW();
+    store['.obsidian/community-plugins.json'] = '{ not : json';
+    const r = await ShadowVaultBootstrap.pushCommunityPlugins(rw, '.obsidian', localConfigDir);
+    expect(r.pushed).toBe(false);
+    expect(store['.obsidian/community-plugins.json']).toBe('{ not : json');
   });
 });

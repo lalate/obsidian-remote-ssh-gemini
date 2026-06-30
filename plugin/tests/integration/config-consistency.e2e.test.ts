@@ -1,0 +1,153 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ShadowVaultBootstrap } from '../../src/shadow/ShadowVaultBootstrap';
+import { ObsidianRegistry } from '../../src/shadow/ObsidianRegistry';
+import { setupClientPair, TEST_PRIVATE_KEY, type TestClient } from './helpers/makeAdapter';
+import type { SshProfile } from '../../src/types';
+
+/**
+ * Config consistency across connect cycles (#429 / #342).
+ *
+ * Layer 1 (integration, vitest + docker sshd, no Obsidian UI). Drives
+ * the real bootstrap + pull/push round-trip against a real SSH server,
+ * so the #429/#342 promise — "config and the enabled-plugins list stay
+ * consistent across reconnects, and a push never clobbers a list
+ * enabled on another machine" — is verified end-to-end, not just over
+ * in-memory fakes. The remote vault's `.obsidian/` is the canonical
+ * store; a fresh shadow vault is a new "session" / "machine".
+ *
+ * Runs only when the test keypair is staged (`npm run sshd:start`).
+ */
+
+if (!fs.existsSync(TEST_PRIVATE_KEY)) {
+  throw new Error(
+    `Integration test keypair missing at ${TEST_PRIVATE_KEY}. ` +
+    'Run `npm run sshd:start` from the repo root before `npm run test:integration`.',
+  );
+}
+
+const REMOTE_CFG = '.obsidian';
+const CP = `${REMOTE_CFG}/community-plugins.json`;
+const APP = `${REMOTE_CFG}/app.json`;
+
+describe('Config consistency across connect cycles (#429 / #342)', () => {
+  let pair: Awaited<ReturnType<typeof setupClientPair>>;
+  let remoteClient: TestClient;
+  let baseDir: string;
+  let sourcePluginDir: string;
+  let registryConfigPath: string;
+
+  beforeAll(async () => {
+    pair = await setupClientPair({ testLabel: 'config-consistency' });
+    remoteClient = pair.a;
+
+    baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-consistency-base-'));
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-consistency-home-'));
+    registryConfigPath = path.join(tmpHome, 'obsidian.json');
+    fs.writeFileSync(registryConfigPath, JSON.stringify({ vaults: {} }) + '\n', 'utf-8');
+
+    sourcePluginDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cfg-consistency-source-'));
+    fs.writeFileSync(path.join(sourcePluginDir, 'main.js'), '/* test stub */\n', 'utf-8');
+    fs.writeFileSync(path.join(sourcePluginDir, 'manifest.json'),
+      JSON.stringify({ id: 'remote-ssh', version: '0.0.0-test', name: 'Test', minAppVersion: '1.5.0' }) + '\n', 'utf-8');
+    fs.writeFileSync(path.join(sourcePluginDir, 'styles.css'), '/* test stub */\n', 'utf-8');
+
+    await remoteClient.adapter.mkdir(REMOTE_CFG);
+  });
+
+  afterAll(async () => {
+    if (pair) await pair.cleanup();
+    try { fs.rmSync(baseDir, { recursive: true, force: true }); } catch { /* best effort */ }
+    try { fs.rmSync(sourcePluginDir, { recursive: true, force: true }); } catch { /* best effort */ }
+  });
+
+  /** A fresh shadow-vault session against the shared docker remote. */
+  function freshSession(): ShadowVaultBootstrap {
+    return new ShadowVaultBootstrap(baseDir, sourcePluginDir, new ObsidianRegistry(registryConfigPath));
+  }
+  function profileFor(caseId: string): SshProfile {
+    return {
+      id: `cfg-${caseId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: `Config consistency (${caseId})`,
+      host: '127.0.0.1', port: 2222, username: 'tester',
+      authMethod: 'privateKey', privateKeyPath: TEST_PRIVATE_KEY,
+      remotePath: remoteClient.vaultRoot,
+      connectTimeoutMs: 10_000, keepaliveIntervalMs: 0, keepaliveCountMax: 0,
+    };
+  }
+  const readLocalCp = (dir: string): string[] =>
+    JSON.parse(fs.readFileSync(path.join(dir, 'community-plugins.json'), 'utf-8'));
+
+  it('community plugins enabled on the remote round-trip into a fresh shadow, keeping remote-ssh (#429/#342)', async () => {
+    // Remote set up "on another machine": dataview enabled.
+    await remoteClient.adapter.write(CP, JSON.stringify(['dataview']));
+
+    const profile = profileFor('cp-pull');
+    const { layout } = await freshSession().bootstrap(profile, [profile]);
+    await ShadowVaultBootstrap.pullCommunityPlugins(remoteClient.adapter, REMOTE_CFG, layout.configDir);
+
+    expect(readLocalCp(layout.configDir)).toEqual(expect.arrayContaining(['dataview', 'remote-ssh']));
+  });
+
+  it('a plugin enabled in one session is still enabled in the next (persists via the remote)', async () => {
+    // Known base so the assertion doesn't depend on case order.
+    await remoteClient.adapter.write(CP, JSON.stringify(['remote-ssh']));
+
+    // Session 1: enable templater locally, push to remote.
+    const p1 = profileFor('cycle-1');
+    const s1 = await freshSession().bootstrap(p1, [p1]);
+    fs.writeFileSync(path.join(s1.layout.configDir, 'community-plugins.json'),
+      JSON.stringify(['remote-ssh', 'templater']));
+    await ShadowVaultBootstrap.pushCommunityPlugins(remoteClient.adapter, REMOTE_CFG, s1.layout.configDir);
+
+    // Session 2: a brand-new shadow (different id → different local dir) pulls.
+    const p2 = profileFor('cycle-2');
+    const s2 = await freshSession().bootstrap(p2, [p2]);
+    await ShadowVaultBootstrap.pullCommunityPlugins(remoteClient.adapter, REMOTE_CFG, s2.layout.configDir);
+
+    expect(readLocalCp(s2.layout.configDir), 'templater enabled in session 1 must survive into session 2')
+      .toContain('templater');
+  });
+
+  it('push unions with the remote and never drops a plugin enabled elsewhere (#437, real SSH)', async () => {
+    // Remote (machine B) carries a rich list.
+    await remoteClient.adapter.write(CP, JSON.stringify(['remote-ssh', 'dataview', 'obsidian-git']));
+
+    // Machine A has only a minimal local list, then pushes.
+    const pA = profileFor('union');
+    const sA = await freshSession().bootstrap(pA, [pA]);
+    fs.writeFileSync(path.join(sA.layout.configDir, 'community-plugins.json'),
+      JSON.stringify(['remote-ssh', 'templater']));
+    await ShadowVaultBootstrap.pushCommunityPlugins(remoteClient.adapter, REMOTE_CFG, sA.layout.configDir);
+
+    const remoteAfter = JSON.parse(await remoteClient.adapter.read(CP));
+    expect(remoteAfter, 'remote dataview + obsidian-git must survive a push from a minimal local')
+      .toEqual(expect.arrayContaining(['dataview', 'obsidian-git', 'templater', 'remote-ssh']));
+  });
+
+  it('a settings change stays consistent across a write → push → fresh-pull cycle (#342 reproducer)', async () => {
+    // Session 1: seed remote app.json, pull into the shadow.
+    await remoteClient.adapter.write(APP, JSON.stringify({ useMarkdownLinks: false, theme: 'obsidian' }));
+    const p1 = profileFor('app-1');
+    const s1 = await freshSession().bootstrap(p1, [p1]);
+    await ShadowVaultBootstrap.pullSharedObsidianConfig(remoteClient.adapter, REMOTE_CFG, s1.layout.configDir);
+
+    // User changes a setting in the shadow, then it's pushed back.
+    const changed = { useMarkdownLinks: true, theme: 'things' };
+    fs.writeFileSync(path.join(s1.layout.configDir, 'app.json'), JSON.stringify(changed));
+    await ShadowVaultBootstrap.pushSharedObsidianConfig(remoteClient.adapter, REMOTE_CFG, s1.layout.configDir);
+
+    // The test holds a snapshot of the intended state.
+    const snapshot = JSON.parse(fs.readFileSync(path.join(s1.layout.configDir, 'app.json'), 'utf-8'));
+
+    // Session 2: a fresh shadow pulls — must equal the snapshot.
+    const p2 = profileFor('app-2');
+    const s2 = await freshSession().bootstrap(p2, [p2]);
+    await ShadowVaultBootstrap.pullSharedObsidianConfig(remoteClient.adapter, REMOTE_CFG, s2.layout.configDir);
+
+    const local2 = JSON.parse(fs.readFileSync(path.join(s2.layout.configDir, 'app.json'), 'utf-8'));
+    expect(local2, 'the setting changed in session 1 must be consistent in session 2').toEqual(snapshot);
+  });
+});
