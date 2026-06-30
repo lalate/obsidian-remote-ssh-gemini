@@ -119,9 +119,15 @@ export class SftpDataAdapter {
      * `getBasePath()` method return this value, so plugins that read
      * `adapter.basePath` (Templater's `tp.file.path`, Kanban's clipboard
      * paste, Importer, Copilot — see `docs/en/user-guide/plugin-compatibility.md`)
-     * receive a path on the shadow vault. Reads against that path
-     * succeed against files mirrored locally by the file watcher;
-     * writes land in the shadow dir and propagate to the remote.
+     * receive a path on the shadow vault, so they no longer crash on
+     * an `undefined` base. NOTE: the vault tree is served *virtually*
+     * from the remote — it is NOT mirrored to local disk (only
+     * `.obsidian/` config + plugin binaries live there). So a Node `fs`
+     * read of an existing note via this path won't find it, and an `fs`
+     * write lands in the local shadow copy only — it does NOT reach the
+     * remote. Only the Obsidian vault API round-trips. See #429 and the
+     * "Direct-disk / agentic plugins" footgun in
+     * docs/en/user-guide/plugin-compatibility.md.
      *
      * Defaults to `''` for tests that never exercise these members. The
      * production wiring in `main.ts` always passes the real shadow
@@ -143,10 +149,13 @@ export class SftpDataAdapter {
 
   /**
    * Mirror of `FileSystemAdapter.basePath`. Returns the absolute path
-   * of the shadow vault's local root. Plugins that join paths against
-   * this value and call Node `fs` directly read mirrored content and
-   * write into the shadow dir, where the file watcher propagates to
-   * the remote.
+   * of the shadow vault's local root. The vault tree is served
+   * virtually from the remote (not mirrored to local disk), so plugins
+   * that join paths against this value and call Node `fs` directly only
+   * ever touch the local shadow copy: reads miss remote notes and
+   * writes do NOT reach the remote (#429). Only the vault API
+   * round-trips. Returning a defined path keeps those plugins from
+   * crashing (#170); it does not make their `fs` operations sync.
    */
   get basePath(): string {
     return this.shadowBasePath;
