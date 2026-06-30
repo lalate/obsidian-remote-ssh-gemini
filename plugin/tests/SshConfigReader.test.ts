@@ -272,3 +272,83 @@ describe('readSshConfig: ProxyJump', () => {
     expect(srv.proxyJump?.host).toBe('10.0.0.99');
   });
 });
+
+// ─── ProxyCommand (#430) ────────────────────────────────────────────────
+//
+// A user behind a Cloudflare tunnel connects via
+//   ProxyCommand cloudflared access ssh --hostname %h
+// The reader must surface the raw command (OpenSSH %-tokens left
+// intact for the transport layer to expand at connect time). None of
+// these pass today — the parser has no `proxycommand` case and
+// SshConfigEntry has no `proxyCommand` field.
+describe('readSshConfig: ProxyCommand (#430)', () => {
+  it('parses a ProxyCommand and preserves the raw command incl. %-tokens', () => {
+    const p = write([
+      'Host homelab',
+      '  HostName lab.example.com',
+      '  User alice',
+      '  ProxyCommand cloudflared access ssh --hostname %h',
+    ].join('\n'));
+    const entry = readSshConfig(p)[0];
+    expect(entry.alias).toBe('homelab');
+    expect(entry.hostname).toBe('lab.example.com');
+    expect(entry.proxyCommand).toBe('cloudflared access ssh --hostname %h');
+  });
+
+  it('leaves proxyCommand undefined when the host declares none', () => {
+    const p = write(['Host plain', '  HostName plain.example.com'].join('\n'));
+    expect(readSshConfig(p)[0].proxyCommand).toBeUndefined();
+  });
+
+  it('applies a ProxyCommand from the Host * defaults block', () => {
+    const p = write([
+      'Host *',
+      '  ProxyCommand nc -X connect -x proxy:1080 %h %p',
+      'Host srv',
+      '  HostName srv.example.com',
+    ].join('\n'));
+    expect(readSshConfig(p).find(e => e.alias === 'srv')?.proxyCommand)
+      .toBe('nc -X connect -x proxy:1080 %h %p');
+  });
+
+  it('a host-specific ProxyCommand overrides the Host * default', () => {
+    const p = write([
+      'Host *',
+      '  ProxyCommand default-proxy %h',
+      'Host srv',
+      '  HostName srv.example.com',
+      '  ProxyCommand specific-proxy %h %p',
+    ].join('\n'));
+    expect(readSshConfig(p).find(e => e.alias === 'srv')?.proxyCommand)
+      .toBe('specific-proxy %h %p');
+  });
+
+  it('preserves spaces in the ProxyCommand value verbatim', () => {
+    const p = write([
+      'Host q',
+      '  HostName q.example.com',
+      '  ProxyCommand ssh -W %h:%p jump.example.com',
+    ].join('\n'));
+    expect(readSshConfig(p)[0].proxyCommand).toBe('ssh -W %h:%p jump.example.com');
+  });
+});
+
+// ─── IdentityAgent (#430) ───────────────────────────────────────────────
+//
+// The same user authenticates through 1Password's SSH agent socket
+// (`IdentityAgent ~/.1password/agent.sock`). The reader must surface
+// the tilde-expanded socket path so AuthResolver can use it. Fails
+// today — no `identityagent` case, no `identityAgent` field.
+describe('readSshConfig: IdentityAgent (#430)', () => {
+  it('parses IdentityAgent and tilde-expands the socket path', () => {
+    const p = write([
+      'Host onepw',
+      '  HostName host.example.com',
+      '  IdentityAgent ~/.1password/agent.sock',
+    ].join('\n'));
+    const entry = readSshConfig(p)[0];
+    expect(entry.identityAgent).toBeDefined();
+    expect(entry.identityAgent).toContain('.1password/agent.sock');
+    expect(entry.identityAgent?.startsWith('~')).toBe(false);
+  });
+});
