@@ -83,29 +83,44 @@ function makeScratch(): {
 }
 
 describe('ShadowVaultBootstrap.layoutFor', () => {
-  it('returns a layout under baseDir/profileId for a clean id', () => {
+  it('names the vault dir <friendly-name>--<short-id> so Obsidian shows a recognisable name', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      const layout = r.layoutFor('abc-123');
-      expect(layout.vaultDir).toBe(path.join(scratch.baseDir, 'abc-123'));
-      expect(layout.configDir).toBe(path.join(scratch.baseDir, 'abc-123', '.obsidian'));
-      expect(layout.pluginDir).toBe(path.join(scratch.baseDir, 'abc-123', '.obsidian', 'plugins', 'remote-ssh'));
+      const layout = r.layoutFor({ id: 'abcdef12-3456-7890-aaaa-bbbbbbbbbbbb', name: 'My Homelab' });
+      expect(path.basename(layout.vaultDir)).toBe('My Homelab--abcdef12');
+      expect(layout.configDir).toBe(path.join(layout.vaultDir, '.obsidian'));
+      expect(layout.pluginDir).toBe(path.join(layout.vaultDir, '.obsidian', 'plugins', 'remote-ssh'));
       expect(layout.pluginDataFile).toBe(path.join(layout.pluginDir, 'data.json'));
     } finally { scratch.cleanup(); }
   });
 
-  it('sanitises ids that contain path separators or traversal so vaultDir stays inside baseDir', () => {
+  it('falls back to a generic name when the profile name is empty', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      // `../etc` would escape baseDir if not sanitised.
-      const lo = r.layoutFor('../etc');
+      const layout = r.layoutFor({ id: 'abcdef12-3456', name: '' });
+      expect(path.basename(layout.vaultDir)).toBe('vault--abcdef12');
+    } finally { scratch.cleanup(); }
+  });
+
+  it('different ids with the same name produce different dirs (collision-safe)', () => {
+    const scratch = makeScratch();
+    try {
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      const a = r.layoutFor({ id: 'aaaaaaaa-1111', name: 'Vault' });
+      const b = r.layoutFor({ id: 'bbbbbbbb-2222', name: 'Vault' });
+      expect(a.vaultDir).not.toBe(b.vaultDir);
+    } finally { scratch.cleanup(); }
+  });
+
+  it('sanitises name + id so the dir never escapes baseDir', () => {
+    const scratch = makeScratch();
+    try {
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      const lo = r.layoutFor({ id: '../etc', name: '../../evil/name' });
       expect(path.dirname(lo.vaultDir)).toBe(scratch.baseDir);
       expect(path.resolve(lo.vaultDir).startsWith(path.resolve(scratch.baseDir) + path.sep)).toBe(true);
-      // Slashes inside an id should not introduce nested directories.
-      const slash = r.layoutFor('a/b/c');
-      expect(path.dirname(slash.vaultDir)).toBe(scratch.baseDir);
     } finally { scratch.cleanup(); }
   });
 });
@@ -320,7 +335,7 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
     // sourceDir. installPlugin must replace this with a real dir
     // without deleting any of the source files.
     const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-    const layout = r.layoutFor('p1');
+    const layout = r.layoutFor({ id: 'p1', name: 'P' });
     fs.mkdirSync(path.dirname(layout.pluginDir), { recursive: true });
     try {
       const linkType = process.platform === 'win32' ? 'junction' : 'dir';
@@ -338,7 +353,7 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
     const sourceCanary = path.join(scratch.sourceDir, 'CANARY.txt');
     fs.writeFileSync(sourceCanary, 'do-not-delete', 'utf-8');
 
-    const profile = makeProfile({ id: 'p1' });
+    const profile = makeProfile({ id: 'p1', name: 'P' });
     await r.bootstrap(profile, [profile]);
 
     // Source file still there.
@@ -1104,5 +1119,107 @@ describe('ShadowVaultBootstrap community-plugins round-trip (#429 / #342)', () =
     const r = await ShadowVaultBootstrap.pushCommunityPlugins(rw, '.obsidian', localConfigDir);
     expect(r.pushed).toBe(false);
     expect(store['.obsidian/community-plugins.json']).toBe('{ not : json');
+  });
+});
+
+// ─── legacy → friendly shadow-dir migration (transitional) ──────────────
+//
+// Older builds named the shadow dir by the raw profile UUID. The vault
+// dir is now `<friendly-name>--<short-id>` so Obsidian shows a
+// recognisable name; the first bootstrap renames the legacy dir,
+// carrying its config/plugins, and repoints obsidian.json. For a clean
+// UUID id, `sanitiseProfileId(id) === id`, so the legacy dir is just
+// `<baseDir>/<id>`.
+describe('ShadowVaultBootstrap legacy→friendly migration', () => {
+  let scratch: ReturnType<typeof makeScratch>;
+  beforeEach(() => { scratch = makeScratch(); });
+  afterEach(() => { scratch.cleanup(); });
+
+  function seedLegacyShadow(id: string, cp: string[]): string {
+    const legacyDir = path.join(scratch.baseDir, id);
+    fs.mkdirSync(path.join(legacyDir, '.obsidian'), { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, '.obsidian', 'community-plugins.json'), JSON.stringify(cp));
+    return legacyDir;
+  }
+
+  it('renames the legacy UUID dir to the friendly name, carries config, and repoints obsidian.json', async () => {
+    const id = 'dddddddd-1111-2222-3333-444444444444';
+    const profile = makeProfile({ id, name: 'My Homelab' });
+    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'dataview']);
+    const registry = new ObsidianRegistry(scratch.configPath);
+    const { id: regId } = registry.register(legacyDir);
+
+    const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
+      .bootstrap(profile, [profile]);
+
+    expect(result.migrated).toBe(true);
+    expect(path.basename(result.layout.vaultDir)).toBe('My Homelab--dddddddd');
+    expect(fs.existsSync(legacyDir)).toBe(false);                       // legacy moved, not left behind
+    expect(JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')))
+      .toEqual(expect.arrayContaining(['remote-ssh', 'dataview']));     // config carried over
+    const cfg = JSON.parse(fs.readFileSync(scratch.configPath, 'utf-8'));
+    expect(cfg.vaults[regId].path).toBe(result.layout.vaultDir);       // same registry id, new path
+  });
+
+  it('is idempotent: a second bootstrap does not re-migrate', async () => {
+    const id = 'eeeeeeee-1111-2222-3333-444444444444';
+    const profile = makeProfile({ id, name: 'Vault' });
+    seedLegacyShadow(id, ['remote-ssh']);
+    const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const first = await r.bootstrap(profile, [profile]);
+    expect(first.migrated).toBe(true);
+    const second = await r.bootstrap(profile, [profile]);
+    expect(second.migrated).toBe(false);
+    expect(second.layout.vaultDir).toBe(first.layout.vaultDir);
+  });
+
+  it('does not migrate a brand-new profile (no legacy dir)', async () => {
+    const profile = makeProfile({ id: 'ffffffff-1111', name: 'Fresh' });
+    const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
+      .bootstrap(profile, [profile]);
+    expect(result.migrated).toBe(false);
+    expect(path.basename(result.layout.vaultDir)).toBe('Fresh--ffffffff');
+  });
+
+  it('falls back to the legacy dir (no data loss) when the rename fails', async () => {
+    const id = 'aaaa1111-2222-3333-4444-555555555555';
+    const profile = makeProfile({ id, name: 'Locked' });
+    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'keepme']);
+    // First renameSync call in bootstrap is the migration rename; make it throw.
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => { throw new Error('EBUSY'); });
+    try {
+      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
+        .bootstrap(profile, [profile]);
+      expect(result.migrated).toBe(false);
+      expect(result.layout.vaultDir).toBe(legacyDir);                  // fell back to legacy this session
+      expect(JSON.parse(fs.readFileSync(path.join(legacyDir, '.obsidian', 'community-plugins.json'), 'utf-8')))
+        .toContain('keepme');                                          // config NOT lost
+    } finally { renameSpy.mockRestore(); }
+  });
+
+  it('still migrates to the friendly dir when the registry update throws AFTER a successful rename', async () => {
+    // Review regression: rename succeeds (config physically moves to the
+    // friendly dir) but updatePath throws (obsidian.json briefly locked).
+    // The session must use the migrated dir — NOT fall back to legacyDir,
+    // which bootstrap would recreate empty, opening a blank vault while the
+    // real config sits orphaned.
+    const id = 'bbbb2222-3333-4444-5555-666666666666';
+    const profile = makeProfile({ id, name: 'Homelab' });
+    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'keepme']);
+    const registry = new ObsidianRegistry(scratch.configPath);
+    registry.register(legacyDir);
+    const updateSpy = vi.spyOn(registry, 'updatePath').mockImplementation(() => { throw new Error('EBUSY'); });
+    try {
+      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
+        .bootstrap(profile, [profile]);
+
+      expect(result.migrated, 'rename succeeded → migration committed').toBe(true);
+      expect(path.basename(result.layout.vaultDir)).toBe('Homelab--bbbb2222');
+      expect(fs.existsSync(legacyDir), 'legacy dir was moved, not recreated empty').toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')),
+        'config must live at the migrated dir, never orphaned',
+      ).toContain('keepme');
+    } finally { updateSpy.mockRestore(); }
   });
 });
