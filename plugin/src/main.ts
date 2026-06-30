@@ -593,6 +593,25 @@ export default class RemoteSshPlugin extends Plugin {
         );
       }
 
+      // #429 / #342 residual: round-trip the enabled community-plugins
+      // list. Pull first so plugins set up on the remote load in the
+      // shadow vault (the marketplace installer then fetches any missing
+      // binaries); then push the merged result so a plugin present only
+      // locally reaches the remote for other machines. Pushing *after*
+      // the pull is safe — the local list is now the union, so it can
+      // never drop a plugin the remote already had. Kept out of the
+      // verbatim shared-config set because `remote-ssh` must be
+      // force-preserved through the merge (a verbatim copy of a remote
+      // list omitting it would disable this very plugin).
+      try {
+        await ShadowVaultBootstrap.pullCommunityPlugins(da, remoteConfigDir, localConfigDir);
+        await ShadowVaultBootstrap.pushCommunityPlugins(da, remoteConfigDir, localConfigDir);
+      } catch (e) {
+        logger.warn(
+          `runAutoConnect(${tag}): community-plugins round-trip failed: ${errorMessage(e)}`,
+        );
+      }
+
       // #342 push half: pull only brought remote→local. Without this,
       // a settings change made HERE never reaches the remote, so the
       // next session's pull finds nothing and the change evaporates.
