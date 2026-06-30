@@ -530,6 +530,104 @@ export class ShadowVaultBootstrap {
     }
   }
 
+  // ─── plugin binary round-trip (#429b — BRAT / non-marketplace) ──────────
+  //
+  // The enabled-plugins LIST round-trips (above) and the marketplace
+  // installer fetches binaries for plugins on Obsidian's registry. But a
+  // BRAT / sideloaded plugin isn't on the marketplace, so its binary
+  // would never reach another machine. These methods round-trip the
+  // plugin *code* through the remote vault's `.obsidian/plugins/<id>/`
+  // (the canonical store) so such plugins load everywhere. Code only —
+  // the plugin's own `data.json` (settings, sometimes secrets) is left
+  // alone.
+
+  /** Plugin code files synced cross-machine (text; binary assets are out of scope). */
+  static readonly PLUGIN_BINARY_FILES = ['manifest.json', 'main.js', 'styles.css'] as const;
+
+  /**
+   * Pull each plugin's code from the remote into the local shadow when
+   * it's MISSING locally — so a plugin enabled on another machine (incl.
+   * BRAT / non-marketplace) has its code staged here and loads on the
+   * next vault open. Never overwrites a local file (the local install is
+   * authoritative). `remote-ssh` is skipped — the plugin manages its own
+   * install.
+   */
+  static async pullPluginBinaries(
+    reader: SharedConfigReader,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pulled: string[] }> {
+    const pulled: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+        const localFile = path.join(localPluginDir, file);
+        if (fs.existsSync(localFile)) continue; // local authoritative
+        const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+        try {
+          if (!(await reader.exists(remoteRel))) continue;
+          const content = await reader.read(remoteRel);
+          fs.mkdirSync(localPluginDir, { recursive: true });
+          ShadowVaultBootstrap.writeFileAtomic(localFile, content);
+          if (!pulled.includes(id)) pulled.push(id);
+        } catch (e) {
+          logger.warn(`pullPluginBinaries: ${id}/${file} skipped (${errorMessage(e)})`);
+        }
+      }
+    }
+    if (pulled.length) logger.info(`pullPluginBinaries: staged [${pulled.join(', ')}]`);
+    return { pulled };
+  }
+
+  /**
+   * Push each plugin's local code to the remote when the remote copy is
+   * missing or differs — so other machines can pull it. Code only; never
+   * the plugin's `data.json`.
+   */
+  static async pushPluginBinaries(
+    rw: SharedConfigReader & SharedConfigWriter,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pushed: string[] }> {
+    const pushed: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+        const localFile = path.join(localPluginDir, file);
+        if (!fs.existsSync(localFile)) continue;
+        const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+        try {
+          const content = fs.readFileSync(localFile, 'utf-8');
+          let remoteContent: string | null = null;
+          if (await rw.exists(remoteRel)) remoteContent = await rw.read(remoteRel);
+          if (remoteContent === content) continue; // up to date — avoid churn
+          await rw.write(remoteRel, content);
+          if (!pushed.includes(id)) pushed.push(id);
+        } catch (e) {
+          logger.warn(`pushPluginBinaries: ${id}/${file} skipped (${errorMessage(e)})`);
+        }
+      }
+    }
+    if (pushed.length) logger.info(`pushPluginBinaries: pushed [${pushed.join(', ')}]`);
+    return { pushed };
+  }
+
+  /** Atomic (tmp + rename) write of arbitrary file content. */
+  private static writeFileAtomic(localFile: string, content: string): void {
+    const tmp = `${localFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, content, 'utf-8');
+    try {
+      fs.renameSync(tmp, localFile);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
+  }
+
   /** Parse a community-plugins.json body into a string-id array, or null if malformed. */
   private static parsePluginIdList(content: string): string[] | null {
     try {
@@ -539,6 +637,15 @@ export class ShadowVaultBootstrap {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Enabled-plugin ids from a local `.obsidian/community-plugins.json`
+   * ([] when absent/malformed) — the set whose binaries the connect flow
+   * round-trips via {@link pullPluginBinaries}/{@link pushPluginBinaries}.
+   */
+  static readEnabledPluginIds(localConfigDir: string): string[] {
+    return ShadowVaultBootstrap.readPluginIdList(path.join(localConfigDir, 'community-plugins.json'));
   }
 
   /** Read a local community-plugins.json into an id array ([] when absent/malformed). */

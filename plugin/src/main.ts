@@ -626,6 +626,23 @@ export default class RemoteSshPlugin extends Plugin {
         logger.warn(`runAutoConnect(${tag}): post-pull plugin install failed: ${errorMessage(e)}`);
       }
 
+      // #429b binary round-trip: the marketplace installer above can't
+      // fetch a BRAT / sideloaded plugin (it isn't on the registry). Run
+      // AFTER the installer so the plugins it just fetched are on disk —
+      // the pull then only stages what's STILL missing (the non-market
+      // ones), which keeps the installer's live load intact and also
+      // acts as a fallback if a marketplace fetch failed. The push makes
+      // the remote `.obsidian/plugins/` a complete vault so every machine
+      // can pull. A pulled binary loads on the next vault open (Obsidian
+      // scans the plugins dir at startup).
+      try {
+        const enabledIds = ShadowVaultBootstrap.readEnabledPluginIds(localConfigDir);
+        await ShadowVaultBootstrap.pullPluginBinaries(da, remoteConfigDir, localConfigDir, enabledIds);
+        await ShadowVaultBootstrap.pushPluginBinaries(da, remoteConfigDir, localConfigDir, enabledIds);
+      } catch (e) {
+        logger.warn(`runAutoConnect(${tag}): plugin-binary round-trip failed: ${errorMessage(e)}`);
+      }
+
       // #342 push half: pull only brought remote→local. Without this,
       // a settings change made HERE never reaches the remote, so the
       // next session's pull finds nothing and the change evaporates.

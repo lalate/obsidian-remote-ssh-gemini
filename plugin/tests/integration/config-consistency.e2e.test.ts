@@ -150,4 +150,59 @@ describe('Config consistency across connect cycles (#429 / #342)', () => {
     const local2 = JSON.parse(fs.readFileSync(path.join(s2.layout.configDir, 'app.json'), 'utf-8'));
     expect(local2, 'the setting changed in session 1 must be consistent in session 2').toEqual(snapshot);
   });
+
+  it('a sideloaded plugin binary enabled on another machine is staged into a fresh shadow (#429b)', async () => {
+    const id = 'sideloaded-plugin';
+    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/manifest.json`,
+      JSON.stringify({ id, version: '1.0.0', name: 'Sideloaded', minAppVersion: '1.5.0' }));
+    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/main.js`, '/* sideloaded code */\n');
+
+    const profile = profileFor('bin-pull');
+    const { layout } = await freshSession().bootstrap(profile, [profile]);
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(
+      remoteClient.adapter, REMOTE_CFG, layout.configDir, [id]);
+
+    expect(pulled).toContain(id);
+    expect(fs.readFileSync(path.join(layout.configDir, 'plugins', id, 'main.js'), 'utf-8'))
+      .toBe('/* sideloaded code */\n');
+    expect(fs.existsSync(path.join(layout.configDir, 'plugins', id, 'manifest.json'))).toBe(true);
+  });
+
+  it('a sideloaded plugin installed in one session round-trips into the next via the remote', async () => {
+    const id = 'local-only-plugin';
+    // Session 1 (machine A): code present locally, pushed to the remote.
+    const pA = profileFor('bin-push');
+    const sA = await freshSession().bootstrap(pA, [pA]);
+    const dirA = path.join(sA.layout.configDir, 'plugins', id);
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.writeFileSync(path.join(dirA, 'manifest.json'),
+      JSON.stringify({ id, version: '2.0.0', name: 'LocalOnly', minAppVersion: '1.5.0' }));
+    fs.writeFileSync(path.join(dirA, 'main.js'), '/* local-only code v2 */\n');
+    await ShadowVaultBootstrap.pushPluginBinaries(remoteClient.adapter, REMOTE_CFG, sA.layout.configDir, [id]);
+
+    // Session 2 (machine B): a fresh shadow pulls the pushed binary.
+    const pB = profileFor('bin-push-2');
+    const sB = await freshSession().bootstrap(pB, [pB]);
+    await ShadowVaultBootstrap.pullPluginBinaries(remoteClient.adapter, REMOTE_CFG, sB.layout.configDir, [id]);
+
+    expect(fs.readFileSync(path.join(sB.layout.configDir, 'plugins', id, 'main.js'), 'utf-8'),
+      'a sideloaded plugin installed in session 1 must reach session 2')
+      .toBe('/* local-only code v2 */\n');
+  });
+
+  it('pullPluginBinaries never overwrites a local plugin file (local is authoritative, real SSH)', async () => {
+    const id = 'conflict-plugin';
+    await remoteClient.adapter.write(`${REMOTE_CFG}/plugins/${id}/main.js`, '/* REMOTE code */\n');
+
+    const profile = profileFor('bin-conflict');
+    const { layout } = await freshSession().bootstrap(profile, [profile]);
+    const dir = path.join(layout.configDir, 'plugins', id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'main.js'), '/* LOCAL code */\n');
+
+    await ShadowVaultBootstrap.pullPluginBinaries(remoteClient.adapter, REMOTE_CFG, layout.configDir, [id]);
+
+    expect(fs.readFileSync(path.join(dir, 'main.js'), 'utf-8'), 'local file must not be clobbered by pull')
+      .toBe('/* LOCAL code */\n');
+  });
 });

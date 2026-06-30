@@ -1106,3 +1106,112 @@ describe('ShadowVaultBootstrap community-plugins round-trip (#429 / #342)', () =
     expect(store['.obsidian/community-plugins.json']).toBe('{ not : json');
   });
 });
+
+describe('ShadowVaultBootstrap plugin-binary round-trip (#429b — BRAT / non-marketplace)', () => {
+  function makeLocalConfigDir(): string {
+    const dir = path.join(
+      os.tmpdir(),
+      `bin-roundtrip-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      '.obsidian',
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+  const pluginFile = (cfg: string, id: string, file: string) => path.join(cfg, 'plugins', id, file);
+  function seedLocal(cfg: string, id: string, file: string, content: string): void {
+    fs.mkdirSync(path.dirname(pluginFile(cfg, id, file)), { recursive: true });
+    fs.writeFileSync(pluginFile(cfg, id, file), content, 'utf-8');
+  }
+
+  // Reader+writer fake over an in-memory store keyed by remote rel path.
+  function makeRW(seed: Record<string, string> = {}): {
+    rw: SharedConfigReader & SharedConfigWriter;
+    store: Record<string, string>;
+  } {
+    const store: Record<string, string> = { ...seed };
+    const rw: SharedConfigReader & SharedConfigWriter = {
+      exists: (p) => Promise.resolve(p in store),
+      read: (p) => Promise.resolve(store[p]),
+      write: (p, c) => { store[p] = c; return Promise.resolve(); },
+    };
+    return { rw, store };
+  }
+
+  it('pulls a plugin enabled on another machine into the shadow (code staged on disk)', async () => {
+    const cfg = makeLocalConfigDir();
+    const { rw } = makeRW({
+      '.obsidian/plugins/brat-x/manifest.json': '{"id":"brat-x"}',
+      '.obsidian/plugins/brat-x/main.js': '/* brat code */\n',
+    });
+
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['brat-x']);
+
+    expect(pulled).toContain('brat-x');
+    expect(fs.readFileSync(pluginFile(cfg, 'brat-x', 'main.js'), 'utf-8')).toBe('/* brat code */\n');
+    expect(fs.existsSync(pluginFile(cfg, 'brat-x', 'manifest.json'))).toBe(true);
+  });
+
+  it('never overwrites a local plugin file (local install is authoritative)', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'p', 'main.js', '/* LOCAL */\n');
+    const { rw } = makeRW({ '.obsidian/plugins/p/main.js': '/* REMOTE */\n' });
+
+    await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['p']);
+
+    expect(fs.readFileSync(pluginFile(cfg, 'p', 'main.js'), 'utf-8'), 'local file must win')
+      .toBe('/* LOCAL */\n');
+  });
+
+  it('skips remote-ssh on pull — the plugin manages its own install', async () => {
+    const cfg = makeLocalConfigDir();
+    const { rw } = makeRW({ '.obsidian/plugins/remote-ssh/main.js': '/* ignore me */\n' });
+
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['remote-ssh']);
+
+    expect(pulled).not.toContain('remote-ssh');
+    expect(fs.existsSync(pluginFile(cfg, 'remote-ssh', 'main.js'))).toBe(false);
+  });
+
+  it('pushes a locally-installed plugin so other machines can pull it', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'q', 'main.js', '/* q code */\n');
+    seedLocal(cfg, 'q', 'manifest.json', '{"id":"q"}');
+    const { rw, store } = makeRW();
+
+    const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['q']);
+
+    expect(pushed).toContain('q');
+    expect(store['.obsidian/plugins/q/main.js']).toBe('/* q code */\n');
+    expect(store['.obsidian/plugins/q/manifest.json']).toBe('{"id":"q"}');
+  });
+
+  it('push is a no-op when the remote copy is already identical (avoid churn)', async () => {
+    const cfg = makeLocalConfigDir();
+    seedLocal(cfg, 'r', 'main.js', '/* same */\n');
+    const { rw } = makeRW({ '.obsidian/plugins/r/main.js': '/* same */\n' });
+    let writes = 0;
+    const origWrite = rw.write;
+    rw.write = (p, c) => { writes++; return origWrite(p, c); };
+
+    const { pushed } = await ShadowVaultBootstrap.pushPluginBinaries(rw, '.obsidian', cfg, ['r']);
+
+    expect(pushed).not.toContain('r');
+    expect(writes, 'identical content must not be re-written').toBe(0);
+  });
+
+  it('a per-file SSH error is swallowed and does not abort the rest', async () => {
+    const cfg = makeLocalConfigDir();
+    const { rw } = makeRW({
+      '.obsidian/plugins/x/manifest.json': '{"id":"x"}',
+      '.obsidian/plugins/x/main.js': '/* x */\n',
+    });
+    const origRead = rw.read;
+    rw.read = (p) => (p.endsWith('manifest.json') ? Promise.reject(new Error('SSH hiccup')) : origRead(p));
+
+    const { pulled } = await ShadowVaultBootstrap.pullPluginBinaries(rw, '.obsidian', cfg, ['x']);
+
+    expect(pulled, 'main.js still pulls after manifest read fails').toContain('x');
+    expect(fs.readFileSync(pluginFile(cfg, 'x', 'main.js'), 'utf-8')).toBe('/* x */\n');
+    expect(fs.existsSync(pluginFile(cfg, 'x', 'manifest.json')), 'failed file is skipped').toBe(false);
+  });
+});
