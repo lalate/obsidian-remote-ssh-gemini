@@ -105,6 +105,27 @@ export class ObsidianRegistry {
   }
 
   /**
+   * Repoint an existing vault entry from `oldPath` to `newPath`,
+   * keeping the same Obsidian vault id. Used by the transitional
+   * shadow-dir rename (legacy UUID name → friendly name) so the
+   * registration follows the moved directory instead of leaving a
+   * dead entry pointing at the old path. No-op (returns false) when no
+   * entry matches `oldPath`.
+   */
+  updatePath(oldPath: string, newPath: string): boolean {
+    const cfg = this.read();
+    const target = canonicalisePath(oldPath);
+    for (const [id, entry] of Object.entries(cfg.vaults)) {
+      if (canonicalisePath(entry.path) === target) {
+        cfg.vaults[id] = { ...entry, path: newPath };
+        this.writeAtomic(cfg);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Atomic write: serialise to a sibling temp file, then rename.
    * Limits the window during which Obsidian could read a half-written
    * `obsidian.json`. Not a full-blown lock — Obsidian could still
