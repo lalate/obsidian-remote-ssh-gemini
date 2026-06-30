@@ -6,6 +6,7 @@ import { TMP_SUFFIX } from '../constants';
 import { AuthResolver } from './AuthResolver';
 import { HostKeyStore, type HostKeyMismatchHandler } from './HostKeyStore';
 import { createJumpTunnel } from './JumpHostTunnel';
+import { createProxyCommandTunnel } from './ProxyCommandTunnel';
 import { logger } from '../util/logger';
 import { asError, errorMessage } from '../util/errorMessage';
 
@@ -179,6 +180,17 @@ export class SftpClient {
           keepaliveIntervalMs:    profile.keepaliveIntervalMs,
         },
       );
+    } else if (profile.proxyCommand) {
+      // ProxyCommand transport (#430): run the command (e.g.
+      // `cloudflared access ssh --hostname %h`) and hand ssh2 its
+      // stdio as the `sock`. Mutually exclusive with jumpHost; if both
+      // are somehow set, the bastion jump above wins (it already ran).
+      logger.info(`SftpClient: opening ProxyCommand transport for ${profile.host}`);
+      sock = createProxyCommandTunnel(profile.proxyCommand, {
+        host: profile.host,
+        port: profile.port,
+        user: profile.username,
+      });
     }
 
     const client = new Client();

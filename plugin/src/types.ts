@@ -43,6 +43,15 @@ export interface SshProfile {
   keepaliveCountMax: number;
   hostKeyFingerprint?: string;
   jumpHost?: JumpHostConfig;
+  /**
+   * OpenSSH `ProxyCommand` line, e.g. `cloudflared access ssh
+   * --hostname %h`. When set (and no `jumpHost`), the connection is
+   * tunnelled through this subprocess's stdio instead of a direct TCP
+   * socket — covers Cloudflare-tunnel / `cloudflared` / `nc`-style
+   * reachability. `%h`/`%p`/`%r` are expanded at connect time. Desktop
+   * only (`child_process`). See `ProxyCommandTunnel`.
+   */
+  proxyCommand?: string;
 
   /**
    * Picks between the legacy direct-SFTP transport and the α path
