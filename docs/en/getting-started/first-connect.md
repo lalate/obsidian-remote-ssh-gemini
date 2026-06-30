@@ -8,13 +8,13 @@ description: "What happens when you click Connect: SSH handshake, daemon auto-de
 
 ## The shadow vault model
 
-obsidian-remote-ssh does not edit your remote files directly through Obsidian's vault layer. Instead it:
+obsidian-remote-ssh doesn't keep a synced copy of your vault — the remote is the single source of truth. Instead it:
 
-1. Creates a **local shadow vault** under `~/.obsidian-remote/vaults/<profile-id>/`. This is a real Obsidian vault on your local disk.
-2. Mirrors the remote vault's files into that shadow vault (lazily — large files are fetched on first open).
-3. Watches both sides for changes and syncs them through the SSH-tunneled daemon RPC.
+1. Creates a **local shadow vault** under `~/.obsidian-remote/vaults/<profile-id>/` — a real Obsidian vault dir, but only `.obsidian/` config lives on disk.
+2. Patches that vault's file adapter so every read/write goes **directly to the remote** over the SSH-tunneled daemon (or SFTP). Your notes are served virtually — never copied to local disk.
+3. The daemon's `fs.watch` pushes remote changes back, so the file explorer and open editors update live (~1 s).
 
-Result: Obsidian thinks it's editing a local vault. All Obsidian features (Dataview, Templater, Excalidraw, …) work because they ARE working against a local vault. The "remote-ness" lives in the sync layer, invisible to most plugins.
+Result: Obsidian thinks it's editing a local vault, so all features (Dataview, Templater, Excalidraw, …) work — but every file op actually hits the remote. (Plugins that bypass the vault API and use Node `fs` directly are the exception — see #429.)
 
 See [[shadow-vault|Shadow vault architecture]] for the full design.
 

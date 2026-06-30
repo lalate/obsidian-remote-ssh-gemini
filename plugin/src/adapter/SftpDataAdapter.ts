@@ -119,9 +119,11 @@ export class SftpDataAdapter {
      * `getBasePath()` method return this value, so plugins that read
      * `adapter.basePath` (Templater's `tp.file.path`, Kanban's clipboard
      * paste, Importer, Copilot — see `docs/en/user-guide/plugin-compatibility.md`)
-     * receive a path on the shadow vault. Reads against that path
-     * succeed against files mirrored locally by the file watcher;
-     * writes land in the shadow dir and propagate to the remote.
+     * receive the shadow-vault root (so they don't crash on
+     * `undefined`). But the vault tree is virtual — served from the
+     * remote, not mirrored to disk — so raw Node `fs` here only touches
+     * the local shadow copy: reads miss remote notes, writes don't
+     * reach the remote. Only the vault API round-trips (#429).
      *
      * Defaults to `''` for tests that never exercise these members. The
      * production wiring in `main.ts` always passes the real shadow
@@ -142,11 +144,11 @@ export class SftpDataAdapter {
   ) {}
 
   /**
-   * Mirror of `FileSystemAdapter.basePath`. Returns the absolute path
-   * of the shadow vault's local root. Plugins that join paths against
-   * this value and call Node `fs` directly read mirrored content and
-   * write into the shadow dir, where the file watcher propagates to
-   * the remote.
+   * Mirror of `FileSystemAdapter.basePath`: the shadow-vault local
+   * root. The vault tree is virtual (not mirrored to disk), so raw
+   * `fs` against this path only touches the local shadow copy — writes
+   * don't reach the remote (#429); only the vault API round-trips.
+   * #170 returns a defined path so plugins don't crash.
    */
   get basePath(): string {
     return this.shadowBasePath;
