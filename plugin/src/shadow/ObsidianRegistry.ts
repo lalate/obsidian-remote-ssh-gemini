@@ -126,6 +126,26 @@ export class ObsidianRegistry {
   }
 
   /**
+   * Whether Obsidian currently has this vault open, per the
+   * `obsidian.json` `open` flag. Used by the shadow-dir migration to
+   * avoid renaming a live vault's directory — on Windows that corrupts
+   * the open junction/handles (dangling plugin dir → daemon ENOENT).
+   * Unknown/unreadable config or an unregistered path → treated as not
+   * open (the caller then migrates, which is the safe default when the
+   * vault genuinely isn't open).
+   */
+  isOpen(vaultPath: string): boolean {
+    try {
+      const cfg = this.read();
+      const target = canonicalisePath(vaultPath);
+      for (const entry of Object.values(cfg.vaults)) {
+        if (canonicalisePath(entry.path) === target) return entry.open === true;
+      }
+    } catch { /* unreadable obsidian.json → treat as not open */ }
+    return false;
+  }
+
+  /**
    * Atomic write: serialise to a sibling temp file, then rename.
    * Limits the window during which Obsidian could read a half-written
    * `obsidian.json`. Not a full-blown lock — Obsidian could still

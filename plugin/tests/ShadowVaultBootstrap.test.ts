@@ -83,42 +83,53 @@ function makeScratch(): {
 }
 
 describe('ShadowVaultBootstrap.layoutFor', () => {
-  it('names the vault dir <friendly-name>--<short-id> so Obsidian shows a recognisable name', () => {
+  it('names the vault dir <friendly-name>--<remotePath-tail> so Obsidian shows a recognisable, folder-distinct name', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      const layout = r.layoutFor({ id: 'abcdef12-3456-7890-aaaa-bbbbbbbbbbbb', name: 'My Homelab' });
-      expect(path.basename(layout.vaultDir)).toBe('My Homelab--abcdef12');
+      const layout = r.layoutFor({ name: 'My Homelab', remotePath: '/home/souta/work' });
+      expect(path.basename(layout.vaultDir)).toBe('My Homelab--work');
       expect(layout.configDir).toBe(path.join(layout.vaultDir, '.obsidian'));
       expect(layout.pluginDir).toBe(path.join(layout.vaultDir, '.obsidian', 'plugins', 'remote-ssh'));
       expect(layout.pluginDataFile).toBe(path.join(layout.pluginDir, 'data.json'));
     } finally { scratch.cleanup(); }
   });
 
-  it('falls back to a generic name when the profile name is empty', () => {
+  it('uses the last path segment as the tail, ignoring a trailing slash', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      const layout = r.layoutFor({ id: 'abcdef12-3456', name: '' });
-      expect(path.basename(layout.vaultDir)).toBe('vault--abcdef12');
+      const layout = r.layoutFor({ name: 'Panza', remotePath: '/home/souta/work/dev/' });
+      expect(path.basename(layout.vaultDir)).toBe('Panza--dev');
     } finally { scratch.cleanup(); }
   });
 
-  it('different ids with the same name produce different dirs (collision-safe)', () => {
+  it('falls back to a generic name and tail when both are empty', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      const a = r.layoutFor({ id: 'aaaaaaaa-1111', name: 'Vault' });
-      const b = r.layoutFor({ id: 'bbbbbbbb-2222', name: 'Vault' });
+      const layout = r.layoutFor({ name: '', remotePath: '' });
+      expect(path.basename(layout.vaultDir)).toBe('vault--vault');
+    } finally { scratch.cleanup(); }
+  });
+
+  it('same host name + different remotePath → different dirs (multiple vaults on one host)', () => {
+    const scratch = makeScratch();
+    try {
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      const a = r.layoutFor({ name: 'Panza', remotePath: '/home/souta/work' });
+      const b = r.layoutFor({ name: 'Panza', remotePath: '/home/souta/work/dev' });
       expect(a.vaultDir).not.toBe(b.vaultDir);
+      expect(path.basename(a.vaultDir)).toBe('Panza--work');
+      expect(path.basename(b.vaultDir)).toBe('Panza--dev');
     } finally { scratch.cleanup(); }
   });
 
-  it('sanitises name + id so the dir never escapes baseDir', () => {
+  it('sanitises name + tail so the dir never escapes baseDir', () => {
     const scratch = makeScratch();
     try {
       const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-      const lo = r.layoutFor({ id: '../etc', name: '../../evil/name' });
+      const lo = r.layoutFor({ name: '../../evil/name', remotePath: '/x/../../etc/' });
       expect(path.dirname(lo.vaultDir)).toBe(scratch.baseDir);
       expect(path.resolve(lo.vaultDir).startsWith(path.resolve(scratch.baseDir) + path.sep)).toBe(true);
     } finally { scratch.cleanup(); }
@@ -331,12 +342,17 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
   });
 
   it('regression: a stale whole-dir symlink at pluginDir is unlinked, not followed (does not delete source)', async () => {
-    // Simulate the pre-fix on-disk state: pluginDir is a symlink to
-    // sourceDir. installPlugin must replace this with a real dir
-    // without deleting any of the source files.
+    // Simulate the pre-fix on-disk state: pluginDir is a whole-dir
+    // symlink to the source plugin dir. installPlugin must replace it
+    // with a real dir without deleting any of the source files.
     const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
-    const layout = r.layoutFor({ id: 'p1', name: 'P' });
+    const profile = makeProfile({ id: 'p1', name: 'P', remotePath: '/p1' });
+    const layout = r.layoutFor(profile);
     fs.mkdirSync(path.dirname(layout.pluginDir), { recursive: true });
+    // The source plugin dir carries a data.json in the field; give it this
+    // profile's id so find-by-id resolves the shadow THROUGH the link
+    // (instead of forking a " (2)" dir) and installPlugin runs on the junction.
+    fs.writeFileSync(path.join(scratch.sourceDir, 'data.json'), JSON.stringify({ autoConnectProfileId: 'p1' }));
     try {
       const linkType = process.platform === 'win32' ? 'junction' : 'dir';
       fs.symlinkSync(scratch.sourceDir, layout.pluginDir, linkType);
@@ -353,7 +369,6 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
     const sourceCanary = path.join(scratch.sourceDir, 'CANARY.txt');
     fs.writeFileSync(sourceCanary, 'do-not-delete', 'utf-8');
 
-    const profile = makeProfile({ id: 'p1', name: 'P' });
     await r.bootstrap(profile, [profile]);
 
     // Source file still there.
@@ -1309,104 +1324,157 @@ describe('ShadowVaultBootstrap plugin-binary round-trip (#429b — BRAT / non-ma
   });
 });
 
-// ─── legacy → friendly shadow-dir migration (transitional) ──────────────
+// ─── shadow-dir naming + migration (identity = profile id) ──────────────
 //
-// Older builds named the shadow dir by the raw profile UUID. The vault
-// dir is now `<friendly-name>--<short-id>` so Obsidian shows a
-// recognisable name; the first bootstrap renames the legacy dir,
-// carrying its config/plugins, and repoints obsidian.json. For a clean
-// UUID id, `sanitiseProfileId(id) === id`, so the legacy dir is just
-// `<baseDir>/<id>`.
-describe('ShadowVaultBootstrap legacy→friendly migration', () => {
+// The shadow dir is `<friendly-name>--<remotePath-tail>` so Obsidian
+// shows a recognisable, folder-distinct name. Identity is the profile
+// *id* (persisted as data.json `autoConnectProfileId`), NOT the dir
+// name — so a profile rename, an older `<uuid>` / `--<id8>` name, or a
+// display-name collision all still resolve to the same shadow via
+// find-by-id. A stale dir name is renamed once, unless the vault is
+// open (Windows corruption guard) or the name collides with another
+// profile's.
+describe('ShadowVaultBootstrap shadow-dir migration (find-by-id)', () => {
   let scratch: ReturnType<typeof makeScratch>;
   beforeEach(() => { scratch = makeScratch(); });
   afterEach(() => { scratch.cleanup(); });
 
-  function seedLegacyShadow(id: string, cp: string[]): string {
-    const legacyDir = path.join(scratch.baseDir, id);
-    fs.mkdirSync(path.join(legacyDir, '.obsidian'), { recursive: true });
-    fs.writeFileSync(path.join(legacyDir, '.obsidian', 'community-plugins.json'), JSON.stringify(cp));
-    return legacyDir;
+  /**
+   * Seed an existing shadow dir with a data.json carrying the profile
+   * id (the stable identity find-by-id keys on) plus a
+   * community-plugins.json so config carry-over is observable.
+   */
+  function seedShadow(dirName: string, profileId: string, cp: string[] = ['remote-ssh']): string {
+    const dir = path.join(scratch.baseDir, dirName);
+    const pluginDir = path.join(dir, '.obsidian', 'plugins', 'remote-ssh');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(path.join(pluginDir, 'data.json'), JSON.stringify({ autoConnectProfileId: profileId }));
+    fs.writeFileSync(path.join(dir, '.obsidian', 'community-plugins.json'), JSON.stringify(cp));
+    return dir;
   }
 
-  it('renames the legacy UUID dir to the friendly name, carries config, and repoints obsidian.json', async () => {
+  it('reuses the existing shadow by id and migrates a renamed profile to <name>--<tail>', async () => {
     const id = 'dddddddd-1111-2222-3333-444444444444';
-    const profile = makeProfile({ id, name: 'My Homelab' });
-    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'dataview']);
+    const oldDir = seedShadow('Old Name--work', id, ['remote-ssh', 'dataview']);
     const registry = new ObsidianRegistry(scratch.configPath);
-    const { id: regId } = registry.register(legacyDir);
+    const { id: regId } = registry.register(oldDir);
 
+    const profile = makeProfile({ id, name: 'New Name', remotePath: '/home/souta/work' });
     const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
       .bootstrap(profile, [profile]);
 
     expect(result.migrated).toBe(true);
-    expect(path.basename(result.layout.vaultDir)).toBe('My Homelab--dddddddd');
-    expect(fs.existsSync(legacyDir)).toBe(false);                       // legacy moved, not left behind
+    expect(path.basename(result.layout.vaultDir)).toBe('New Name--work');
+    expect(fs.existsSync(oldDir)).toBe(false);                          // old dir moved, not left behind
     expect(JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')))
       .toEqual(expect.arrayContaining(['remote-ssh', 'dataview']));     // config carried over
     const cfg = JSON.parse(fs.readFileSync(scratch.configPath, 'utf-8'));
-    expect(cfg.vaults[regId].path).toBe(result.layout.vaultDir);       // same registry id, new path
+    expect(cfg.vaults[regId].path).toBe(result.layout.vaultDir);       // same registry id, repointed
   });
 
-  it('is idempotent: a second bootstrap does not re-migrate', async () => {
+  it('migrates a legacy <uuid>-named dir (data.json carries the id) to <name>--<tail>', async () => {
     const id = 'eeeeeeee-1111-2222-3333-444444444444';
-    const profile = makeProfile({ id, name: 'Vault' });
-    seedLegacyShadow(id, ['remote-ssh']);
+    const legacyDir = seedShadow(id, id, ['remote-ssh', 'keepme']);    // dir named by the raw uuid
+    const profile = makeProfile({ id, name: 'My Homelab', remotePath: '/home/souta/work' });
+    const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
+      .bootstrap(profile, [profile]);
+    expect(result.migrated).toBe(true);
+    expect(path.basename(result.layout.vaultDir)).toBe('My Homelab--work');
+    expect(fs.existsSync(legacyDir)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')))
+      .toContain('keepme');
+  });
+
+  it('is idempotent: a brand-new bootstrap then a second one does not migrate', async () => {
+    const id = 'ffffffff-1111-2222-3333-444444444444';
+    const profile = makeProfile({ id, name: 'Vault', remotePath: '/home/souta/work' });
     const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
     const first = await r.bootstrap(profile, [profile]);
-    expect(first.migrated).toBe(true);
+    expect(first.migrated).toBe(false);                                // brand-new, not a migration
+    expect(path.basename(first.layout.vaultDir)).toBe('Vault--work');
     const second = await r.bootstrap(profile, [profile]);
     expect(second.migrated).toBe(false);
     expect(second.layout.vaultDir).toBe(first.layout.vaultDir);
   });
 
-  it('does not migrate a brand-new profile (no legacy dir)', async () => {
-    const profile = makeProfile({ id: 'ffffffff-1111', name: 'Fresh' });
+  it('does not migrate a brand-new profile (no existing shadow)', async () => {
+    const profile = makeProfile({ id: 'aaaa0000-1111', name: 'Fresh', remotePath: '/srv/notes' });
     const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
       .bootstrap(profile, [profile]);
     expect(result.migrated).toBe(false);
-    expect(path.basename(result.layout.vaultDir)).toBe('Fresh--ffffffff');
+    expect(path.basename(result.layout.vaultDir)).toBe('Fresh--notes');
   });
 
-  it('falls back to the legacy dir (no data loss) when the rename fails', async () => {
-    const id = 'aaaa1111-2222-3333-4444-555555555555';
-    const profile = makeProfile({ id, name: 'Locked' });
-    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'keepme']);
-    // First renameSync call in bootstrap is the migration rename; make it throw.
-    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => { throw new Error('EBUSY'); });
+  it('open-safety: does NOT rename when the found vault is currently open', async () => {
+    const id = 'bbbb0000-1111-2222-3333-444444444444';
+    const oldDir = seedShadow('Old Name--work', id, ['remote-ssh', 'keepme']);
+    const registry = new ObsidianRegistry(scratch.configPath);
+    registry.register(oldDir);
+    const isOpenSpy = vi.spyOn(registry, 'isOpen').mockReturnValue(true);
     try {
-      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
+      const profile = makeProfile({ id, name: 'New Name', remotePath: '/home/souta/work' });
+      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
         .bootstrap(profile, [profile]);
       expect(result.migrated).toBe(false);
-      expect(result.layout.vaultDir).toBe(legacyDir);                  // fell back to legacy this session
-      expect(JSON.parse(fs.readFileSync(path.join(legacyDir, '.obsidian', 'community-plugins.json'), 'utf-8')))
-        .toContain('keepme');                                          // config NOT lost
-    } finally { renameSpy.mockRestore(); }
+      expect(result.layout.vaultDir).toBe(oldDir);                     // used as-is, rename deferred
+      expect(fs.existsSync(oldDir)).toBe(true);
+      expect(fs.existsSync(path.join(scratch.baseDir, 'New Name--work'))).toBe(false);
+    } finally { isOpenSpy.mockRestore(); }
   });
 
-  it('still migrates to the friendly dir when the registry update throws AFTER a successful rename', async () => {
-    // Review regression: rename succeeds (config physically moves to the
-    // friendly dir) but updatePath throws (obsidian.json briefly locked).
-    // The session must use the migrated dir — NOT fall back to legacyDir,
-    // which bootstrap would recreate empty, opening a blank vault while the
-    // real config sits orphaned.
-    const id = 'bbbb2222-3333-4444-5555-666666666666';
-    const profile = makeProfile({ id, name: 'Homelab' });
-    const legacyDir = seedLegacyShadow(id, ['remote-ssh', 'keepme']);
+  it('collision: a second profile with the same <name>--<tail> gets a " (2)" dir, configs stay separate', async () => {
+    const a = makeProfile({ id: 'aaaa1111-2222-3333-4444-555555555555', name: 'Panza', remotePath: '/home/a/work' });
+    const b = makeProfile({ id: 'bbbb2222-3333-4444-5555-666666666666', name: 'Panza', remotePath: '/home/b/work' });
+    const boot = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const ra = await boot.bootstrap(a, [a, b]);
+    const rb = await boot.bootstrap(b, [a, b]);
+    expect(path.basename(ra.layout.vaultDir)).toBe('Panza--work');
+    expect(path.basename(rb.layout.vaultDir)).toBe('Panza--work (2)');
+    expect(ra.layout.vaultDir).not.toBe(rb.layout.vaultDir);
+    // Distinct data.json → the two vaults never merge into one dir.
+    expect(JSON.parse(fs.readFileSync(ra.layout.pluginDataFile, 'utf-8')).autoConnectProfileId).toBe(a.id);
+    expect(JSON.parse(fs.readFileSync(rb.layout.pluginDataFile, 'utf-8')).autoConnectProfileId).toBe(b.id);
+  });
+
+  it('commits the migration even if the registry update throws AFTER a successful rename', async () => {
+    // #438 regression: rename succeeds (config physically moves) but
+    // updatePath throws (obsidian.json briefly locked). The session must
+    // use the migrated dir — NOT fall back to the old dir, which bootstrap
+    // would recreate empty, opening a blank vault while config sits orphaned.
+    const id = 'cccc3333-4444-5555-6666-777777777777';
+    const oldDir = seedShadow('Old Name--work', id, ['remote-ssh', 'keepme']);
     const registry = new ObsidianRegistry(scratch.configPath);
-    registry.register(legacyDir);
+    registry.register(oldDir);
     const updateSpy = vi.spyOn(registry, 'updatePath').mockImplementation(() => { throw new Error('EBUSY'); });
     try {
+      const profile = makeProfile({ id, name: 'New Name', remotePath: '/home/souta/work' });
       const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, registry)
         .bootstrap(profile, [profile]);
 
       expect(result.migrated, 'rename succeeded → migration committed').toBe(true);
-      expect(path.basename(result.layout.vaultDir)).toBe('Homelab--bbbb2222');
-      expect(fs.existsSync(legacyDir), 'legacy dir was moved, not recreated empty').toBe(false);
+      expect(path.basename(result.layout.vaultDir)).toBe('New Name--work');
+      expect(fs.existsSync(oldDir), 'old dir was moved, not recreated empty').toBe(false);
       expect(
         JSON.parse(fs.readFileSync(path.join(result.layout.configDir, 'community-plugins.json'), 'utf-8')),
         'config must live at the migrated dir, never orphaned',
       ).toContain('keepme');
     } finally { updateSpy.mockRestore(); }
+  });
+
+  it('falls back to the found dir (no data loss) when the rename fails', async () => {
+    const id = 'dddd4444-5555-6666-7777-888888888888';
+    const oldDir = seedShadow('Old Name--work', id, ['remote-ssh', 'keepme']);
+    // Only the migration rename (the first renameSync) throws; bootstrap's
+    // own later atomic writes use the real implementation.
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => { throw new Error('EBUSY'); });
+    try {
+      const profile = makeProfile({ id, name: 'New Name', remotePath: '/home/souta/work' });
+      const result = await new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath))
+        .bootstrap(profile, [profile]);
+      expect(result.migrated).toBe(false);
+      expect(result.layout.vaultDir).toBe(oldDir);                     // fell back to found this session
+      expect(JSON.parse(fs.readFileSync(path.join(oldDir, '.obsidian', 'community-plugins.json'), 'utf-8')))
+        .toContain('keepme');                                          // config NOT lost
+    } finally { renameSpy.mockRestore(); }
   });
 });

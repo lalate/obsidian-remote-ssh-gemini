@@ -128,8 +128,9 @@ export class ShadowVaultBootstrap {
    * is `fs.*Sync` and JSON arithmetic, no I/O actually awaits.
    */
   private bootstrapSync(profile: SshProfile, allProfiles: ReadonlyArray<SshProfile>): BootstrapResult {
-    // Friendly-named shadow dir, migrating a legacy UUID-named one if
-    // present (transitional — see resolveLayout).
+    // Resolve (and, when safe, migrate to) the `<name>--<tail>` shadow
+    // dir for this profile. Identity is the profile id, not the dir
+    // name, so a rename/collision never strands config (see resolveLayout).
     const { layout, migrated } = this.resolveLayout(profile);
 
     fs.mkdirSync(layout.vaultDir, { recursive: true });
@@ -226,7 +227,7 @@ export class ShadowVaultBootstrap {
    * Useful for callers that need the layout up-front (e.g. the
    * spawner needs `vaultDir` for the open URL).
    */
-  layoutFor(profile: Pick<SshProfile, 'id' | 'name'>): ShadowVaultLayout {
+  layoutFor(profile: Pick<SshProfile, 'name' | 'remotePath'>): ShadowVaultLayout {
     return this.layoutForDir(path.join(this.baseDir, friendlyVaultDirName(profile)));
   }
 
@@ -247,90 +248,131 @@ export class ShadowVaultBootstrap {
   }
 
   /**
-   * Resolve the shadow layout to use, migrating a legacy `<uuid>`-named
-   * dir to the friendly name once (transitional; added 2026-06,
-   * removable after a few releases once installs have migrated).
+   * Resolve the shadow layout to use for this profile.
    *
-   * Runs during bootstrap — before the shadow window is spawned — so
-   * the vault is never open while we move it. If the rename fails
-   * (perms / cross-device / a stray lock), we fall back to the legacy
-   * dir for this session so the existing config/plugins are never
-   * orphaned; the migration retries on the next bootstrap.
+   * Identity is the profile *id* (persisted as `autoConnectProfileId`
+   * in the shadow's data.json), NOT the directory name — so a profile
+   * rename, a display-name collision, or an older `<uuid>` / `--<id8>`
+   * naming scheme all still resolve to the same shadow via
+   * `findShadowByProfileId`. When the existing shadow's dir name no
+   * longer matches the desired `<name>--<tail>`, we migrate it once by
+   * renaming, EXCEPT:
+   *
+   *  - the vault is currently open (obsidian.json `open` flag): renaming
+   *    an open vault's dir on Windows corrupts the live junction/handles
+   *    (the plugin dir goes dangling → daemon download ENOENTs → SFTP
+   *    fallback). Use it as-is; migrate on the next closed bootstrap.
+   *  - the desired name is already taken by a *different* profile:
+   *    `uniqueVaultDir` appends ` (2)` so two vaults never share one dir
+   *    (which would merge their data.json / secrets / host keys).
+   *
+   * The rename and the obsidian.json path update are separate `try`s:
+   * once the dir physically moves we commit to the new path even if
+   * updating the registry throws, because falling back would recreate
+   * the old dir empty and orphan the real config (#438 review).
    */
   private resolveLayout(
-    profile: Pick<SshProfile, 'id' | 'name'>,
+    profile: Pick<SshProfile, 'id' | 'name' | 'remotePath'>,
   ): { layout: ShadowVaultLayout; migrated: boolean } {
     const desired = this.layoutFor(profile);
-    // The desired friendly dir already exists → reuse it.
-    if (fs.existsSync(desired.vaultDir)) return { layout: desired, migrated: false };
+    const found = this.findShadowByProfileId(profile.id);
 
-    // A friendly dir from a PRIOR profile name (same id → same `--<id8>`
-    // suffix) — e.g. the user renamed the profile. Reuse it AS-IS rather
-    // than churn the dir name on every rename; the id is the stable key,
-    // the displayed name just reflects the name at creation.
-    const prior = this.findPriorFriendlyDir(profile.id, desired.vaultDir);
-    if (prior) return { layout: this.layoutForDir(prior), migrated: false };
-
-    // A legacy UUID-named dir (older builds) → rename to the friendly
-    // name once, carrying its config/plugins. The vault is not open
-    // during bootstrap, so the rename is safe; if it fails, fall back to
-    // the legacy dir this session so nothing is orphaned.
-    const legacyDir = path.join(this.baseDir, sanitiseProfileId(profile.id));
-    if (legacyDir !== desired.vaultDir && fs.existsSync(legacyDir)) {
-      try {
-        fs.renameSync(legacyDir, desired.vaultDir);
-      } catch (e) {
-        // The MOVE itself failed — the config is still at legacyDir, so
-        // use it this session; the migration retries next bootstrap.
-        logger.warn(
-          `ShadowVaultBootstrap: legacy shadow migration failed (${errorMessage(e)}); using ${legacyDir} this session`,
-        );
-        return { layout: this.layoutForDir(legacyDir), migrated: false };
+    if (found) {
+      // Already at the desired friendly name → nothing to migrate.
+      if (path.basename(found) === path.basename(desired.vaultDir)) {
+        return { layout: this.layoutForDir(found), migrated: false };
       }
-      // The dir (with all its config/plugins) now lives at desired.vaultDir.
-      // Updating obsidian.json is SECONDARY: if it throws (e.g. the file is
-      // briefly locked on Windows), the path is still correct and bootstrap's
-      // later register(desired.vaultDir) re-adds it. Crucially we must NOT
-      // fall back to legacyDir here — bootstrap would recreate it empty and
-      // open a blank vault while the real config sits orphaned at desired.
+      // R2: never rename a dir whose vault is open — Windows corrupts the
+      // live junction. Use it as-is; migrate on the next closed run.
+      if (this.registry.isOpen(found)) {
+        logger.info(`ShadowVaultBootstrap: ${found} is open; deferring rename`);
+        return { layout: this.layoutForDir(found), migrated: false };
+      }
+      // Migrate (collision-safe). A successful rename commits the move;
+      // a failing updatePath is logged but not fatal (self-heals on
+      // register()). A failing rename falls back to the found dir.
+      const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
       try {
-        this.registry.updatePath(legacyDir, desired.vaultDir);
+        fs.renameSync(found, target);
+      } catch (e) {
+        logger.warn(
+          `ShadowVaultBootstrap: rename ${found} → ${target} failed (${errorMessage(e)}); using ${found} this session`,
+        );
+        return { layout: this.layoutForDir(found), migrated: false };
+      }
+      try {
+        this.registry.updatePath(found, target);
       } catch (e) {
         logger.warn(
           `ShadowVaultBootstrap: registry path update failed post-migration (${errorMessage(e)}); ` +
-          `config is at ${desired.vaultDir}, registry self-heals on register()`,
+          `config is at ${target}, registry self-heals on register()`,
         );
       }
-      logger.info(`ShadowVaultBootstrap: migrated legacy shadow ${legacyDir} → ${desired.vaultDir}`);
-      return { layout: desired, migrated: true };
+      logger.info(`ShadowVaultBootstrap: migrated shadow ${found} → ${target}`);
+      return { layout: this.layoutForDir(target), migrated: true };
     }
-    // Brand-new profile.
-    return { layout: desired, migrated: false };
+
+    // Brand-new profile — pick a collision-free dir (a different profile
+    // may already own the desired `<name>--<tail>`).
+    const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
+    return { layout: this.layoutForDir(target), migrated: false };
   }
 
   /**
-   * Find an existing shadow dir for this profile under a *different*
-   * friendly name (same `--<id8>` suffix), if any. Used so a profile
-   * rename reuses the existing shadow instead of stranding its config.
+   * Scan `baseDir` for the shadow whose data.json `autoConnectProfileId`
+   * matches — the id, not the dir name, is the stable identity. Catches
+   * every naming scheme (`<uuid>`, `<name>--<id8>`, `<name>--<tail>`) so a
+   * rename/migration reuses the existing config instead of stranding it.
+   * Returns the first match in sorted order (deterministic) or null.
    */
-  private findPriorFriendlyDir(profileId: string, desiredVaultDir: string): string | null {
-    const suffix = `--${sanitiseProfileId(profileId).slice(0, 8)}`;
+  private findShadowByProfileId(profileId: string): string | null {
     let entries: string[];
     try {
-      // Sorted so that if (degenerately) more than one dir matches the
-      // suffix, the pick is deterministic across machines/runs rather
-      // than dependent on readdir order.
       entries = fs.readdirSync(this.baseDir).sort();
     } catch {
       return null; // baseDir not created yet
     }
     for (const entry of entries) {
-      const full = path.join(this.baseDir, entry);
-      if (entry.endsWith(suffix) && full !== desiredVaultDir) {
-        try { if (fs.statSync(full).isDirectory()) return full; } catch { /* skip */ }
-      }
+      const dir = path.join(this.baseDir, entry);
+      try {
+        if (!fs.statSync(dir).isDirectory()) continue;
+        const parsed = JSON.parse(
+          fs.readFileSync(this.layoutForDir(dir).pluginDataFile, 'utf-8'),
+        ) as { autoConnectProfileId?: unknown };
+        if (parsed.autoConnectProfileId === profileId) return dir;
+      } catch { /* not a shadow vault / unreadable → skip */ }
     }
     return null;
+  }
+
+  /**
+   * A dir the given profile may safely occupy: the desired name if it's
+   * free or already this profile's, else `desired (2)`, `desired (3)`, …
+   * Two profiles must never share a dir — that would merge their
+   * data.json (secrets, host keys, active profile). Display-name
+   * collisions are allowed; only the on-disk dir is disambiguated.
+   */
+  private uniqueVaultDir(desiredVaultDir: string, profileId: string): string {
+    const ownsOrFree = (dir: string): boolean => {
+      if (!fs.existsSync(dir)) return true;
+      try {
+        const parsed = JSON.parse(
+          fs.readFileSync(this.layoutForDir(dir).pluginDataFile, 'utf-8'),
+        ) as { autoConnectProfileId?: unknown };
+        return parsed.autoConnectProfileId === profileId;
+      } catch {
+        // Exists but no readable data.json → an unrelated dir; don't take it.
+        return false;
+      }
+    };
+    if (ownsOrFree(desiredVaultDir)) return desiredVaultDir;
+    for (let n = 2; n < 100; n++) {
+      const candidate = `${desiredVaultDir} (${n})`;
+      if (ownsOrFree(candidate)) return candidate;
+    }
+    // 98 collisions on one name is absurd; fall back to an id-suffixed
+    // dir so we still return something unique rather than loop forever.
+    return `${desiredVaultDir} (${profileId.slice(0, 8)})`;
   }
 
   // ─── shared-config round-trip (#342) ────────────────────────────────────
@@ -1157,19 +1199,6 @@ export class ShadowVaultBootstrap {
 }
 
 /**
- * Profile ids should already be uuids, but we sanitise defensively:
- * a malicious or unusual id should never escape `baseDir` via `..`
- * or surprise the filesystem with separators.
- */
-function sanitiseProfileId(id: string): string {
-  const cleaned = id.replace(/[^a-zA-Z0-9._-]/g, '_');
-  // Empty / dot-only ids would resolve to baseDir itself or its
-  // parent; force them into something benign.
-  if (!cleaned || cleaned === '.' || cleaned === '..') return '_invalid';
-  return cleaned;
-}
-
-/**
  * Filesystem-safe form of a profile *name* for the friendly vault-dir
  * name. Obsidian shows a vault by its directory basename, so this is
  * what the user sees instead of a raw UUID. Spaces are kept (valid in
@@ -1188,12 +1217,35 @@ function sanitiseVaultName(name: string): string {
 }
 
 /**
- * The shadow vault's directory name: a friendly profile name plus a
- * short stable slice of the profile id for collision-safety. The id
- * (a UUID) stays the backend key — it lives in the profile / data.json
- * — but the *directory* is named so Obsidian displays something
- * recognisable (e.g. `My Homelab--a1b2c3d4`) rather than a bare UUID.
+ * Filesystem-safe form of the remotePath's LAST segment. One host
+ * (profile name) often holds several independent vaults under
+ * different folders, so the folder tail is what disambiguates them —
+ * `/home/souta/work` → `work`, `/home/souta/work/dev` → `dev`. Same
+ * sanitising rules as the name; a bare/degenerate path falls back to
+ * `vault`.
  */
-function friendlyVaultDirName(profile: Pick<SshProfile, 'id' | 'name'>): string {
-  return `${sanitiseVaultName(profile.name)}--${sanitiseProfileId(profile.id).slice(0, 8)}`;
+function sanitisePathTail(remotePath: string): string {
+  const trimmed = (remotePath ?? '').replace(/[/\\]+$/, '');
+  const tail = trimmed.split(/[/\\]/).pop() ?? '';
+  const cleaned = tail
+    .replace(/[^a-zA-Z0-9._ -]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .trim()
+    .slice(0, 40)
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..' || cleaned === '~') return 'vault';
+  return cleaned;
+}
+
+/**
+ * The shadow vault's directory name: `<friendly-name>--<path-tail>`.
+ * The name identifies the host, the tail the folder — together they
+ * let Obsidian show a recognisable, folder-distinct name (e.g.
+ * `Panza--work` vs `Panza--dev`) instead of a bare UUID. The id is NOT
+ * in the name: identity is resolved from `data.json`'s
+ * `autoConnectProfileId` (see `findShadowByProfileId`), so a profile
+ * rename or a display-name collision never strands its config.
+ */
+function friendlyVaultDirName(profile: Pick<SshProfile, 'name' | 'remotePath'>): string {
+  return `${sanitiseVaultName(profile.name)}--${sanitisePathTail(profile.remotePath)}`;
 }
