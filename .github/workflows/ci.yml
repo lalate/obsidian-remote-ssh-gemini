@@ -79,7 +79,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           # Explicit slug avoids fork/PR ambiguity — Codecov's auto-
           # detection can mis-route uploads from PRs opened from forks.
