@@ -134,6 +134,23 @@ describe('ShadowVaultBootstrap.layoutFor', () => {
       expect(path.resolve(lo.vaultDir).startsWith(path.resolve(scratch.baseDir) + path.sep)).toBe(true);
     } finally { scratch.cleanup(); }
   });
+
+  it('falls back to a generic tail for a bare `~` home-dir remotePath', () => {
+    const scratch = makeScratch();
+    try {
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      expect(path.basename(r.layoutFor({ name: 'Home', remotePath: '~' }).vaultDir)).toBe('Home--vault');
+      expect(path.basename(r.layoutFor({ name: 'Home', remotePath: '~/' }).vaultDir)).toBe('Home--vault');
+    } finally { scratch.cleanup(); }
+  });
+
+  it('splits on backslash separators too (Windows-style remotePath)', () => {
+    const scratch = makeScratch();
+    try {
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      expect(path.basename(r.layoutFor({ name: 'Win', remotePath: 'C:\\Users\\a\\notes' }).vaultDir)).toBe('Win--notes');
+    } finally { scratch.cleanup(); }
+  });
 });
 
 describe('ShadowVaultBootstrap.bootstrap', () => {
@@ -1434,6 +1451,17 @@ describe('ShadowVaultBootstrap shadow-dir migration (find-by-id)', () => {
     // Distinct data.json → the two vaults never merge into one dir.
     expect(JSON.parse(fs.readFileSync(ra.layout.pluginDataFile, 'utf-8')).autoConnectProfileId).toBe(a.id);
     expect(JSON.parse(fs.readFileSync(rb.layout.pluginDataFile, 'utf-8')).autoConnectProfileId).toBe(b.id);
+
+    // Reconnect: a profile parked in a ` (2)` dir must resolve back to its
+    // OWN dir with migrated=false — not report a spurious migration (a no-op
+    // same-path rename) and re-show the one-time "restart Obsidian" notice
+    // on every connect.
+    const rb2 = await boot.bootstrap(b, [a, b]);
+    expect(rb2.migrated).toBe(false);
+    expect(rb2.layout.vaultDir).toBe(rb.layout.vaultDir);
+    const ra2 = await boot.bootstrap(a, [a, b]);
+    expect(ra2.migrated).toBe(false);
+    expect(ra2.layout.vaultDir).toBe(ra.layout.vaultDir);
   });
 
   it('commits the migration even if the registry update throws AFTER a successful rename', async () => {

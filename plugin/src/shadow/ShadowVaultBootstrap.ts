@@ -53,10 +53,11 @@ export interface BootstrapResult {
   /** True if the vault entry was newly added (false = was already registered). */
   registryCreated: boolean;
   /**
-   * True if a legacy UUID-named shadow dir was renamed to the friendly
-   * name on this bootstrap. Like a newly-registered vault, the renamed
-   * path isn't in the running Obsidian's cached vault list, so the
-   * connect flow surfaces the one-time "restart Obsidian" notice.
+   * True if an existing shadow dir (located by profile id, under any
+   * prior naming scheme) was renamed to the current `<name>--<tail>` on
+   * this bootstrap. Like a newly-registered vault, the renamed path isn't
+   * in the running Obsidian's cached vault list, so the connect flow
+   * surfaces the one-time "restart Obsidian" notice.
    */
   migrated: boolean;
   /** How the plugin source landed in the shadow vault. */
@@ -91,8 +92,8 @@ export interface SharedConfigWriter {
  *
  * Layout:
  *
- *   <baseDir>/<sanitised-profile-id>/
- *   ├── .obsidian/
+ *   <baseDir>/<name>--<remotePath-tail>/     (identity is the profile id
+ *   ├── .obsidian/                            in data.json, not the dir name)
  *   │   ├── community-plugins.json    ← ["remote-ssh"]
  *   │   └── plugins/
  *   │       └── remote-ssh/           ← symlink (or copy on Windows
@@ -223,9 +224,10 @@ export class ShadowVaultBootstrap {
   }
 
   /**
-   * Compute paths for a given profile id without doing any I/O.
-   * Useful for callers that need the layout up-front (e.g. the
-   * spawner needs `vaultDir` for the open URL).
+   * Compute the shadow paths for a profile without doing any I/O: the
+   * pure `<name>--<tail>` layout, before any collision ` (n)` suffix
+   * (which only resolveLayout applies). A thin, side-effect-free path
+   * builder — resolveLayout is the sole caller.
    */
   layoutFor(profile: Pick<SshProfile, 'name' | 'remotePath'>): ShadowVaultLayout {
     return this.layoutForDir(path.join(this.baseDir, friendlyVaultDirName(profile)));
@@ -278,8 +280,15 @@ export class ShadowVaultBootstrap {
     const found = this.findShadowByProfileId(profile.id);
 
     if (found) {
-      // Already at the desired friendly name → nothing to migrate.
-      if (path.basename(found) === path.basename(desired.vaultDir)) {
+      // Where this profile's shadow SHOULD live (collision-safe): its own
+      // dir if it already owns one, else the free `<name>--<tail>` or a
+      // ` (n)` variant. Compare `found` to this resolved target — NOT to
+      // the bare desired name — otherwise a profile permanently parked in a
+      // ` (2)` dir (a display-name collision) would "migrate" to itself on
+      // every reconnect: a no-op same-path rename that falsely reports
+      // migrated=true and re-shows the one-time "restart Obsidian" notice.
+      const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
+      if (path.basename(found) === path.basename(target)) {
         return { layout: this.layoutForDir(found), migrated: false };
       }
       // R2: never rename a dir whose vault is open — Windows corrupts the
@@ -288,10 +297,9 @@ export class ShadowVaultBootstrap {
         logger.info(`ShadowVaultBootstrap: ${found} is open; deferring rename`);
         return { layout: this.layoutForDir(found), migrated: false };
       }
-      // Migrate (collision-safe). A successful rename commits the move;
-      // a failing updatePath is logged but not fatal (self-heals on
-      // register()). A failing rename falls back to the found dir.
-      const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
+      // Migrate. A successful rename commits the move; a failing updatePath
+      // is logged but not fatal (self-heals on register()). A failing
+      // rename falls back to the found dir.
       try {
         fs.renameSync(found, target);
       } catch (e) {
@@ -320,10 +328,11 @@ export class ShadowVaultBootstrap {
 
   /**
    * Scan `baseDir` for the shadow whose data.json `autoConnectProfileId`
-   * matches — the id, not the dir name, is the stable identity. Catches
-   * every naming scheme (`<uuid>`, `<name>--<id8>`, `<name>--<tail>`) so a
-   * rename/migration reuses the existing config instead of stranding it.
-   * Returns the first match in sorted order (deterministic) or null.
+   * matches. Identity is the id, not the dir name, so this is naming-scheme
+   * agnostic — it reuses the existing config whether the dir is a legacy
+   * `<uuid>`, an older `<name>--<id8>`, or the current `<name>--<tail>`,
+   * instead of stranding it. Returns the first match in sorted order
+   * (deterministic) or null.
    */
   private findShadowByProfileId(profileId: string): string | null {
     let entries: string[];
@@ -334,15 +343,41 @@ export class ShadowVaultBootstrap {
     }
     for (const entry of entries) {
       const dir = path.join(this.baseDir, entry);
-      try {
-        if (!fs.statSync(dir).isDirectory()) continue;
-        const parsed = JSON.parse(
-          fs.readFileSync(this.layoutForDir(dir).pluginDataFile, 'utf-8'),
-        ) as { autoConnectProfileId?: unknown };
-        if (parsed.autoConnectProfileId === profileId) return dir;
-      } catch { /* not a shadow vault / unreadable → skip */ }
+      let isDir: boolean;
+      try { isDir = fs.statSync(dir).isDirectory(); } catch { continue; }
+      if (isDir && this.readShadowProfileId(dir) === profileId) return dir;
     }
     return null;
+  }
+
+  /**
+   * The `autoConnectProfileId` recorded in `dir`'s shadow data.json, or
+   * null if `dir` isn't a bootstrapped shadow. A genuinely absent data.json
+   * (ENOENT) is the normal "not a shadow dir" case and stays silent; an
+   * EXISTING-but-unreadable data.json — a transient lock (AV / Dropbox sync
+   * / a mid-write) or malformed JSON — is logged, because it can briefly
+   * hide this profile's OWN shadow and make resolveLayout fork a duplicate
+   * ` (2)` dir instead of reusing it. A non-string id is treated as no
+   * match (only a false negative is possible, never a false reuse).
+   */
+  private readShadowProfileId(dir: string): string | null {
+    const dataFile = this.layoutForDir(dir).pluginDataFile;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(dataFile, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn(`ShadowVaultBootstrap: unreadable ${dataFile} (${errorMessage(e)}); treating as non-matching`);
+      }
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as { autoConnectProfileId?: unknown };
+      return typeof parsed.autoConnectProfileId === 'string' ? parsed.autoConnectProfileId : null;
+    } catch (e) {
+      logger.warn(`ShadowVaultBootstrap: malformed ${dataFile} (${errorMessage(e)}); treating as non-matching`);
+      return null;
+    }
   }
 
   /**
@@ -353,18 +388,11 @@ export class ShadowVaultBootstrap {
    * collisions are allowed; only the on-disk dir is disambiguated.
    */
   private uniqueVaultDir(desiredVaultDir: string, profileId: string): string {
-    const ownsOrFree = (dir: string): boolean => {
-      if (!fs.existsSync(dir)) return true;
-      try {
-        const parsed = JSON.parse(
-          fs.readFileSync(this.layoutForDir(dir).pluginDataFile, 'utf-8'),
-        ) as { autoConnectProfileId?: unknown };
-        return parsed.autoConnectProfileId === profileId;
-      } catch {
-        // Exists but no readable data.json → an unrelated dir; don't take it.
-        return false;
-      }
-    };
+    // Free (absent) or already ours → safe to take. An existing dir whose
+    // data.json belongs to a DIFFERENT profile (or is unreadable, logged by
+    // readShadowProfileId) is left alone so configs never merge.
+    const ownsOrFree = (dir: string): boolean =>
+      !fs.existsSync(dir) || this.readShadowProfileId(dir) === profileId;
     if (ownsOrFree(desiredVaultDir)) return desiredVaultDir;
     for (let n = 2; n < 100; n++) {
       const candidate = `${desiredVaultDir} (${n})`;
@@ -1227,13 +1255,16 @@ function sanitiseVaultName(name: string): string {
 function sanitisePathTail(remotePath: string): string {
   const trimmed = (remotePath ?? '').replace(/[/\\]+$/, '');
   const tail = trimmed.split(/[/\\]/).pop() ?? '';
+  // A bare `~` (vault rooted at the remote home dir) has no meaningful
+  // folder tail — catch it before the charset strip below turns it into `_`.
+  if (tail === '~') return 'vault';
   const cleaned = tail
     .replace(/[^a-zA-Z0-9._ -]/g, '_')
     .replace(/_{2,}/g, '_')
     .trim()
     .slice(0, 40)
     .trim();
-  if (!cleaned || cleaned === '.' || cleaned === '..' || cleaned === '~') return 'vault';
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'vault';
   return cleaned;
 }
 
