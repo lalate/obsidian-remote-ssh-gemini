@@ -406,16 +406,22 @@ export class ShadowVaultBootstrap {
   // ─── shared-config round-trip (#342) ────────────────────────────────────
 
   /**
-   * Shared (non per-client) Obsidian config files. `PathMapper`
-   * leaves these unmapped on purpose so every machine on the vault
-   * sees the same `app.json` / theme / enabled-core-plugins /
-   * hotkeys. The sharing was one-way though: edits in one session
-   * push to the remote, but the local shadow disk never pulled them
-   * back, so the *next* Obsidian startup read a stale local copy and
-   * the settings appeared to evaporate (#342).
+   * Obsidian config files this vault round-trips to the remote so a
+   * settings change survives a shadow-window restart (#342: without the
+   * pull half, the next startup read a stale local copy and settings
+   * appeared to evaporate).
    *
-   * `workspace.json` is deliberately NOT here — it's per-client UI
-   * state that `PathMapper` already redirects into a private subtree.
+   * These are now **per-device**, not shared: `PathMapper` redirects each
+   * basename into this client's `<configDir>/user/<client-id>/` subtree
+   * (they were added to `DEFAULT_PRIVATE_PATTERN_BASENAMES`). So the
+   * round-trip below reads/writes THIS device's own copy — giving each
+   * machine a remote backup + cross-session persistence without two
+   * devices ever colliding on one shared `<configDir>/app.json` (the
+   * perpetual write-conflict this round-trip used to cause). The name is
+   * kept for back-compat; "shared" is historical.
+   *
+   * `workspace.json` is deliberately NOT here — it's per-client UI state
+   * `PathMapper` already redirects AND that Obsidian rewrites constantly.
    */
   static readonly SHARED_OBSIDIAN_CONFIG_FILES = [
     'app.json',

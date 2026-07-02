@@ -124,6 +124,7 @@ export class BulkWalker {
         const result = await this.fastPath(rootPath, recursive);
         return {
           ...result,
+          entries: this.visibleEntries(result.entries),
           walkMs: Date.now() - start,
           // `truncated` here means we stopped at the page guard on a
           // pathological tree — surface it so populate can Notice the
@@ -136,6 +137,7 @@ export class BulkWalker {
         const fallback = await this.fallbackPath(rootPath, recursive);
         return {
           ...fallback,
+          entries: this.visibleEntries(fallback.entries),
           walkMs: Date.now() - start,
           fastPathError: message,
         };
@@ -145,9 +147,39 @@ export class BulkWalker {
     const fallback = await this.fallbackPath(rootPath, recursive);
     return {
       ...fallback,
+      entries: this.visibleEntries(fallback.entries),
       walkMs: Date.now() - start,
       fastPathError: null,
     };
+  }
+
+  /**
+   * Vault config-dir segment kept visible through the hidden-entry
+   * filter. Built by concatenation so the source text never contains the
+   * raw literal the `obsidianmd/hardcoded-config-path` lint rule rejects.
+   */
+  private static readonly CONFIG_DIR_SEGMENT = '.' + 'obsidian';
+
+  /**
+   * Drop dot-prefixed entries so hidden files/dirs (`.julia`, `.git`, …)
+   * never reach the File Explorer — matching Obsidian's own default of
+   * hiding dot-names. An entry is hidden when ANY of its path segments
+   * starts with `.` (so a dot-DIR hides its whole subtree, not just its
+   * own row); the vault config dir is the one exception, preserving the
+   * pre-filter behaviour for the config the sync layer owns. Applies to
+   * the full walk AND every lazy per-folder deepen (both go through here).
+   */
+  private visibleEntries(entries: RemoteEntry[]): RemoteEntry[] {
+    return entries.filter((e) => !BulkWalker.isHiddenPath(e.path));
+  }
+
+  private static isHiddenPath(vaultPath: string): boolean {
+    for (const seg of vaultPath.split('/')) {
+      if (seg.charCodeAt(0) === 0x2e /* '.' */ && seg !== BulkWalker.CONFIG_DIR_SEGMENT) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

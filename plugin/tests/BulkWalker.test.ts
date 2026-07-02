@@ -69,6 +69,30 @@ describe('BulkWalker', () => {
     expect(result.entries[2]).toMatchObject({ path: 'README.md',    isDirectory: false, mtime: 3000, size: 42 });
   });
 
+  it('hides dot-prefixed entries (except the vault config dir) from the result', async () => {
+    const adapter = makeAdapter({});
+    const { rpc } = makeRpc(['fs.walk'], {
+      entries: [
+        { path: 'Notes',              type: 'folder', mtime: 1, size: 0 },
+        { path: 'Notes/keep.md',      type: 'file',   mtime: 2, size: 1 },
+        { path: '.julia',             type: 'folder', mtime: 3, size: 0 },
+        { path: '.julia/registry.md', type: 'file',   mtime: 4, size: 1 },
+        { path: 'Notes/.secret.md',   type: 'file',   mtime: 5, size: 1 },
+        { path: '.obsidian/app.json', type: 'file',   mtime: 6, size: 1 },
+      ],
+      truncated: false,
+    });
+    const walker = new BulkWalker({ adapter, rpcConnection: rpc });
+
+    const result = await walker.walk('');
+
+    // `.julia` + its subtree and a nested dotfile are dropped; the vault
+    // config dir is the one dot-name kept (the sync layer owns it).
+    expect(result.entries.map(e => e.path)).toEqual([
+      'Notes', 'Notes/keep.md', '.obsidian/app.json',
+    ]);
+  });
+
   it('passes through the maxEntries override when set', async () => {
     const adapter = makeAdapter({});
     const callSpy = vi.fn(async () => ({ entries: [], truncated: false } as WalkResult));
