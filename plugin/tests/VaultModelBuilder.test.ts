@@ -73,6 +73,55 @@ function makeFakeVault() {
   return { vault, root, fileMap, triggers };
 }
 
+describe('VaultModelBuilder.buildChunked', () => {
+  it('builds every entry across multiple chunks (folders-before-files), no errors', async () => {
+    const { vault, fileMap } = makeFakeVault();
+    // One folder + 1200 files under it → spans several chunks at chunkSize 100.
+    const entries: RemoteEntry[] = [{ path: 'work', isDirectory: true, ctime: 0, mtime: 0, size: 0 }];
+    for (let i = 0; i < 1200; i++) {
+      entries.push({ path: `work/n${i}.md`, isDirectory: false, ctime: 0, mtime: 0, size: 0 });
+    }
+    // Reverse the input to prove ordering is fixed internally, not by the caller.
+    const shuffled = [...entries].reverse();
+
+    const result = await new VaultModelBuilder(vault as never, deps).buildChunked(shuffled, 100);
+
+    expect(result.foldersAdded).toBe(1);
+    expect(result.filesAdded).toBe(1200);
+    expect(result.errors).toEqual([]);
+    expect(Object.keys(fileMap)).toHaveLength(1201);
+    expect(fileMap['work']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['work/n0.md']).toBeInstanceOf(FakeTFile);
+    expect(fileMap['work/n1199.md']).toBeInstanceOf(FakeTFile);
+  });
+
+  it('is idempotent: entries already in the vault are skipped, not re-added', async () => {
+    const { vault } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+    const entries: RemoteEntry[] = [
+      { path: 'a',     isDirectory: true,  ctime: 0, mtime: 0, size: 0 },
+      { path: 'a/x.md', isDirectory: false, ctime: 0, mtime: 0, size: 0 },
+    ];
+    await builder.buildChunked(entries, 1);
+    const second = await builder.buildChunked(entries, 1);
+    expect(second).toEqual({ filesAdded: 0, foldersAdded: 0, skipped: 2, errors: [] });
+  });
+
+  it('produces the same model + result as the synchronous build()', async () => {
+    const entries: RemoteEntry[] = [
+      { path: 'd',      isDirectory: true,  ctime: 0, mtime: 0, size: 0 },
+      { path: 'd/a.md', isDirectory: false, ctime: 1, mtime: 2, size: 3 },
+      { path: 'top.md', isDirectory: false, ctime: 0, mtime: 0, size: 0 },
+    ];
+    const a = makeFakeVault();
+    const sync = await new VaultModelBuilder(a.vault as never, deps).build(entries);
+    const b = makeFakeVault();
+    const chunked = await new VaultModelBuilder(b.vault as never, deps).buildChunked(entries, 1);
+    expect(chunked).toEqual(sync);
+    expect(Object.keys(b.fileMap).sort()).toEqual(Object.keys(a.fileMap).sort());
+  });
+});
+
 describe('VaultModelBuilder.build', () => {
   it('returns zero counts for empty entry list', async () => {
     const { vault } = makeFakeVault();

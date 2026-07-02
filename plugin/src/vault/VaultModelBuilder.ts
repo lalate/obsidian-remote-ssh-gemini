@@ -103,42 +103,84 @@ export class VaultModelBuilder {
     // Folders before files at the same depth, then by depth ascending,
     // so parents always exist by the time their children are processed.
     const ordered = [...entries].sort(byFoldersFirstThenDepth);
-
-    for (const entry of ordered) {
-      if (!entry.path) {
-        result.errors.push({ path: entry.path, message: 'empty path is not allowed' });
-        continue;
-      }
-      if (this.vault.getAbstractFileByPath(entry.path)) {
-        result.skipped++;
-        continue;
-      }
-      const parent = this.resolveParent(entry.path);
-      if (!parent) {
-        result.errors.push({
-          path: entry.path,
-          message: `parent folder for "${entry.path}" not found in vault`,
-        });
-        continue;
-      }
-      try {
-        if (entry.isDirectory) {
-          this.insertFolder(entry.path, parent);
-          result.foldersAdded++;
-        } else {
-          this.insertFile(entry, parent);
-          result.filesAdded++;
-        }
-      } catch (e) {
-        result.errors.push({ path: entry.path, message: errorMessage(e) });
-      }
-    }
+    for (const entry of ordered) this.insertBuildEntry(entry, result);
 
     logger.info(
       `VaultModelBuilder: built ${result.filesAdded}f + ${result.foldersAdded}d, ` +
       `${result.skipped} skipped, ${result.errors.length} errors`,
     );
     return result;
+  }
+
+  /**
+   * Chunked, non-blocking variant of `build` for the bulk connect-time
+   * populate. Inserts the (folders-first) entry list in fixed-size chunks,
+   * yielding to the event loop between them so Obsidian can paint the File
+   * Explorer increments and stay responsive.
+   *
+   * A synchronous one-tick build of a large vault (tens of thousands of
+   * entries, each firing a `vault.trigger('create')`) blocks the main thread
+   * for tens of seconds — the tree looks empty and the window freezes.
+   * Chunking trades that for the tree filling in progressively.
+   *
+   * Ordering is preserved (the sorted list is walked start-to-end), so a
+   * file's parent folder is always inserted in the same or an earlier chunk.
+   * Inserts are idempotent (an already-present path is skipped), so a live
+   * `fs.changed` insert landing between chunks can't double-add.
+   */
+  async buildChunked(
+    entries: ReadonlyArray<RemoteEntry>,
+    chunkSize = 500,
+  ): Promise<BuildResult> {
+    const result: BuildResult = {
+      filesAdded: 0, foldersAdded: 0, skipped: 0, errors: [],
+    };
+    const ordered = [...entries].sort(byFoldersFirstThenDepth);
+    for (let i = 0; i < ordered.length; i += chunkSize) {
+      const end = Math.min(i + chunkSize, ordered.length);
+      for (let j = i; j < end; j++) this.insertBuildEntry(ordered[j], result);
+      if (end < ordered.length) await yieldToEventLoop();
+    }
+    logger.info(
+      `VaultModelBuilder: built ${result.filesAdded}f + ${result.foldersAdded}d (chunked), ` +
+      `${result.skipped} skipped, ${result.errors.length} errors`,
+    );
+    return result;
+  }
+
+  /**
+   * Insert one walked entry into the vault model, accumulating counters and
+   * errors. Shared by `buildSync` and `buildChunked` so the two stay in
+   * lock-step. Never throws — a bad entry is recorded in `result.errors`.
+   */
+  private insertBuildEntry(entry: RemoteEntry, result: BuildResult): void {
+    if (!entry.path) {
+      result.errors.push({ path: entry.path, message: 'empty path is not allowed' });
+      return;
+    }
+    if (this.vault.getAbstractFileByPath(entry.path)) {
+      result.skipped++;
+      return;
+    }
+    const parent = this.resolveParent(entry.path);
+    if (!parent) {
+      result.errors.push({
+        path: entry.path,
+        message: `parent folder for "${entry.path}" not found in vault`,
+      });
+      return;
+    }
+    try {
+      if (entry.isDirectory) {
+        this.insertFolder(entry.path, parent);
+        result.foldersAdded++;
+      } else {
+        this.insertFile(entry, parent);
+        result.filesAdded++;
+      }
+    } catch (e) {
+      result.errors.push({ path: entry.path, message: errorMessage(e) });
+    }
   }
 
   // ─── internals ───────────────────────────────────────────────────────────
@@ -544,6 +586,17 @@ export class VaultModelBuilder {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Yield to the macrotask queue so the renderer can paint pending File
+ * Explorer updates between build chunks. A microtask (`Promise.resolve()`)
+ * would run before the browser paints; a 0 ms timer lets it paint first.
+ * Uses `window.setTimeout` per the repo's timer convention (the vitest setup
+ * polyfills `window`).
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise(resolve => { window.setTimeout(resolve, 0); });
+}
 
 /**
  * Sort key: folders first at any given depth, then by depth ascending.
