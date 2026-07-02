@@ -1310,6 +1310,25 @@ export default class RemoteSshPlugin extends Plugin {
     if (!pluginDir) return null;
     const cacheDir = path.join(pluginDir, 'server-bin');
 
+    // R3: if the shadow's plugin dir is a dangling junction (an earlier
+    // rename-while-open corrupted it), the mkdir inside the download
+    // throws a raw ENOENT and the connect degrades to SFTP with an
+    // opaque error. Probe it up front so we can say exactly what's wrong
+    // and how to recover, instead of leaking the ENOENT.
+    try {
+      fs.mkdirSync(cacheDir, { recursive: true });
+    } catch (e) {
+      logger.error(
+        `ensureDaemonBinary: shadow plugin dir looks broken (${errorMessage(e)}); ` +
+        'delete the shadow vault dir and reconnect. Staying on SFTP.',
+      );
+      new Notice(
+        'Remote SSH: shadow plugin dir is broken — delete the vault dir under ' +
+        '~/.obsidian-remote/vaults and reconnect.',
+      );
+      return null;
+    }
+
     // Consent gate (asked once; the decision — accept OR decline — is
     // persisted so a decline doesn't re-prompt on every connect / restart).
     const consented = await resolveDaemonConsent(
