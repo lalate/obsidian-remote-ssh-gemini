@@ -1310,23 +1310,38 @@ export default class RemoteSshPlugin extends Plugin {
     if (!pluginDir) return null;
     const cacheDir = path.join(pluginDir, 'server-bin');
 
-    // R3: if the shadow's plugin dir is a dangling junction (an earlier
-    // rename-while-open corrupted it), the mkdir inside the download
-    // throws a raw ENOENT and the connect degrades to SFTP with an
-    // opaque error. Probe it up front so we can say exactly what's wrong
-    // and how to recover, instead of leaking the ENOENT.
+    // R3: `server-bin` must be a REAL per-shadow dir. Older installs (and dev
+    // symlink installs) could leave it as a junction to ANOTHER vault's
+    // server-bin (installPlugin used to propagate it); if that target vault was
+    // later deleted, the junction dangles and mkdir throws a raw ENOENT — the
+    // connect then silently degrades to SFTP. Try a plain mkdir first (a valid
+    // dir/junction is fine); on failure, unlink a stale reparse point (never
+    // following into / deleting its target) and recreate a real dir. Only give
+    // up to SFTP if even that fails.
     try {
       fs.mkdirSync(cacheDir, { recursive: true });
-    } catch (e) {
-      logger.error(
-        `ensureDaemonBinary: shadow plugin dir looks broken (${errorMessage(e)}); ` +
-        'delete the shadow vault dir and reconnect. Staying on SFTP.',
-      );
-      new Notice(
-        'Remote SSH: shadow plugin dir is broken — delete the vault dir under ' +
-        '~/.obsidian-remote/vaults and reconnect.',
-      );
-      return null;
+    } catch (firstErr) {
+      let repaired = false;
+      try {
+        // lstat succeeds for a dangling junction; unlink drops the link only.
+        if (fs.lstatSync(cacheDir).isSymbolicLink()) {
+          fs.unlinkSync(cacheDir);
+          fs.mkdirSync(cacheDir, { recursive: true });
+          repaired = true;
+        }
+      } catch { /* fall through to the SFTP path below */ }
+      if (!repaired) {
+        logger.error(
+          `ensureDaemonBinary: server-bin unusable (${errorMessage(firstErr)}); staying on SFTP. ` +
+          'If this persists, delete the shadow vault dir under ~/.obsidian-remote/vaults and reconnect.',
+        );
+        new Notice(
+          'Remote SSH: the daemon cache dir is broken — staying on SFTP. If this persists, ' +
+          'delete the vault dir under ~/.obsidian-remote/vaults and reconnect.',
+        );
+        return null;
+      }
+      logger.warn(`ensureDaemonBinary: repaired a stale server-bin link at ${cacheDir}`);
     }
 
     // Consent gate (asked once; the decision — accept OR decline — is

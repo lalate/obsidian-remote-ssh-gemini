@@ -153,6 +153,47 @@ describe('ShadowVaultBootstrap.layoutFor', () => {
   });
 });
 
+describe('ShadowVaultBootstrap: server-bin (daemon dir) install', () => {
+  it('mirrors a REAL source server-bin dir into the shadow (local dev build)', async () => {
+    const scratch = makeScratch();
+    try {
+      const srcBin = path.join(scratch.sourceDir, 'server-bin');
+      fs.mkdirSync(srcBin, { recursive: true });
+      fs.writeFileSync(path.join(srcBin, 'obsidian-remote-server'), 'ELF\n');
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      const profile = makeProfile({ id: 's1', name: 'S', remotePath: '/s1' });
+      const result = await r.bootstrap(profile, [profile]);
+      // Real dir → mirrored (symlink or copy); the binary is reachable.
+      expect(fs.existsSync(path.join(result.layout.pluginDir, 'server-bin', 'obsidian-remote-server'))).toBe(true);
+    } finally { scratch.cleanup(); }
+  });
+
+  it('does NOT propagate a junction/symlink source server-bin (avoids the dangling-junction daemon breakage)', async () => {
+    const scratch = makeScratch();
+    try {
+      // The corrupted shape: source/server-bin is a LINK to a dir elsewhere.
+      // Propagating it would chain the shadow to another vault and dangle if
+      // that vault is deleted (the field bug: mkdir server-bin → ENOENT).
+      const realElsewhere = path.join(scratch.sourceVaultDir, 'real-bin');
+      fs.mkdirSync(realElsewhere, { recursive: true });
+      fs.writeFileSync(path.join(realElsewhere, 'obsidian-remote-server'), 'ELF\n');
+      const srcBinLink = path.join(scratch.sourceDir, 'server-bin');
+      try {
+        fs.symlinkSync(realElsewhere, srcBinLink, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch (e) {
+        console.warn(`skipping: cannot create symlink in test env: ${(e as Error).message}`);
+        return;
+      }
+      const r = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+      const profile = makeProfile({ id: 's2', name: 'S', remotePath: '/s2' });
+      const result = await r.bootstrap(profile, [profile]);
+      // Shadow gets NO server-bin — ensureDaemonBinary creates a real per-shadow
+      // dir at connect time instead of inheriting a link.
+      expect(fs.existsSync(path.join(result.layout.pluginDir, 'server-bin'))).toBe(false);
+    } finally { scratch.cleanup(); }
+  });
+});
+
 describe('ShadowVaultBootstrap.bootstrap', () => {
   let scratch: ReturnType<typeof makeScratch>;
   beforeEach(() => { scratch = makeScratch(); });
