@@ -16,6 +16,12 @@ export const DEFAULT_WALK_IGNORE_DIRS: readonly string[] = [
   '__pycache__', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache',
   'target', 'dist', 'build', '.next', '.nuxt', '.cache', '.gradle',
   '.idea', 'vendor', '.terraform',
+  // Language / toolchain caches — often enormous (a populated `.julia`
+  // or `.cargo` is 100k+ files of pure noise). Dot-dirs are hidden from
+  // the File Explorer anyway (BulkWalker filters them); listing them
+  // here ALSO prunes them server-side so the daemon never descends into
+  // or transfers them — the perf half of "hide `.julia` by default".
+  '.julia', '.cargo', '.rustup', '.npm', '.conda', '.gem',
 ];
 
 export const DEFAULT_PROFILE: Omit<SshProfile, 'id' | 'name'> = {

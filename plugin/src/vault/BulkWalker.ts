@@ -69,6 +69,13 @@ export interface BulkWalkResult {
   pages: number;
   /** When `fallback-list` because of a fast-path error, the error message; else null. */
   fastPathError: string | null;
+  /**
+   * Count of entries dropped by the hidden-file (dot-prefix) filter before
+   * `entries` was returned. Lets the caller tell a genuinely empty remote
+   * apart from "everything walked was hidden" (e.g. all content nested under
+   * a dot-dir) instead of firing a misleading "0 files — check remotePath".
+   */
+  hiddenCount: number;
 }
 
 /**
@@ -122,8 +129,11 @@ export class BulkWalker {
     if (this.canUseFastPath()) {
       try {
         const result = await this.fastPath(rootPath, recursive);
+        const visible = this.visibleEntries(result.entries);
         return {
           ...result,
+          entries: visible,
+          hiddenCount: result.entries.length - visible.length,
           walkMs: Date.now() - start,
           // `truncated` here means we stopped at the page guard on a
           // pathological tree — surface it so populate can Notice the
@@ -134,8 +144,11 @@ export class BulkWalker {
         const message = errorMessage(e);
         logger.warn(`BulkWalker: fs.walk failed (${message}); falling back to per-folder list`);
         const fallback = await this.fallbackPath(rootPath, recursive);
+        const visible = this.visibleEntries(fallback.entries);
         return {
           ...fallback,
+          entries: visible,
+          hiddenCount: fallback.entries.length - visible.length,
           walkMs: Date.now() - start,
           fastPathError: message,
         };
@@ -143,11 +156,34 @@ export class BulkWalker {
     }
 
     const fallback = await this.fallbackPath(rootPath, recursive);
+    const visible = this.visibleEntries(fallback.entries);
     return {
       ...fallback,
+      entries: visible,
+      hiddenCount: fallback.entries.length - visible.length,
       walkMs: Date.now() - start,
       fastPathError: null,
     };
+  }
+
+  /**
+   * Drop dot-prefixed entries so hidden files/dirs never reach the File
+   * Explorer — matching Obsidian's own default of hiding dot-names. An entry
+   * is hidden when ANY of its path segments starts with `.`, so a dot-DIR
+   * (`.julia`, `.git`, …) hides its whole subtree. The vault config dir
+   * (`.obsidian`) is deliberately included: Obsidian loads config directly
+   * off the local shadow disk, NOT from this walked model, so dropping it
+   * costs nothing AND keeps every client's per-device `<configDir>/user/<id>/`
+   * subtree out of the tree (a foreign client's state must never surface as
+   * editable files). Applies to the full walk AND every lazy per-folder
+   * deepen (both route through here).
+   */
+  private visibleEntries(entries: RemoteEntry[]): RemoteEntry[] {
+    return entries.filter((e) => !BulkWalker.isHiddenPath(e.path));
+  }
+
+  private static isHiddenPath(vaultPath: string): boolean {
+    return vaultPath.split('/').some((seg) => seg.startsWith('.'));
   }
 
   // ─── internals ──────────────────────────────────────────────────────────

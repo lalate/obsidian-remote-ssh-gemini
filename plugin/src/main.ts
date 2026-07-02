@@ -36,6 +36,7 @@ import { ShadowStartupCoordinator } from './shadow/ShadowStartupCoordinator';
 import * as os from 'os';
 import { ObservabilityInstaller } from './util/ObservabilityInstaller';
 import { normalizeRemotePath } from './util/pathUtils';
+import { PathMapper } from './path/PathMapper';
 import { withTimeout } from './util/withTimeout';
 import * as path from 'path';
 import { errorMessage } from "./util/errorMessage";
@@ -582,12 +583,12 @@ export default class RemoteSshPlugin extends Plugin {
       return;
     }
 
-    // Pull the shared Obsidian config (app.json / appearance.json /
-    // core-plugins.json / hotkeys.json) from the remote onto the
-    // local shadow disk *before* the populate, so the next time this
-    // window restarts Obsidian reads fresh settings instead of the
-    // stale local copy (#342). Best-effort: a failure here must not
-    // block rendering the vault.
+    // Pull this device's Obsidian config (app.json / appearance.json /
+    // core-plugins.json / hotkeys.json — now per-client via PathMapper)
+    // from the remote onto the local shadow disk *before* the populate, so
+    // the next time this window restarts Obsidian reads fresh settings
+    // instead of the stale local copy (#342). Best-effort: a failure here
+    // must not block rendering the vault.
     const da = this.adapterMgr.dataAdapter;
     const hostAdapter = this.app.vault.adapter;
     if (da && hostAdapter instanceof FileSystemAdapter) {
@@ -606,7 +607,7 @@ export default class RemoteSshPlugin extends Plugin {
           // settings silently not update — the #342 symptom. Absent
           // files are not errored, so a fresh vault stays quiet.
           new Notice(
-            `Remote SSH: ${cfg.errored.length} shared-config file` +
+            `Remote SSH: ${cfg.errored.length} config file` +
             `${cfg.errored.length === 1 ? '' : 's'} (${cfg.errored.join(', ')}) ` +
             'could not be synced — settings may be stale until the next connect',
           );
@@ -690,7 +691,7 @@ export default class RemoteSshPlugin extends Plugin {
           );
           if (r.errored.length > 0) {
             new Notice(
-              `Remote SSH: ${r.errored.length} shared-config file` +
+              `Remote SSH: ${r.errored.length} config file` +
               `${r.errored.length === 1 ? '' : 's'} (${r.errored.join(', ')}) ` +
               'could not be pushed — settings change not yet saved remotely',
             );
@@ -971,7 +972,7 @@ export default class RemoteSshPlugin extends Plugin {
     const walk = await walker.walk('', !lazy);
     logger.info(
       `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
-      `in ${walk.walkMs}ms (pages=${walk.pages})${lazy ? ' [lazy: root level]' : ''}` +
+      `(${walk.hiddenCount} hidden) in ${walk.walkMs}ms (pages=${walk.pages})${lazy ? ' [lazy: root level]' : ''}` +
       (walk.fastPathError ? ` (fast-path fallback: ${walk.fastPathError})` : ''),
     );
 
@@ -1007,8 +1008,12 @@ export default class RemoteSshPlugin extends Plugin {
     // vault (the silent "remote files won't open" symptom). Surface it.
     if (walk.entries.length === 0) {
       new Notice(
-        'Remote SSH: 0 files found on the remote. Check the profile’s ' +
-        'remotePath actually points at the vault (see console.log).',
+        walk.hiddenCount > 0
+          ? `Remote SSH: 0 visible files — all ${walk.hiddenCount} walked ` +
+            'entries are hidden dot-files (e.g. content under a “.”-prefixed ' +
+            'folder). Rename them if they should appear in the vault.'
+          : 'Remote SSH: 0 files found on the remote. Check the profile’s ' +
+            'remotePath actually points at the vault (see console.log).',
         10_000,
       );
     } else if (walk.truncated) {
@@ -1154,7 +1159,19 @@ export default class RemoteSshPlugin extends Plugin {
     const localConfigDir = result.layout.configDir;
     const remoteConfigDir = this.app.vault.configDir; // ".obsidian"
     const remoteBase = normalizeRemotePath(profile.remotePath);
-    const toRemote = (p: string): string => (remoteBase === '.' ? p : `${remoteBase}/${p}`);
+    // Apply the SAME per-client redirect the shadow window's adapter will use
+    // (AdapterManager builds `new PathMapper(resolveClientId(settings), configDir)`),
+    // so the four now-per-device config files (app/appearance/core-plugins/hotkeys)
+    // are pulled from THIS client's `<configDir>/user/<id>/` subtree — NOT the dead
+    // shared identity path. Without this, pre-spawn read the shared path and
+    // clobbered the per-device config on every spawn, undoing the redirect.
+    // `PathMapper.toRemote` is identity for non-private paths (community-plugins.json,
+    // plugins/…), so those still round-trip shared, unchanged.
+    const mapper = new PathMapper(ConnectionManager.resolveClientId(this.settings), remoteConfigDir);
+    const toRemote = (p: string): string => {
+      const mapped = mapper.toRemote(p);
+      return remoteBase === '.' ? mapped : `${remoteBase}/${mapped}`;
+    };
 
     const client = new SftpClient(
       this.authResolver,
