@@ -111,11 +111,17 @@ export class BulkWalker {
    */
   private static readonly MAX_PAGES = 1_000;
 
-  async walk(rootPath: string = ''): Promise<BulkWalkResult> {
+  /**
+   * Walk `rootPath`. With `recursive` true (default) the whole subtree is
+   * returned; with `recursive` false only `rootPath`'s IMMEDIATE children are
+   * returned — the primitive the lazy per-folder loader uses to deepen one
+   * level on demand instead of pulling a huge deep tree at connect.
+   */
+  async walk(rootPath: string = '', recursive: boolean = true): Promise<BulkWalkResult> {
     const start = Date.now();
     if (this.canUseFastPath()) {
       try {
-        const result = await this.fastPath(rootPath);
+        const result = await this.fastPath(rootPath, recursive);
         return {
           ...result,
           walkMs: Date.now() - start,
@@ -127,7 +133,7 @@ export class BulkWalker {
       } catch (e) {
         const message = errorMessage(e);
         logger.warn(`BulkWalker: fs.walk failed (${message}); falling back to per-folder list`);
-        const fallback = await this.fallbackPath(rootPath);
+        const fallback = await this.fallbackPath(rootPath, recursive);
         return {
           ...fallback,
           walkMs: Date.now() - start,
@@ -136,7 +142,7 @@ export class BulkWalker {
       }
     }
 
-    const fallback = await this.fallbackPath(rootPath);
+    const fallback = await this.fallbackPath(rootPath, recursive);
     return {
       ...fallback,
       walkMs: Date.now() - start,
@@ -152,7 +158,7 @@ export class BulkWalker {
     return conn.info.capabilities.includes(BulkWalker.FAST_PATH_CAPABILITY);
   }
 
-  private async fastPath(rootPath: string): Promise<{
+  private async fastPath(rootPath: string, recursive: boolean): Promise<{
     entries: RemoteEntry[];
     source: 'rpc-walk';
     truncated: boolean;
@@ -167,7 +173,7 @@ export class BulkWalker {
     let offset = 0;
     let pages = 0;
     for (;;) {
-      const params: WalkParams = { path: rootPath, recursive: true };
+      const params: WalkParams = { path: rootPath, recursive };
       if (this.deps.maxEntries != null) params.maxEntries = this.deps.maxEntries;
       if (offset > 0) params.offset = offset;
       if (this.deps.ignoreDirs?.length) params.ignore = this.deps.ignoreDirs;
@@ -206,7 +212,7 @@ export class BulkWalker {
     }
   }
 
-  private async fallbackPath(rootPath: string): Promise<{
+  private async fallbackPath(rootPath: string, recursive: boolean): Promise<{
     entries: RemoteEntry[];
     source: 'fallback-list';
     truncated: false;
@@ -226,7 +232,7 @@ export class BulkWalker {
       for (const sub of listing.folders) {
         if (!sub) continue;
         entries.push({ path: sub, isDirectory: true, ctime: 0, mtime: 0, size: 0 });
-        queue.push(sub);
+        if (recursive) queue.push(sub);   // one level only when non-recursive
       }
       for (const file of listing.files) {
         if (!file) continue;

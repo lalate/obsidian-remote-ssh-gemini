@@ -152,6 +152,14 @@ export interface PluginSettings {
    */
   daemonBinarySha?: string;
   /**
+   * Load the remote tree ONE folder level at a time (deepen on File-Explorer
+   * expand) instead of walking + materialising the whole tree at connect.
+   * Default true — essential for large, deep, dir-heavy vaults where the eager
+   * build freezes the window. Set false to restore the full eager walk (fine
+   * for small vaults; makes search/graph see the whole tree immediately).
+   */
+  lazyFolderLoad?: boolean;
+  /**
    * #149 — terminal pane preferences. All optional; the View applies
    * sensible defaults when missing. `terminalShell` overrides the
    * remote login shell (e.g. `/usr/bin/zsh -l`); blank/missing means
