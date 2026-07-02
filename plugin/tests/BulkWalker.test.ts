@@ -69,16 +69,17 @@ describe('BulkWalker', () => {
     expect(result.entries[2]).toMatchObject({ path: 'README.md',    isDirectory: false, mtime: 3000, size: 42 });
   });
 
-  it('hides dot-prefixed entries (except the vault config dir) from the result', async () => {
+  it('hides ALL dot-prefixed entries (incl the config dir) and reports hiddenCount', async () => {
     const adapter = makeAdapter({});
     const { rpc } = makeRpc(['fs.walk'], {
       entries: [
-        { path: 'Notes',              type: 'folder', mtime: 1, size: 0 },
-        { path: 'Notes/keep.md',      type: 'file',   mtime: 2, size: 1 },
-        { path: '.julia',             type: 'folder', mtime: 3, size: 0 },
-        { path: '.julia/registry.md', type: 'file',   mtime: 4, size: 1 },
-        { path: 'Notes/.secret.md',   type: 'file',   mtime: 5, size: 1 },
-        { path: '.obsidian/app.json', type: 'file',   mtime: 6, size: 1 },
+        { path: 'Notes',                     type: 'folder', mtime: 1, size: 0 },
+        { path: 'Notes/keep.md',             type: 'file',   mtime: 2, size: 1 },
+        { path: '.julia',                    type: 'folder', mtime: 3, size: 0 },
+        { path: '.julia/registry.md',        type: 'file',   mtime: 4, size: 1 },
+        { path: 'Notes/.secret.md',          type: 'file',   mtime: 5, size: 1 },
+        { path: '.obsidian/app.json',        type: 'file',   mtime: 6, size: 1 },
+        { path: '.obsidian/user/box/app.json', type: 'file', mtime: 7, size: 1 },
       ],
       truncated: false,
     });
@@ -86,11 +87,28 @@ describe('BulkWalker', () => {
 
     const result = await walker.walk('');
 
-    // `.julia` + its subtree and a nested dotfile are dropped; the vault
-    // config dir is the one dot-name kept (the sync layer owns it).
-    expect(result.entries.map(e => e.path)).toEqual([
-      'Notes', 'Notes/keep.md', '.obsidian/app.json',
-    ]);
+    // `.julia` + its subtree, a nested dotfile, AND the whole `.obsidian`
+    // config dir (incl any client's per-device `user/<id>/` subtree) are
+    // dropped — config is loaded off the local disk, never from this model.
+    expect(result.entries.map(e => e.path)).toEqual(['Notes', 'Notes/keep.md']);
+    expect(result.hiddenCount).toBe(5);
+  });
+
+  it('applies the same dotfile filter on the fallback (adapter.list) path', async () => {
+    const adapter = makeAdapter({
+      '':      { folders: ['Notes', '.git'], files: ['README.md'] },
+      'Notes': { folders: [],                files: ['Notes/keep.md', 'Notes/.secret.md'] },
+      '.git':  { folders: [],                files: ['.git/config'] },
+    });
+    const walker = new BulkWalker({ adapter /* no rpcConnection → fallback */ });
+
+    const result = await walker.walk('');
+
+    expect(result.source).toBe('fallback-list');
+    // `.git` (+ its file) and the nested `.secret.md` are dropped, exactly
+    // as on the fast path — the filter lives in walk(), shared by both.
+    expect(result.entries.map(e => e.path).sort()).toEqual(['Notes', 'Notes/keep.md', 'README.md']);
+    expect(result.hiddenCount).toBe(3);
   });
 
   it('passes through the maxEntries override when set', async () => {

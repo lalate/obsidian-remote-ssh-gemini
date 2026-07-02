@@ -136,6 +136,17 @@ describe('PathMapper.toRemote / toVault', () => {
     expect(other.toRemote('.obsidian/workspace.json'))
       .toBe('.obsidian/user/SomeBox/workspace.json');
   });
+
+  it('isolates per-device settings by client id (no cross-machine clobber)', () => {
+    // The whole point of making app.json per-device: two machines writing
+    // "the same" config file land on DIFFERENT remote paths, so neither can
+    // trip the other's write-precondition (the perpetual conflict fixed here).
+    const a = new PathMapper('host-a');
+    const b = new PathMapper('host-b');
+    expect(a.toRemote('.obsidian/app.json')).toBe('.obsidian/user/host-a/app.json');
+    expect(b.toRemote('.obsidian/app.json')).toBe('.obsidian/user/host-b/app.json');
+    expect(a.toRemote('.obsidian/app.json')).not.toBe(b.toRemote('.obsidian/app.json'));
+  });
 });
 
 describe('PathMapper.resolveListing', () => {
