@@ -472,18 +472,21 @@ export default class RemoteSshPlugin extends Plugin {
         const ver  = this.conn.rpcConnection?.info.version ?? '?';
         rpcSummary = ` — daemon ${ver}, ${caps} capabilities`;
       } catch (e) {
-        if (e instanceof DaemonUnavailableError) {
-          // Unsupported remote arch, or the user declined the daemon
-          // download → keep the session on SFTP. Vault read/write/sync
-          // still work; daemon-only features (fast walk, thumbnails, live
-          // watch, image/PDF rendering) are unavailable.
-          logger.warn(`RPC unavailable, falling back to SFTP: ${e.message}`);
-          new Notice('Remote SSH: daemon unavailable — connected via SFTP (reduced features).');
-          transport = 'sftp';
-        } else {
+        // The daemon is an optimization layer, not a requirement. Most
+        // failures to bring it up degrade to SFTP rather than failing the
+        // whole connect — a hard failure skips populate and strands the user
+        // on an EMPTY vault. SFTP shares the same live SSH channel, so
+        // read/write/sync still work (minus daemon-only features: fast walk,
+        // thumbnails, live watch, image/PDF rendering).
+        //
+        // EXCEPTION: a daemon binary that fails integrity verification
+        // (checksum mismatch / bad manifest) fails LOUD and does NOT
+        // downgrade — silently falling back could mask a tampered or corrupt
+        // binary (supply-chain safety, #406).
+        if (e instanceof DaemonVerificationError) {
           this.setState(SyncState.ERROR);
           const { notice, classified } = classifyToNotice(e);
-          logger.error(`RPC startup failed: ${classified.title}`, {
+          logger.error(`RPC startup failed (verification): ${classified.title}`, {
             category: classified.category, code: classified.code,
             original: classified.original.message, profileId: profile.id,
           });
@@ -491,6 +494,22 @@ export default class RemoteSshPlugin extends Plugin {
           try { await this.conn.client.disconnect(); } catch { /* ignore */ }
           return;
         }
+        if (e instanceof DaemonUnavailableError) {
+          // Expected: unsupported remote arch, or the user declined download.
+          logger.warn(`RPC unavailable, falling back to SFTP: ${e.message}`);
+          new Notice('Remote SSH: daemon unavailable — connected via SFTP (reduced features).');
+        } else {
+          // Unexpected daemon-start failure (deploy / token-write timeout /
+          // handshake mismatch). Log the classified cause for diagnosis, but
+          // still degrade to SFTP instead of leaving the vault empty.
+          const { classified } = classifyToNotice(e);
+          logger.warn(`RPC startup failed, falling back to SFTP: ${classified.title}`, {
+            category: classified.category, code: classified.code,
+            original: classified.original.message, profileId: profile.id,
+          });
+          new Notice('Remote SSH: daemon failed to start — connected via SFTP (reduced features). See console.log.');
+        }
+        transport = 'sftp';
       }
     }
 
