@@ -44,6 +44,7 @@ import {
   ensureDaemonBinary as downloadDaemonBinary,
   resolveDaemonConsent,
   DaemonVerificationError,
+  binaryFilename,
 } from './transport/DaemonDownloader';
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
@@ -1288,7 +1289,14 @@ export default class RemoteSshPlugin extends Plugin {
   private locateDaemonBinary(): string | null {
     const pluginDir = this.pluginDir();
     if (!pluginDir) return null;
-    const candidate = path.join(pluginDir, 'server-bin', 'obsidian-remote-server-linux-amd64');
+    const serverBin = path.join(pluginDir, 'server-bin');
+    // Only treat a staged binary as a genuine DEV build when dev-install
+    // marked it (`.dev-daemon`). Without this, a *downloaded* binary at the
+    // same filename would masquerade as a dev build and bypass the version /
+    // sha refresh in ensureDaemonBinary — the exact reason a plugin upgrade
+    // kept re-deploying a stale (dynamically-linked) daemon.
+    if (!fs.existsSync(path.join(serverBin, '.dev-daemon'))) return null;
+    const candidate = path.join(serverBin, 'obsidian-remote-server-linux-amd64');
     return fs.existsSync(candidate) ? candidate : null;
   }
 
@@ -1363,6 +1371,17 @@ export default class RemoteSshPlugin extends Plugin {
       logger.warn(`ensureDaemonBinary: repaired a stale server-bin link at ${cacheDir}`);
     }
 
+    // Fast path: the cached binary was already validated for THIS plugin
+    // version, so reuse it without a GitHub round-trip (and it keeps working
+    // offline). A version mismatch or absence falls through to the sha
+    // re-check / download below, so a plugin upgrade always refreshes a
+    // changed daemon and a legacy/unmarked binary is re-validated.
+    const dest = path.join(cacheDir, binaryFilename(target));
+    if (this.settings.daemonBinaryVersion === this.manifest.version && fs.existsSync(dest)) {
+      logger.info(`ensureDaemonBinary: cached daemon already validated for ${this.manifest.version}; reusing`);
+      return dest;
+    }
+
     // Consent gate (asked once; the decision — accept OR decline — is
     // persisted so a decline doesn't re-prompt on every connect / restart).
     const consented = await resolveDaemonConsent(
@@ -1381,11 +1400,14 @@ export default class RemoteSshPlugin extends Plugin {
           fetchBinary: async (url) => new Uint8Array((await requestUrl({ url })).arrayBuffer),
           fetchText: async (url) => (await requestUrl({ url })).text,
           cacheDir,
-          cacheHit: (abs) => fs.existsSync(abs),
+          readCached: async (abs) => {
+            try { return new Uint8Array(await fs.promises.readFile(abs)); }
+            catch { return null; }
+          },
           writeExecutable: async (abs, bytes) => {
             // Atomic: write a temp sibling, chmod, then rename. A crash
-            // mid-write can't then leave a torn binary that a later cacheHit
-            // would hand back unverified (#406 review).
+            // mid-write can't then leave a torn binary that a later sha
+            // re-check would hand back unverified (#406 review).
             await fs.promises.mkdir(path.dirname(abs), { recursive: true });
             const tmp = `${abs}.${process.pid}.tmp`;
             await fs.promises.writeFile(tmp, bytes);
@@ -1397,7 +1419,11 @@ export default class RemoteSshPlugin extends Plugin {
         },
         target,
       );
-      new Notice(`Remote SSH: downloaded daemon for ${target.os}/${target.arch}.`);
+      // Record the version this cached binary is validated for, so the next
+      // same-version connect takes the network-free fast path above.
+      this.settings.daemonBinaryVersion = this.manifest.version;
+      await this.saveSettings();
+      new Notice(`Remote SSH: daemon ready for ${target.os}/${target.arch}.`);
       return local;
     } catch (e) {
       // A sha256 mismatch / malformed manifest (DaemonVerificationError) is a

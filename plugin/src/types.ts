@@ -135,6 +135,15 @@ export interface PluginSettings {
    */
   daemonDownloadConsented?: boolean;
   /**
+   * Plugin version the currently-cached daemon binary was validated for.
+   * The connect fast-path reuses the cached binary without hitting GitHub
+   * when this equals the running `manifest.version`; a mismatch (or absence)
+   * forces a sha re-check against the release manifest, so a plugin upgrade
+   * always refreshes a *changed* daemon and never re-downloads an unchanged
+   * one. Written after each successful (re)provision.
+   */
+  daemonBinaryVersion?: string;
+  /**
    * #149 — terminal pane preferences. All optional; the View applies
    * sensible defaults when missing. `terminalShell` overrides the
    * remote login shell (e.g. `/usr/bin/zsh -l`); blank/missing means
