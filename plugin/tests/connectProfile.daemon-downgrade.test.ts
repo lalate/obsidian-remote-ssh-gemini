@@ -60,6 +60,22 @@ describe('connectProfile — RPC daemon failure handling (#399 / #406)', () => {
     expect(recordedNotices().some((n) => /SFTP/i.test(n))).toBe(true);
   });
 
+  it('downgrades to SFTP (not a hard fail) when the daemon deploy/startup fails, e.g. token timeout', async () => {
+    // Field regression: a daemon that deploys but never writes its token
+    // used to hard-fail the connect → populate skipped → EMPTY vault. A
+    // generic (non-verification) daemon-start failure must degrade to SFTP.
+    const { plugin, conn, disconnect } = makePlugin(
+      new Error('ServerDeployer: daemon did not write /home/u/.obsidian-remote/token within 5000ms'),
+    );
+
+    await plugin.connectProfile(rpcProfile);
+
+    expect(conn.connectSsh).toHaveBeenCalledWith(rpcProfile);
+    expect(plugin.isConnected()).toBe(true);                   // reached CONNECTED → populate runs
+    expect(disconnect).not.toHaveBeenCalled();                 // SSH kept for SFTP
+    expect(recordedNotices().some((n) => /SFTP/i.test(n))).toBe(true);
+  });
+
   it('fails LOUD (no silent SFTP downgrade) when daemon verification fails', async () => {
     const { plugin, conn, disconnect } = makePlugin(new DaemonVerificationError('sha256 mismatch'));
 
