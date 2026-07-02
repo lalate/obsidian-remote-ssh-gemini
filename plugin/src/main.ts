@@ -939,7 +939,10 @@ export default class RemoteSshPlugin extends Plugin {
     );
 
     const builder = new VaultModelBuilder(this.app.vault, { TFile, TFolder });
-    const result = await builder.build(walk.entries);
+    // Chunked so a large vault (tens of thousands of entries) fills the File
+    // Explorer progressively instead of freezing the window while every entry
+    // is materialised + `create`-triggered in a single JS tick.
+    const result = await builder.buildChunked(walk.entries);
     const totalMs = Date.now() - start;
 
     const summary =
