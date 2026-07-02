@@ -165,6 +165,23 @@ jobs:
       - name: Build cross-platform daemon binaries
         run: make -C server cross
 
+      - name: Assert the linux/amd64 daemon is statically linked (glibc-independent)
+        # The host-native linux/amd64 target is the only one Go builds with CGO
+        # auto-ENABLED; a dynamically-linked build dies on older hosts with
+        # "GLIBC_x.y not found" — the daemon then never writes its token, RPC
+        # times out, and the client silently drops to SFTP. Fail the release
+        # loudly if a CGO regression sneaks back in (server/Makefile sets
+        # CGO_ENABLED=0 to keep it static).
+        run: |
+          set -euo pipefail
+          f=server/dist/obsidian-remote-server-linux-amd64
+          info=$(file "$f")
+          echo "$info"
+          if echo "$info" | grep -q "dynamically linked"; then
+            echo "::error::$f is dynamically linked — build with CGO_ENABLED=0 (server/Makefile)"
+            exit 1
+          fi
+
       - name: Build daemon-manifest.json (sha256 set)
         id: manifest
         working-directory: server/dist
