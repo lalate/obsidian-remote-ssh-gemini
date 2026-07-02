@@ -44,7 +44,9 @@ import {
   ensureDaemonBinary as downloadDaemonBinary,
   resolveDaemonConsent,
   DaemonVerificationError,
+  binaryFilename,
 } from './transport/DaemonDownloader';
+import { createHash } from 'crypto';
 import { TransferTracker } from "./util/TransferTracker";
 import { LargeTransferBar } from "./ui/LargeTransferBar";
 import { OnboardingModal } from "./ui/OnboardingModal";
@@ -1288,8 +1290,30 @@ export default class RemoteSshPlugin extends Plugin {
   private locateDaemonBinary(): string | null {
     const pluginDir = this.pluginDir();
     if (!pluginDir) return null;
-    const candidate = path.join(pluginDir, 'server-bin', 'obsidian-remote-server-linux-amd64');
+    const serverBin = path.join(pluginDir, 'server-bin');
+    // Only treat a staged binary as a genuine DEV build when dev-install
+    // marked it (`.dev-daemon`). Without this, a *downloaded* binary at the
+    // same filename would masquerade as a dev build and bypass the version /
+    // sha refresh in ensureDaemonBinary — the exact reason a plugin upgrade
+    // kept re-deploying a stale (dynamically-linked) daemon.
+    if (!fs.existsSync(path.join(serverBin, '.dev-daemon'))) return null;
+    const candidate = path.join(serverBin, 'obsidian-remote-server-linux-amd64');
     return fs.existsSync(candidate) ? candidate : null;
+  }
+
+  /**
+   * sha256 (hex) of a cached daemon binary, or null if it can't be read.
+   * Used by the connect fast-path to re-validate the cached bytes without a
+   * network round-trip. Reads the whole file (a daemon binary is a few MB) —
+   * cheap next to the SSH connect it gates.
+   */
+  private async sha256File(abs: string): Promise<string | null> {
+    try {
+      const buf = await fs.promises.readFile(abs);
+      return createHash('sha256').update(buf).digest('hex');
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1363,6 +1387,23 @@ export default class RemoteSshPlugin extends Plugin {
       logger.warn(`ensureDaemonBinary: repaired a stale server-bin link at ${cacheDir}`);
     }
 
+    // Fast path: reuse the cached binary without a GitHub round-trip when it
+    // was provisioned for THIS plugin version AND its bytes still hash to the
+    // recorded sha. The sha re-check upholds the "never deploy an unverified
+    // binary" invariant even here — a file corrupted/truncated after its
+    // verified download is caught (network-free) and re-fetched below. A
+    // version mismatch, missing marker, or sha mismatch falls through to the
+    // manifest sha re-check / download.
+    const dest = path.join(cacheDir, binaryFilename(target));
+    if (
+      this.settings.daemonBinaryVersion === this.manifest.version &&
+      this.settings.daemonBinarySha &&
+      (await this.sha256File(dest)) === this.settings.daemonBinarySha
+    ) {
+      logger.info(`ensureDaemonBinary: cached daemon validated for ${this.manifest.version}; reusing`);
+      return dest;
+    }
+
     // Consent gate (asked once; the decision — accept OR decline — is
     // persisted so a decline doesn't re-prompt on every connect / restart).
     const consented = await resolveDaemonConsent(
@@ -1381,11 +1422,14 @@ export default class RemoteSshPlugin extends Plugin {
           fetchBinary: async (url) => new Uint8Array((await requestUrl({ url })).arrayBuffer),
           fetchText: async (url) => (await requestUrl({ url })).text,
           cacheDir,
-          cacheHit: (abs) => fs.existsSync(abs),
+          readCached: async (abs) => {
+            try { return new Uint8Array(await fs.promises.readFile(abs)); }
+            catch { return null; }
+          },
           writeExecutable: async (abs, bytes) => {
             // Atomic: write a temp sibling, chmod, then rename. A crash
-            // mid-write can't then leave a torn binary that a later cacheHit
-            // would hand back unverified (#406 review).
+            // mid-write can't then leave a torn binary that a later sha
+            // re-check would hand back unverified (#406 review).
             await fs.promises.mkdir(path.dirname(abs), { recursive: true });
             const tmp = `${abs}.${process.pid}.tmp`;
             await fs.promises.writeFile(tmp, bytes);
@@ -1397,7 +1441,22 @@ export default class RemoteSshPlugin extends Plugin {
         },
         target,
       );
-      new Notice(`Remote SSH: downloaded daemon for ${target.os}/${target.arch}.`);
+      // Record the version + sha this cached binary is validated for, so the
+      // next same-version connect takes the network-free fast path above.
+      // Non-fatal: the binary is verified on disk, so a marker-persist failure
+      // must NOT be reported as a download failure — we just re-verify on the
+      // next connect.
+      try {
+        this.settings.daemonBinaryVersion = this.manifest.version;
+        this.settings.daemonBinarySha = (await this.sha256File(local)) ?? undefined;
+        await this.saveSettings();
+      } catch (e) {
+        logger.warn(
+          `ensureDaemonBinary: daemon ready but failed to persist cache marker ` +
+          `(${errorMessage(e)}); will re-verify on the next connect`,
+        );
+      }
+      new Notice(`Remote SSH: daemon ready for ${target.os}/${target.arch}.`);
       return local;
     } catch (e) {
       // A sha256 mismatch / malformed manifest (DaemonVerificationError) is a
