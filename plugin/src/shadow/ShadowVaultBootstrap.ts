@@ -1199,7 +1199,14 @@ export class ShadowVaultBootstrap {
     for (const d of sharedDirs) {
       const src = path.join(this.sourcePluginDir, d);
       const dst = path.join(pluginDir, d);
-      if (!fs.existsSync(src)) continue;
+      // Only mirror a REAL source dir (a local dev build of the daemon). A
+      // junction/symlink source is NOT propagated: it would chain the shadow
+      // to another vault's server-bin and dangle if that vault is deleted,
+      // breaking the per-shadow daemon download (the binary is per-arch,
+      // fetched at connect time — not a shared build artifact like main.js).
+      let srcStat: fs.Stats;
+      try { srcStat = fs.lstatSync(src); } catch { continue; }  // absent → skip
+      if (srcStat.isSymbolicLink() || !srcStat.isDirectory()) continue;
       // Use lstat + unlink for symlinks vs rmSync recursive for real
       // dirs so we never accidentally recurse through a link.
       try {
