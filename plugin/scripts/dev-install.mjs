@@ -70,9 +70,10 @@ if (fs.existsSync(serverBinDir)) {
     console.log(`copied server-bin/${f} -> ${dst}`);
   }
   // Mark this as a DEV-staged daemon so the plugin trusts it over a
-  // downloaded binary. locateDaemonBinary requires this marker; without it a
-  // downloaded binary at the same filename would be re-validated (sha) and
-  // replaced on a version bump instead of being treated as a dev build.
+  // downloaded binary: locateDaemonBinary returns a staged binary only when
+  // this marker is present. Without it, a *downloaded* binary at the same
+  // filename would masquerade as a dev build and skip the version/sha
+  // re-check (so a changed daemon would never get refreshed).
   fs.writeFileSync(path.join(binTarget, '.dev-daemon'), '');
   console.log('wrote server-bin/.dev-daemon marker');
 } else {

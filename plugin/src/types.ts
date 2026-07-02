@@ -144,6 +144,14 @@ export interface PluginSettings {
    */
   daemonBinaryVersion?: string;
   /**
+   * sha256 (hex) of the currently-cached daemon binary. The connect fast-path
+   * re-hashes the cached file and reuses it only when this still matches — so
+   * a binary corrupted/truncated after its verified download is detected
+   * (network-free) and re-fetched instead of deployed. Paired with
+   * `daemonBinaryVersion`; both are written together after a provision.
+   */
+  daemonBinarySha?: string;
+  /**
    * #149 — terminal pane preferences. All optional; the View applies
    * sensible defaults when missing. `terminalShell` overrides the
    * remote login shell (e.g. `/usr/bin/zsh -l`); blank/missing means
