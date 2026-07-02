@@ -39,6 +39,10 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   reconnectMaxRetries: 5,
   clientId: '',
   userName: '',
+  // Deepen the remote tree one folder level at a time on File-Explorer expand,
+  // rather than eager-walking the whole (potentially huge, deep) tree at
+  // connect. Default on; safe to turn off for small vaults.
+  lazyFolderLoad: true,
   // Phase 4 marker for shadow vaults; null on a normal vault. Only
   // `ShadowVaultBootstrap` writes a non-null value.
   autoConnectProfileId: null,

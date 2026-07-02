@@ -24,6 +24,7 @@ import { classifyToNotice } from './transport/errorTaxonomy';
 import { VaultModelBuilder } from './vault/VaultModelBuilder';
 import { FsChangeListener } from './vault/FsChangeListener';
 import { BulkWalker } from './vault/BulkWalker';
+import { LazyFolderLoader } from './vault/LazyFolderLoader';
 import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
@@ -843,6 +844,9 @@ export default class RemoteSshPlugin extends Plugin {
     this.sharedConfigWatcher?.stop();
     this.sharedConfigWatcher = null;
     this.adapterMgr.restore();
+    // Drop lazy-load state — the walker it captured is now disconnected. A
+    // stray File-Explorer click after this finds a null loader and no-ops.
+    this.lazyLoader = null;
     await this.conn.disconnectTransport();
     this.setState(SyncState.IDLE);
     if (this.settings.activeProfileId !== null) {
@@ -884,6 +888,43 @@ export default class RemoteSshPlugin extends Plugin {
     }
   }
 
+  /** Lazy per-folder loader (deepen-on-expand); null until a lazy connect. */
+  private lazyLoader: LazyFolderLoader | null = null;
+  private lazyExpandHookInstalled = false;
+
+  /** A fresh BulkWalker bound to the current session's transport + ignore list. */
+  private makeWalker(): BulkWalker {
+    return new BulkWalker({
+      adapter: this.app.vault.adapter,
+      rpcConnection: this.conn.rpcConnection ?? undefined,
+      // Older profiles have no walkIgnoreDirs → fall back to the sensible
+      // defaults so existing users immediately benefit. An explicit empty
+      // array (user cleared it) means "ignore nothing" and is respected.
+      ignoreDirs: this.conn.activeProfile?.walkIgnoreDirs ?? [...DEFAULT_WALK_IGNORE_DIRS],
+    });
+  }
+
+  /**
+   * One delegated, capture-phase click listener that deepens a folder the
+   * first time it's expanded in File Explorer. Obsidian renders folder
+   * children from the in-memory model, does NOT re-list on expand, and exposes
+   * no public folder-expand event — hence the DOM hook on `.nav-folder-title`
+   * (which carries the folder's `data-path`; verified in a real-Obsidian
+   * spike). Idempotent per folder via LazyFolderLoader, so a click on an
+   * already-loaded folder (or a collapse) is a cheap no-op. Installed once;
+   * `registerDomEvent` tears it down on unload.
+   */
+  private installLazyExpandHook(): void {
+    if (this.lazyExpandHookInstalled) return;
+    this.lazyExpandHookInstalled = true;
+    this.registerDomEvent(activeDocument, 'click', (evt) => {
+      const title = (evt.target as HTMLElement | null)?.closest?.('.nav-folder-title');
+      const path = title?.getAttribute('data-path');
+      if (path == null) return;
+      void this.lazyLoader?.loadFolder(path);
+    }, { capture: true });
+  }
+
   /**
    * POC for the shadow-vault architecture (see
    * docs/en/architecture/shadow-vault.md, Phase 1): walk the patched
@@ -921,29 +962,36 @@ export default class RemoteSshPlugin extends Plugin {
     // mtime+size per entry) when the active session is RPC AND the
     // daemon advertises the capability. Otherwise BulkWalker
     // transparently runs the legacy BFS via the patched adapter.
-    const walker = new BulkWalker({
-      adapter: this.app.vault.adapter,
-      rpcConnection: this.conn.rpcConnection ?? undefined,
-      // Older profiles have no walkIgnoreDirs → fall back to the
-      // sensible defaults so existing users immediately benefit. An
-      // explicit empty array (user cleared it) means "ignore nothing"
-      // and is respected (?? only fills null/undefined).
-      ignoreDirs: this.conn.activeProfile?.walkIgnoreDirs
-        ?? [...DEFAULT_WALK_IGNORE_DIRS],
-    });
-    const walk = await walker.walk('');
+    const walker = this.makeWalker();
+    // Lazy mode (default): walk only the ROOT level and deepen each folder on
+    // first expand, so a deep, dir-heavy vault doesn't pull + materialise tens
+    // of thousands of entries at connect. `walkIgnoreDirs` is applied per level
+    // either way. Set `lazyFolderLoad: false` to restore the full eager walk.
+    const lazy = this.settings.lazyFolderLoad !== false;
+    const walk = await walker.walk('', !lazy);
     logger.info(
       `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
-      `in ${walk.walkMs}ms (pages=${walk.pages})` +
+      `in ${walk.walkMs}ms (pages=${walk.pages})${lazy ? ' [lazy: root level]' : ''}` +
       (walk.fastPathError ? ` (fast-path fallback: ${walk.fastPathError})` : ''),
     );
 
     const builder = new VaultModelBuilder(this.app.vault, { TFile, TFolder });
-    // Chunked so a large vault (tens of thousands of entries) fills the File
-    // Explorer progressively instead of freezing the window while every entry
-    // is materialised + `create`-triggered in a single JS tick.
+    // Chunked so even one level (or a full eager walk) fills the File Explorer
+    // progressively instead of freezing the window while every entry is
+    // materialised + `create`-triggered in a single JS tick.
     const result = await builder.buildChunked(walk.entries);
     const totalMs = Date.now() - start;
+
+    if (lazy) {
+      // Obsidian renders folders from the in-memory model and does NOT re-list
+      // on expand, so deepen-on-expand is driven by a File-Explorer click hook.
+      this.lazyLoader = new LazyFolderLoader(
+        () => this.makeWalker(),
+        () => new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+      );
+      this.lazyLoader.markLoaded('');
+      this.installLazyExpandHook();
+    }
 
     const summary =
       `${result.filesAdded}f + ${result.foldersAdded}d built, ` +
