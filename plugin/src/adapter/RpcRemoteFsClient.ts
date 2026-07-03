@@ -126,6 +126,41 @@ export class RpcRemoteFsClient implements RemoteFsClient {
       this.rpc.call('fs.copy', { srcPath, destPath }),
     );
   }
+
+  // ─── extension / CLI (mobile relay) ──────────────────────────────────
+  // These methods are not part of the standard daemon protocol, so we
+  // use the RpcClient's underlying call/notification mechanism directly.
+
+  async invokeExtension(params: {
+    tool: string;
+    args: Record<string, unknown>;
+    workingDir?: string;
+    persist?: boolean;
+  }): Promise<{ invocationId: string }> {
+    const result = await (this.rpc as { call(m: string, p: unknown): Promise<unknown> }).call(
+      'extension.invoke',
+      params,
+    );
+    return result as { invocationId: string };
+  }
+
+  onCliOutputBatch(
+    cb: (params: { invocationId: string; items: Array<{ stream: string; data: string }> }) => void,
+  ): () => void {
+    return (this.rpc as { onNotification(m: string, h: (p: unknown) => void): () => void }).onNotification(
+      'cli.outputBatch',
+      cb as (params: unknown) => void,
+    );
+  }
+
+  onCliDone(
+    cb: (params: { invocationId: string; exitCode: number }) => void,
+  ): () => void {
+    return (this.rpc as { onNotification(m: string, h: (p: unknown) => void): () => void }).onNotification(
+      'cli.done',
+      cb as (params: unknown) => void,
+    );
+  }
 }
 
 // ─── DTO converters ──────────────────────────────────────────────────────

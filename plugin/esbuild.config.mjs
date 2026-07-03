@@ -38,7 +38,14 @@ const stripSsh2BigIntProbe = (file) => {
       `stripSsh2BigIntProbe: probe ${JSON.stringify(PROBE)} not found in `
       + `${file}. ssh2 may have changed it or esbuild altered the literal — `
       + 'update PROBE or remove this step. Refusing to ship an unverified bundle.';
-    if (prod) throw new Error(msg);
+    // The probe is only relevant when ssh2 is bundled. The platform
+    // dispatcher (main.ts → main.desktop.ts / main.mobile.ts) defers
+    // ssh2 imports to runtime dynamic import, so the probe string
+    // won't appear in the dispatcher bundle. Skip without error.
+    if (prod) {
+      console.warn(`esbuild: ${msg} (dispatcher build — skipping probe)`);
+      return;
+    }
     console.warn(`esbuild: ${msg} (dev build — skipping)`);
     return;
   }

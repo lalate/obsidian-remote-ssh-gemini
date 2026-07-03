@@ -302,6 +302,34 @@ export type JsonRpcMessage =
   | JsonRpcError
   | JsonRpcNotification;
 
+// ─── extension / CLI methods (mobile relay) ────────────────────────────────
+
+export interface ExtensionInvokeParams {
+  /** Tool/command name, e.g. "gemini", "claude". */
+  tool: string;
+  /** Arguments passed to the tool. */
+  args: Record<string, unknown>;
+  /** Working directory on the remote. */
+  workingDir?: string;
+  /** Whether to persist the invocation session. */
+  persist?: boolean;
+}
+
+export interface ExtensionInvokeResult {
+  /** Unique id for this invocation session. */
+  invocationId: string;
+}
+
+export interface CliOutputBatchParams {
+  invocationId: string;
+  items: Array<{ stream: string; data: string }>;
+}
+
+export interface CliDoneParams {
+  invocationId: string;
+  exitCode: number;
+}
+
 // ─── error codes ─────────────────────────────────────────────────────────────
 
 export const ErrorCode = {

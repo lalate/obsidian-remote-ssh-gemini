@@ -25,6 +25,12 @@ plugin/e2e-results/
 plugin/e2e/demo-screenshots/
 plugin/test-results/
 
+# OpenCode session state — per-developer, not project source.
+.omo/
+
+# Go build artifacts
+server/bin/
+
 # Docker test environment artefacts: keypair generated on first run,
 # bind-mounted vault contents written by integration tests.
 docker/keys/id_test

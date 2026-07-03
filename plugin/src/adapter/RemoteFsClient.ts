@@ -52,6 +52,33 @@ export interface RemoteFsClient {
   rmdir(path: string, recursive?: boolean): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   copy(srcPath: string, destPath: string): Promise<void>;
+
+  // ─── optional RPC-only methods (mobile relay) ──────────────────────────
+
+  /**
+   * Partial binary read. Only supported on RPC transport.
+   * Throws if called on SFTP transport.
+   */
+  readBinaryRange?(
+    path: string,
+    offset: number,
+    length: number,
+    expectedMtime?: number,
+  ): Promise<{ data: Buffer; mtime: number; size: number }>;
+
+  /** Invoke a remote extension/tool (RPC-only). */
+  invokeExtension?(params: {
+    tool: string;
+    args: Record<string, unknown>;
+    workingDir?: string;
+    persist?: boolean;
+  }): Promise<{ invocationId: string }>;
+
+  /** Register a handler for CLI output batch notifications. */
+  onCliOutputBatch?(cb: (params: { invocationId: string; items: Array<{ stream: string; data: string }> }) => void): () => void;
+
+  /** Register a handler for CLI completion notifications. */
+  onCliDone?(cb: (params: { invocationId: string; exitCode: number }) => void): () => void;
 }
 
 /** Called with `{unexpected:true}` when the connection dropped without a clean disconnect. */

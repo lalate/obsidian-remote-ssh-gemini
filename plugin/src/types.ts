@@ -7,7 +7,7 @@ export type AuthMethod = 'password' | 'privateKey' | 'agent';
  * opt in to `'rpc'` per profile when they want auto-deploy of the
  * daemon at connect time.
  */
-export type RemoteTransport = 'sftp' | 'rpc';
+export type RemoteTransport = 'sftp' | 'rpc' | 'relay-rpc';
 
 export enum SyncState {
   IDLE         = 'idle',
@@ -83,6 +83,17 @@ export interface SshProfile {
    * list via `DEFAULT_PROFILE`.
    */
   walkIgnoreDirs?: string[];
+
+  // ─── mobile relay properties ──────────────────────────────────────────
+
+  /** WSS-Relay base URL, e.g. "wss://relay.example.com/relay". */
+  relayBaseUrl?: string;
+  /** Auth token for the relay endpoint. */
+  relayAuthToken?: string;
+  /** RPC username for relay-authenticated sessions. */
+  relayRpcUsername?: string;
+  /** RPC password for relay-authenticated sessions. */
+  relayRpcPassword?: string;
 }
 
 export interface PluginSettings {

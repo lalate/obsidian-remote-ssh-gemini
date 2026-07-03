@@ -2,6 +2,7 @@ VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo "0.0
 LDFLAGS := -X main.Version=$(VERSION)
 
 CMD       := ./cmd/obsidian-remote-server
+CMD_RELAY := ./cmd/obsidian-remote-relay-health
 BIN_DIR   := bin
 DIST_DIR  := dist
 
@@ -20,6 +21,7 @@ export CGO_ENABLED := 0
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/obsidian-remote-server $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/obsidian-remote-relay-health $(CMD_RELAY)
 
 cross:
 	mkdir -p $(DIST_DIR)
@@ -27,6 +29,8 @@ cross:
 	GOOS=linux  GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/obsidian-remote-server-linux-arm64  $(CMD)
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/obsidian-remote-server-darwin-amd64 $(CMD)
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/obsidian-remote-server-darwin-arm64 $(CMD)
+	GOOS=linux  GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/obsidian-remote-relay-health-linux-amd64  $(CMD_RELAY)
+	GOOS=linux  GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/obsidian-remote-relay-health-linux-arm64  $(CMD_RELAY)
 
 test:
 	go test ./...
