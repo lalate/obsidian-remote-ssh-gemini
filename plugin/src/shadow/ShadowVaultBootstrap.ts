@@ -52,6 +52,14 @@ export interface BootstrapResult {
   registryId: string;
   /** True if the vault entry was newly added (false = was already registered). */
   registryCreated: boolean;
+  /**
+   * True if an existing shadow dir (located by profile id, under any
+   * prior naming scheme) was renamed to the current `<name>--<tail>` on
+   * this bootstrap. Like a newly-registered vault, the renamed path isn't
+   * in the running Obsidian's cached vault list, so the connect flow
+   * surfaces the one-time "restart Obsidian" notice.
+   */
+  migrated: boolean;
   /** How the plugin source landed in the shadow vault. */
   pluginInstallMethod: 'symlink' | 'copy';
 }
@@ -84,8 +92,8 @@ export interface SharedConfigWriter {
  *
  * Layout:
  *
- *   <baseDir>/<sanitised-profile-id>/
- *   ├── .obsidian/
+ *   <baseDir>/<name>--<remotePath-tail>/     (identity is the profile id
+ *   ├── .obsidian/                            in data.json, not the dir name)
  *   │   ├── community-plugins.json    ← ["remote-ssh"]
  *   │   └── plugins/
  *   │       └── remote-ssh/           ← symlink (or copy on Windows
@@ -121,7 +129,10 @@ export class ShadowVaultBootstrap {
    * is `fs.*Sync` and JSON arithmetic, no I/O actually awaits.
    */
   private bootstrapSync(profile: SshProfile, allProfiles: ReadonlyArray<SshProfile>): BootstrapResult {
-    const layout = this.layoutFor(profile.id);
+    // Resolve (and, when safe, migrate to) the `<name>--<tail>` shadow
+    // dir for this profile. Identity is the profile id, not the dir
+    // name, so a rename/collision never strands config (see resolveLayout).
+    const { layout, migrated } = this.resolveLayout(profile);
 
     fs.mkdirSync(layout.vaultDir, { recursive: true });
     fs.mkdirSync(layout.configDir, { recursive: true });
@@ -209,16 +220,21 @@ export class ShadowVaultBootstrap {
       `at ${layout.vaultDir} (registry id=${registryId}, plugin=${pluginInstallMethod})`,
     );
 
-    return { layout, registryId, registryCreated: created, pluginInstallMethod };
+    return { layout, registryId, registryCreated: created, migrated, pluginInstallMethod };
   }
 
   /**
-   * Compute paths for a given profile id without doing any I/O.
-   * Useful for callers that need the layout up-front (e.g. the
-   * spawner needs `vaultDir` for the open URL).
+   * Compute the shadow paths for a profile without doing any I/O: the
+   * pure `<name>--<tail>` layout, before any collision ` (n)` suffix
+   * (which only resolveLayout applies). A thin, side-effect-free path
+   * builder — resolveLayout is the sole caller.
    */
-  layoutFor(profileId: string): ShadowVaultLayout {
-    const vaultDir = path.join(this.baseDir, sanitiseProfileId(profileId));
+  layoutFor(profile: Pick<SshProfile, 'name' | 'remotePath'>): ShadowVaultLayout {
+    return this.layoutForDir(path.join(this.baseDir, friendlyVaultDirName(profile)));
+  }
+
+  /** Derive the `.obsidian/...` sub-paths for a concrete vault dir. */
+  private layoutForDir(vaultDir: string): ShadowVaultLayout {
     // The shadow vault is freshly created on disk by us before Obsidian
     // ever opens it; there's no live `App` instance whose
     // `vault.configDir` we could query, so we build the directory name
@@ -233,19 +249,179 @@ export class ShadowVaultBootstrap {
     return { vaultDir, configDir, pluginDir, pluginDataFile };
   }
 
+  /**
+   * Resolve the shadow layout to use for this profile.
+   *
+   * Identity is the profile *id* (persisted as `autoConnectProfileId`
+   * in the shadow's data.json), NOT the directory name — so a profile
+   * rename, a display-name collision, or an older `<uuid>` / `--<id8>`
+   * naming scheme all still resolve to the same shadow via
+   * `findShadowByProfileId`. When the existing shadow's dir name no
+   * longer matches the desired `<name>--<tail>`, we migrate it once by
+   * renaming, EXCEPT:
+   *
+   *  - the vault is currently open (obsidian.json `open` flag): renaming
+   *    an open vault's dir on Windows corrupts the live junction/handles
+   *    (the plugin dir goes dangling → daemon download ENOENTs → SFTP
+   *    fallback). Use it as-is; migrate on the next closed bootstrap.
+   *  - the desired name is already taken by a *different* profile:
+   *    `uniqueVaultDir` appends ` (2)` so two vaults never share one dir
+   *    (which would merge their data.json / secrets / host keys).
+   *
+   * The rename and the obsidian.json path update are separate `try`s:
+   * once the dir physically moves we commit to the new path even if
+   * updating the registry throws, because falling back would recreate
+   * the old dir empty and orphan the real config (#438 review).
+   */
+  private resolveLayout(
+    profile: Pick<SshProfile, 'id' | 'name' | 'remotePath'>,
+  ): { layout: ShadowVaultLayout; migrated: boolean } {
+    const desired = this.layoutFor(profile);
+    const found = this.findShadowByProfileId(profile.id);
+
+    if (found) {
+      // Where this profile's shadow SHOULD live (collision-safe): its own
+      // dir if it already owns one, else the free `<name>--<tail>` or a
+      // ` (n)` variant. Compare `found` to this resolved target — NOT to
+      // the bare desired name — otherwise a profile permanently parked in a
+      // ` (2)` dir (a display-name collision) would "migrate" to itself on
+      // every reconnect: a no-op same-path rename that falsely reports
+      // migrated=true and re-shows the one-time "restart Obsidian" notice.
+      const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
+      if (path.basename(found) === path.basename(target)) {
+        return { layout: this.layoutForDir(found), migrated: false };
+      }
+      // R2: never rename a dir whose vault is open — Windows corrupts the
+      // live junction. Use it as-is; migrate on the next closed run.
+      if (this.registry.isOpen(found)) {
+        logger.info(`ShadowVaultBootstrap: ${found} is open; deferring rename`);
+        return { layout: this.layoutForDir(found), migrated: false };
+      }
+      // Migrate. A successful rename commits the move; a failing updatePath
+      // is logged but not fatal (self-heals on register()). A failing
+      // rename falls back to the found dir.
+      try {
+        fs.renameSync(found, target);
+      } catch (e) {
+        logger.warn(
+          `ShadowVaultBootstrap: rename ${found} → ${target} failed (${errorMessage(e)}); using ${found} this session`,
+        );
+        return { layout: this.layoutForDir(found), migrated: false };
+      }
+      try {
+        this.registry.updatePath(found, target);
+      } catch (e) {
+        logger.warn(
+          `ShadowVaultBootstrap: registry path update failed post-migration (${errorMessage(e)}); ` +
+          `config is at ${target}, registry self-heals on register()`,
+        );
+      }
+      logger.info(`ShadowVaultBootstrap: migrated shadow ${found} → ${target}`);
+      return { layout: this.layoutForDir(target), migrated: true };
+    }
+
+    // Brand-new profile — pick a collision-free dir (a different profile
+    // may already own the desired `<name>--<tail>`).
+    const target = this.uniqueVaultDir(desired.vaultDir, profile.id);
+    return { layout: this.layoutForDir(target), migrated: false };
+  }
+
+  /**
+   * Scan `baseDir` for the shadow whose data.json `autoConnectProfileId`
+   * matches. Identity is the id, not the dir name, so this is naming-scheme
+   * agnostic — it reuses the existing config whether the dir is a legacy
+   * `<uuid>`, an older `<name>--<id8>`, or the current `<name>--<tail>`,
+   * instead of stranding it. Returns the first match in sorted order
+   * (deterministic) or null.
+   */
+  private findShadowByProfileId(profileId: string): string | null {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(this.baseDir).sort();
+    } catch {
+      return null; // baseDir not created yet
+    }
+    for (const entry of entries) {
+      const dir = path.join(this.baseDir, entry);
+      let isDir: boolean;
+      try { isDir = fs.statSync(dir).isDirectory(); } catch { continue; }
+      if (isDir && this.readShadowProfileId(dir) === profileId) return dir;
+    }
+    return null;
+  }
+
+  /**
+   * The `autoConnectProfileId` recorded in `dir`'s shadow data.json, or
+   * null if `dir` isn't a bootstrapped shadow. A genuinely absent data.json
+   * (ENOENT) is the normal "not a shadow dir" case and stays silent; an
+   * EXISTING-but-unreadable data.json — a transient lock (AV / Dropbox sync
+   * / a mid-write) or malformed JSON — is logged, because it can briefly
+   * hide this profile's OWN shadow and make resolveLayout fork a duplicate
+   * ` (2)` dir instead of reusing it. A non-string id is treated as no
+   * match (only a false negative is possible, never a false reuse).
+   */
+  private readShadowProfileId(dir: string): string | null {
+    const dataFile = this.layoutForDir(dir).pluginDataFile;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(dataFile, 'utf-8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        logger.warn(`ShadowVaultBootstrap: unreadable ${dataFile} (${errorMessage(e)}); treating as non-matching`);
+      }
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw) as { autoConnectProfileId?: unknown };
+      return typeof parsed.autoConnectProfileId === 'string' ? parsed.autoConnectProfileId : null;
+    } catch (e) {
+      logger.warn(`ShadowVaultBootstrap: malformed ${dataFile} (${errorMessage(e)}); treating as non-matching`);
+      return null;
+    }
+  }
+
+  /**
+   * A dir the given profile may safely occupy: the desired name if it's
+   * free or already this profile's, else `desired (2)`, `desired (3)`, …
+   * Two profiles must never share a dir — that would merge their
+   * data.json (secrets, host keys, active profile). Display-name
+   * collisions are allowed; only the on-disk dir is disambiguated.
+   */
+  private uniqueVaultDir(desiredVaultDir: string, profileId: string): string {
+    // Free (absent) or already ours → safe to take. An existing dir whose
+    // data.json belongs to a DIFFERENT profile (or is unreadable, logged by
+    // readShadowProfileId) is left alone so configs never merge.
+    const ownsOrFree = (dir: string): boolean =>
+      !fs.existsSync(dir) || this.readShadowProfileId(dir) === profileId;
+    if (ownsOrFree(desiredVaultDir)) return desiredVaultDir;
+    for (let n = 2; n < 100; n++) {
+      const candidate = `${desiredVaultDir} (${n})`;
+      if (ownsOrFree(candidate)) return candidate;
+    }
+    // 98 collisions on one name is absurd; fall back to an id-suffixed
+    // dir so we still return something unique rather than loop forever.
+    return `${desiredVaultDir} (${profileId.slice(0, 8)})`;
+  }
+
   // ─── shared-config round-trip (#342) ────────────────────────────────────
 
   /**
-   * Shared (non per-client) Obsidian config files. `PathMapper`
-   * leaves these unmapped on purpose so every machine on the vault
-   * sees the same `app.json` / theme / enabled-core-plugins /
-   * hotkeys. The sharing was one-way though: edits in one session
-   * push to the remote, but the local shadow disk never pulled them
-   * back, so the *next* Obsidian startup read a stale local copy and
-   * the settings appeared to evaporate (#342).
+   * Obsidian config files this vault round-trips to the remote so a
+   * settings change survives a shadow-window restart (#342: without the
+   * pull half, the next startup read a stale local copy and settings
+   * appeared to evaporate).
    *
-   * `workspace.json` is deliberately NOT here — it's per-client UI
-   * state that `PathMapper` already redirects into a private subtree.
+   * These are now **per-device**, not shared: `PathMapper` redirects each
+   * basename into this client's `<configDir>/user/<client-id>/` subtree
+   * (they were added to `DEFAULT_PRIVATE_PATTERN_BASENAMES`). So the
+   * round-trip below reads/writes THIS device's own copy — giving each
+   * machine a remote backup + cross-session persistence without two
+   * devices ever colliding on one shared `<configDir>/app.json` (the
+   * perpetual write-conflict this round-trip used to cause). The name is
+   * kept for back-compat; "shared" is historical.
+   *
+   * `workspace.json` is deliberately NOT here — it's per-client UI state
+   * `PathMapper` already redirects AND that Obsidian rewrites constantly.
    */
   static readonly SHARED_OBSIDIAN_CONFIG_FILES = [
     'app.json',
@@ -420,6 +596,313 @@ export class ShadowVaultBootstrap {
       `skipped [${skipped.join(', ')}], errored [${errored.join(', ')}]`,
     );
     return { pushed, skipped, errored };
+  }
+
+  // ─── community-plugins list round-trip (#429 / #342) ─────────────────────
+  //
+  // `community-plugins.json` is the *enabled community plugins* list.
+  // It deliberately does NOT join SHARED_OBSIDIAN_CONFIG_FILES (whose
+  // pull/push copy bytes verbatim): a remote list that omitted
+  // `remote-ssh` would, written verbatim, disable the very plugin doing
+  // the sync. Instead these two methods round-trip the list with a
+  // forced `remote-ssh` union, so a plugin enabled on one machine
+  // reaches another machine's shadow vault and reopening no longer
+  // "loses" installed plugins. The marketplace installer re-fetches any
+  // binaries the list names but that aren't staged locally yet.
+
+  /** The plugin's own id — always kept enabled across a round-trip. */
+  static readonly SELF_PLUGIN_ID = 'remote-ssh';
+
+  /**
+   * Pull the remote enabled-plugin list into the shadow vault, merged
+   * with the local list and with `remote-ssh` forced on. A remote list
+   * that's absent or not a valid id array leaves the local list
+   * untouched (never clobbered).
+   */
+  static async pullCommunityPlugins(
+    reader: SharedConfigReader,
+    remoteConfigDir: string,
+    localConfigDir: string,
+  ): Promise<{ pulled: boolean; merged: string[] }> {
+    const basename = 'community-plugins.json';
+    const remoteRel = `${remoteConfigDir}/${basename}`;
+    const localPath = path.join(localConfigDir, basename);
+
+    fs.mkdirSync(localConfigDir, { recursive: true });
+    const local = ShadowVaultBootstrap.readPluginIdList(localPath);
+
+    let remote: string[] | null = null;
+    try {
+      if (await reader.exists(remoteRel)) {
+        remote = ShadowVaultBootstrap.parsePluginIdList(await reader.read(remoteRel));
+        if (remote === null) {
+          logger.warn(
+            `pullCommunityPlugins: remote ${basename} is not a valid id array; keeping local list`,
+          );
+        }
+      }
+    } catch (e) {
+      logger.warn(`pullCommunityPlugins: ${basename} skipped (${errorMessage(e)})`);
+    }
+
+    const merged = ShadowVaultBootstrap.mergePluginIds(
+      local, remote ?? [], ShadowVaultBootstrap.SELF_PLUGIN_ID,
+    );
+    const changed =
+      merged.length !== local.length || merged.some((id, i) => id !== local[i]);
+    if (changed) ShadowVaultBootstrap.writePluginIdListAtomic(localPath, merged);
+
+    logger.info(`pullCommunityPlugins: merged [${merged.join(', ')}] (changed=${changed})`);
+    return { pulled: remote !== null, merged };
+  }
+
+  /**
+   * Push the local enabled-plugin list to the remote, unioned with the
+   * remote's CURRENT list and with `remote-ssh` forced on.
+   *
+   * Self-protecting against clobber: it re-reads the remote first and
+   * unions, so a stale/minimal local list (e.g. after a transient pull
+   * read-failure earlier in the same connect) can never drop a plugin
+   * another machine enabled. If the remote HAS the file but it can't be
+   * read or parsed, it aborts rather than overwrite what it couldn't
+   * see. A genuinely-absent remote file is seeded from local.
+   */
+  static async pushCommunityPlugins(
+    rw: SharedConfigReader & SharedConfigWriter,
+    remoteConfigDir: string,
+    localConfigDir: string,
+  ): Promise<{ pushed: boolean }> {
+    const basename = 'community-plugins.json';
+    const remoteRel = `${remoteConfigDir}/${basename}`;
+    const local = ShadowVaultBootstrap.readPluginIdList(path.join(localConfigDir, basename));
+
+    let remote: string[] = [];
+    try {
+      if (await rw.exists(remoteRel)) {
+        const parsed = ShadowVaultBootstrap.parsePluginIdList(await rw.read(remoteRel));
+        if (parsed === null) {
+          logger.warn('pushCommunityPlugins: remote list is not a valid id array; not pushing (avoid clobber)');
+          return { pushed: false };
+        }
+        remote = parsed;
+      }
+    } catch (e) {
+      logger.warn(`pushCommunityPlugins: cannot read remote (${errorMessage(e)}); not pushing (avoid clobber)`);
+      return { pushed: false };
+    }
+
+    const ids = ShadowVaultBootstrap.mergePluginIds(remote, local, ShadowVaultBootstrap.SELF_PLUGIN_ID);
+    // No-op when the remote already equals the union — avoid churn.
+    if (remote.length === ids.length && remote.every((id, i) => id === ids[i])) {
+      return { pushed: false };
+    }
+    try {
+      await rw.write(remoteRel, JSON.stringify(ids) + '\n');
+      logger.info(`pushCommunityPlugins: pushed [${ids.join(', ')}]`);
+      return { pushed: true };
+    } catch (e) {
+      logger.warn(`pushCommunityPlugins: push failed (${errorMessage(e)})`);
+      return { pushed: false };
+    }
+  }
+
+  // ─── plugin code round-trip (#429b — BRAT / non-marketplace) ────────────
+  //
+  // The enabled-plugins LIST round-trips (above) and the marketplace
+  // installer fetches binaries for plugins on Obsidian's registry. But a
+  // BRAT / sideloaded plugin isn't on the marketplace, so its code would
+  // never reach another machine. These methods round-trip the plugin
+  // *code* through the remote vault's `.obsidian/plugins/<id>/` (the
+  // canonical store) so such plugins load everywhere. Code only — the
+  // plugin's own `data.json` (settings, sometimes secrets) is left alone.
+  //
+  // Convergence is VERSION-ORDERED, not last-writer-wins: pull only when
+  // the remote is strictly newer (or the plugin is absent locally), push
+  // only when the local copy is strictly newer (or the remote lacks it).
+  // A plain "content differs" gate would let a machine still on an old
+  // version downgrade a plugin the rest of the fleet already upgraded,
+  // and the two sides would ping-pong forever (review: #429b).
+
+  // NOTE: synced over a UTF-8 TEXT channel (readText/writeText). Every
+  // entry MUST be text. Do NOT add binary assets (.png/.woff/…) here —
+  // the UTF-8 round-trip would corrupt them.
+  static readonly PLUGIN_BINARY_FILES = ['manifest.json', 'main.js', 'styles.css'] as const;
+
+  /**
+   * Pull a plugin's code from the remote into the local shadow when the
+   * plugin is ABSENT locally or the remote is a STRICTLY NEWER version
+   * (by manifest `version`) — so a plugin enabled/updated on another
+   * machine (incl. BRAT / non-marketplace) reaches here and loads on the
+   * next vault open. Never downgrades a local copy, never touches
+   * `data.json`. `remote-ssh` is skipped (self-managed).
+   */
+  static async pullPluginBinaries(
+    reader: SharedConfigReader,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pulled: string[] }> {
+    const pulled: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      const remoteManifest = `${remoteConfigDir}/plugins/${id}/manifest.json`;
+      try {
+        if (!(await reader.exists(remoteManifest))) continue; // no code on the remote
+        const remoteVer = ShadowVaultBootstrap.parseManifestVersion(await reader.read(remoteManifest));
+        const localManifest = path.join(localPluginDir, 'manifest.json');
+        const localVer = fs.existsSync(localManifest)
+          ? ShadowVaultBootstrap.parseManifestVersion(fs.readFileSync(localManifest, 'utf-8'))
+          : null;
+        // Skip unless absent locally, or the remote is strictly newer.
+        if (localVer !== null && !ShadowVaultBootstrap.versionGt(remoteVer, localVer)) continue;
+        let staged = false;
+        for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+          const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+          if (!(await reader.exists(remoteRel))) continue;
+          const content = await reader.read(remoteRel);
+          fs.mkdirSync(localPluginDir, { recursive: true });
+          ShadowVaultBootstrap.writeFileAtomic(path.join(localPluginDir, file), content);
+          staged = true;
+        }
+        if (staged) pulled.push(id);
+      } catch (e) {
+        logger.warn(`pullPluginBinaries: ${id} skipped (${errorMessage(e)})`);
+      }
+    }
+    if (pulled.length) logger.info(`pullPluginBinaries: staged [${pulled.join(', ')}]`);
+    return { pulled };
+  }
+
+  /**
+   * Push a plugin's local code to the remote when the remote LACKS it or
+   * the local copy is a STRICTLY NEWER version — so other machines can
+   * pull it. Never downgrades the remote, never pushes `data.json`;
+   * byte-identical files are skipped to avoid churn. `remote-ssh` skipped.
+   */
+  static async pushPluginBinaries(
+    rw: SharedConfigReader & SharedConfigWriter,
+    remoteConfigDir: string,
+    localConfigDir: string,
+    pluginIds: readonly string[],
+  ): Promise<{ pushed: string[] }> {
+    const pushed: string[] = [];
+    for (const id of pluginIds) {
+      if (id === ShadowVaultBootstrap.SELF_PLUGIN_ID) continue;
+      const localPluginDir = path.join(localConfigDir, 'plugins', id);
+      const localManifest = path.join(localPluginDir, 'manifest.json');
+      if (!fs.existsSync(localManifest)) continue; // nothing to push
+      const remoteManifest = `${remoteConfigDir}/plugins/${id}/manifest.json`;
+      try {
+        const localVer = ShadowVaultBootstrap.parseManifestVersion(fs.readFileSync(localManifest, 'utf-8'));
+        const remoteVer = (await rw.exists(remoteManifest))
+          ? ShadowVaultBootstrap.parseManifestVersion(await rw.read(remoteManifest))
+          : null;
+        // Skip unless the remote lacks it, or the local copy is newer.
+        if (remoteVer !== null && !ShadowVaultBootstrap.versionGt(localVer, remoteVer)) continue;
+        let sent = false;
+        for (const file of ShadowVaultBootstrap.PLUGIN_BINARY_FILES) {
+          const localFile = path.join(localPluginDir, file);
+          if (!fs.existsSync(localFile)) continue;
+          const content = fs.readFileSync(localFile, 'utf-8');
+          const remoteRel = `${remoteConfigDir}/plugins/${id}/${file}`;
+          if ((await rw.exists(remoteRel)) && (await rw.read(remoteRel)) === content) continue; // identical
+          await rw.write(remoteRel, content);
+          sent = true;
+        }
+        if (sent) pushed.push(id);
+      } catch (e) {
+        logger.warn(`pushPluginBinaries: ${id} skipped (${errorMessage(e)})`);
+      }
+    }
+    if (pushed.length) logger.info(`pushPluginBinaries: pushed [${pushed.join(', ')}]`);
+    return { pushed };
+  }
+
+  /** Parse a manifest.json body's dotted-numeric `version` ([0] when absent/unparseable = oldest). */
+  private static parseManifestVersion(body: string): number[] {
+    try {
+      const v = (JSON.parse(body) as { version?: unknown }).version;
+      if (typeof v !== 'string') return [0];
+      const parts = v.split('.').map((s) => parseInt(s, 10)).map((n) => (Number.isFinite(n) ? n : 0));
+      return parts.length ? parts : [0];
+    } catch {
+      return [0];
+    }
+  }
+
+  /** True when dotted-numeric version `a` is strictly greater than `b` (missing segments = 0). */
+  private static versionGt(a: number[], b: number[]): boolean {
+    const len = Math.max(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+      const x = a[i] ?? 0;
+      const y = b[i] ?? 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  /** Atomic (tmp + rename) write of arbitrary file content. */
+  private static writeFileAtomic(localFile: string, content: string): void {
+    const tmp = `${localFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, content, 'utf-8');
+    try {
+      fs.renameSync(tmp, localFile);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
+  }
+
+  /** Parse a community-plugins.json body into a string-id array, or null if malformed. */
+  private static parsePluginIdList(content: string): string[] | null {
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (!Array.isArray(parsed)) return null;
+      return (parsed as unknown[]).filter((s): s is string => typeof s === 'string');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Enabled-plugin ids from a local `.obsidian/community-plugins.json`
+   * ([] when absent/malformed) — the set whose binaries the connect flow
+   * round-trips via {@link pullPluginBinaries}/{@link pushPluginBinaries}.
+   */
+  static readEnabledPluginIds(localConfigDir: string): string[] {
+    return ShadowVaultBootstrap.readPluginIdList(path.join(localConfigDir, 'community-plugins.json'));
+  }
+
+  /** Read a local community-plugins.json into an id array ([] when absent/malformed). */
+  private static readPluginIdList(localPath: string): string[] {
+    try {
+      return ShadowVaultBootstrap.parsePluginIdList(fs.readFileSync(localPath, 'utf-8')) ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Order-preserving union of `local` + `remote`, with `required` guaranteed present. */
+  private static mergePluginIds(local: string[], remote: string[], required: string): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of [...local, ...remote, required]) {
+      if (!seen.has(id)) { seen.add(id); out.push(id); }
+    }
+    return out;
+  }
+
+  /** Atomic (tmp + rename) write of an id array as JSON. */
+  private static writePluginIdListAtomic(localPath: string, ids: string[]): void {
+    const tmp = `${localPath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(ids) + '\n', 'utf-8');
+    try {
+      fs.renameSync(tmp, localPath);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
   }
 
   // ─── internals ──────────────────────────────────────────────────────────
@@ -722,7 +1205,14 @@ export class ShadowVaultBootstrap {
     for (const d of sharedDirs) {
       const src = path.join(this.sourcePluginDir, d);
       const dst = path.join(pluginDir, d);
-      if (!fs.existsSync(src)) continue;
+      // Only mirror a REAL source dir (a local dev build of the daemon). A
+      // junction/symlink source is NOT propagated: it would chain the shadow
+      // to another vault's server-bin and dangle if that vault is deleted,
+      // breaking the per-shadow daemon download (the binary is per-arch,
+      // fetched at connect time — not a shared build artifact like main.js).
+      let srcStat: fs.Stats;
+      try { srcStat = fs.lstatSync(src); } catch { continue; }  // absent → skip
+      if (srcStat.isSymbolicLink() || !srcStat.isDirectory()) continue;
       // Use lstat + unlink for symlinks vs rmSync recursive for real
       // dirs so we never accidentally recurse through a link.
       try {
@@ -750,14 +1240,56 @@ export class ShadowVaultBootstrap {
 }
 
 /**
- * Profile ids should already be uuids, but we sanitise defensively:
- * a malicious or unusual id should never escape `baseDir` via `..`
- * or surprise the filesystem with separators.
+ * Filesystem-safe form of a profile *name* for the friendly vault-dir
+ * name. Obsidian shows a vault by its directory basename, so this is
+ * what the user sees instead of a raw UUID. Spaces are kept (valid in
+ * dir names on every OS); anything path-dangerous is collapsed to `_`;
+ * length-capped; never `.`/`..`/empty.
  */
-function sanitiseProfileId(id: string): string {
-  const cleaned = id.replace(/[^a-zA-Z0-9._-]/g, '_');
-  // Empty / dot-only ids would resolve to baseDir itself or its
-  // parent; force them into something benign.
-  if (!cleaned || cleaned === '.' || cleaned === '..') return '_invalid';
+function sanitiseVaultName(name: string): string {
+  const cleaned = (name ?? '')
+    .replace(/[^a-zA-Z0-9._ -]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .trim()
+    .slice(0, 40)
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'vault';
   return cleaned;
+}
+
+/**
+ * Filesystem-safe form of the remotePath's LAST segment. One host
+ * (profile name) often holds several independent vaults under
+ * different folders, so the folder tail is what disambiguates them —
+ * `/home/souta/work` → `work`, `/home/souta/work/dev` → `dev`. Same
+ * sanitising rules as the name; a bare/degenerate path falls back to
+ * `vault`.
+ */
+function sanitisePathTail(remotePath: string): string {
+  const trimmed = (remotePath ?? '').replace(/[/\\]+$/, '');
+  const tail = trimmed.split(/[/\\]/).pop() ?? '';
+  // A bare `~` (vault rooted at the remote home dir) has no meaningful
+  // folder tail — catch it before the charset strip below turns it into `_`.
+  if (tail === '~') return 'vault';
+  const cleaned = tail
+    .replace(/[^a-zA-Z0-9._ -]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .trim()
+    .slice(0, 40)
+    .trim();
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'vault';
+  return cleaned;
+}
+
+/**
+ * The shadow vault's directory name: `<friendly-name>--<path-tail>`.
+ * The name identifies the host, the tail the folder — together they
+ * let Obsidian show a recognisable, folder-distinct name (e.g.
+ * `Panza--work` vs `Panza--dev`) instead of a bare UUID. The id is NOT
+ * in the name: identity is resolved from `data.json`'s
+ * `autoConnectProfileId` (see `findShadowByProfileId`), so a profile
+ * rename or a display-name collision never strands its config.
+ */
+function friendlyVaultDirName(profile: Pick<SshProfile, 'name' | 'remotePath'>): string {
+  return `${sanitiseVaultName(profile.name)}--${sanitisePathTail(profile.remotePath)}`;
 }

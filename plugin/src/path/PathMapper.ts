@@ -29,6 +29,18 @@ function defaultObsidianConfigDir(): string {
 export const DEFAULT_PRIVATE_PATTERN_BASENAMES: readonly string[] = [
   'workspace.json',
   'workspace-mobile.json',
+  // Per-device Obsidian settings. Each machine keeps its OWN
+  // app/appearance/hotkeys/enabled-core-plugins under its per-client
+  // subtree instead of fighting over one shared copy on the remote.
+  // The shared copy was a perpetual write-conflict source: two sessions
+  // (or the same device across reconnects) both wrote `<configDir>/app.json`
+  // at the identity path, so every settings save tripped PreconditionFailed
+  // against the other's mtime. Redirecting them makes a shared path — and
+  // thus the conflict — impossible by construction.
+  'app.json',
+  'appearance.json',
+  'core-plugins.json',
+  'hotkeys.json',
   'cache',
   'cache.zlib',
   'types.json',

@@ -189,3 +189,50 @@ describe('ObsidianRegistry writeAtomic error propagation', () => {
       .toThrow('EXDEV: cross-device link not permitted');
   });
 });
+
+// ── isOpen (shadow-migration open-safety gate) ───────────────────────────
+
+describe('ObsidianRegistry.isOpen', () => {
+  let configPath: string;
+
+  beforeEach(() => { configPath = makeTmpConfigPath(); });
+  afterEach(() => { try { fs.unlinkSync(configPath); } catch { /* may not exist */ } });
+
+  function writeVaults(vaults: Record<string, { path: string; ts: number; open?: boolean }>): void {
+    fs.writeFileSync(configPath, JSON.stringify({ vaults }));
+  }
+
+  it('returns true when the matching vault entry has open === true', () => {
+    writeVaults({ v: { path: '/vault/one', ts: 1, open: true } });
+    expect(new ObsidianRegistry(configPath).isOpen('/vault/one')).toBe(true);
+  });
+
+  it('returns false when the matching entry has open false or absent', () => {
+    writeVaults({
+      closed: { path: '/vault/closed', ts: 1, open: false },
+      noflag: { path: '/vault/noflag', ts: 2 },
+    });
+    const r = new ObsidianRegistry(configPath);
+    expect(r.isOpen('/vault/closed')).toBe(false);
+    expect(r.isOpen('/vault/noflag')).toBe(false);
+  });
+
+  it('returns false for a path not registered in the vault list', () => {
+    writeVaults({ v: { path: '/vault/one', ts: 1, open: true } });
+    expect(new ObsidianRegistry(configPath).isOpen('/vault/other')).toBe(false);
+  });
+
+  it('canonicalises a trailing separator so the open flag still matches', () => {
+    const base = path.resolve(os.tmpdir(), 'fake-vault-isopen');
+    writeVaults({ v: { path: base + path.sep, ts: 1, open: true } });
+    expect(new ObsidianRegistry(configPath).isOpen(base)).toBe(true);
+  });
+
+  it('assumes OPEN (defers migration) when obsidian.json is missing or corrupt', () => {
+    // Missing file — never written by this test — must fail safe, not throw.
+    expect(new ObsidianRegistry(configPath).isOpen('/vault/one')).toBe(true);
+    // Corrupt JSON: same fail-safe (renaming a possibly-open vault corrupts it).
+    fs.writeFileSync(configPath, '{ not valid json');
+    expect(new ObsidianRegistry(configPath).isOpen('/vault/one')).toBe(true);
+  });
+});

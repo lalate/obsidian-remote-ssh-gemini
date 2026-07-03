@@ -82,6 +82,13 @@ if (result.status !== 0) {
 
 console.log(`build-server: staged ${path.relative(repoRoot, outPath)} (${prettySize(fs.statSync(outPath).size)})`);
 
+// Mark the staged binary as a DEV build so the plugin's locateDaemonBinary
+// trusts it over a download (it now requires this marker). dev-install.mjs and
+// the E2E vault-scaffold copy server-bin/ verbatim, so the marker rides along;
+// build:server on its own (the E2E path, no dev-install) would otherwise leave
+// the daemon unmarked → gated out → RPC unavailable in the Obsidian smoke run.
+fs.writeFileSync(path.join(stageDir, '.dev-daemon'), '');
+
 function locateGo() {
   const fromPath = which('go') ?? which('go.exe');
   if (fromPath) return fromPath;

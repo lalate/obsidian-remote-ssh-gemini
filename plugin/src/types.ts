@@ -43,6 +43,15 @@ export interface SshProfile {
   keepaliveCountMax: number;
   hostKeyFingerprint?: string;
   jumpHost?: JumpHostConfig;
+  /**
+   * OpenSSH `ProxyCommand` line, e.g. `cloudflared access ssh
+   * --hostname %h`. When set (and no `jumpHost`), the connection is
+   * tunnelled through this subprocess's stdio instead of a direct TCP
+   * socket — covers Cloudflare-tunnel / `cloudflared` / `nc`-style
+   * reachability. `%h`/`%p`/`%r` are expanded at connect time. Desktop
+   * only (`child_process`). See `ProxyCommandTunnel`.
+   */
+  proxyCommand?: string;
 
   /**
    * Picks between the legacy direct-SFTP transport and the α path
@@ -125,6 +134,31 @@ export interface PluginSettings {
    * is staged locally (community-store installs); remembered thereafter.
    */
   daemonDownloadConsented?: boolean;
+  /**
+   * Plugin version the currently-cached daemon binary was validated for.
+   * The connect fast-path reuses the cached binary without hitting GitHub
+   * when this equals the running `manifest.version`; a mismatch (or absence)
+   * forces a sha re-check against the release manifest, so a plugin upgrade
+   * always refreshes a *changed* daemon and never re-downloads an unchanged
+   * one. Written after each successful (re)provision.
+   */
+  daemonBinaryVersion?: string;
+  /**
+   * sha256 (hex) of the currently-cached daemon binary. The connect fast-path
+   * re-hashes the cached file and reuses it only when this still matches — so
+   * a binary corrupted/truncated after its verified download is detected
+   * (network-free) and re-fetched instead of deployed. Paired with
+   * `daemonBinaryVersion`; both are written together after a provision.
+   */
+  daemonBinarySha?: string;
+  /**
+   * Load the remote tree ONE folder level at a time (deepen on File-Explorer
+   * expand) instead of walking + materialising the whole tree at connect.
+   * Default true — essential for large, deep, dir-heavy vaults where the eager
+   * build freezes the window. Set false to restore the full eager walk (fine
+   * for small vaults; makes search/graph see the whole tree immediately).
+   */
+  lazyFolderLoad?: boolean;
   /**
    * #149 — terminal pane preferences. All optional; the View applies
    * sensible defaults when missing. `terminalShell` overrides the

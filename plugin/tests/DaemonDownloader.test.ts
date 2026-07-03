@@ -84,7 +84,7 @@ describe('ensureDaemonBinary', () => {
         return bytes;
       },
       cacheDir: '/vault/.obsidian/plugins/remote-ssh/server-bin',
-      cacheHit: () => false,
+      readCached: async () => null,
       writeExecutable: async (p, b) => {
         written.set(p, b);
       },
@@ -101,18 +101,28 @@ describe('ensureDaemonBinary', () => {
     expect(deps.written.get(p)).toEqual(bytes);
   });
 
-  it('uses the cache and does NOT download on a cache hit', async () => {
+  it('reuses the cached binary WITHOUT downloading when its bytes match the manifest sha', async () => {
     let fetched = false;
     const deps = makeDeps({
-      cacheHit: () => true,
-      fetchBinary: async () => {
-        fetched = true;
-        return bytes;
-      },
+      readCached: async () => bytes,   // cached bytes already hash to `sha`
+      fetchBinary: async () => { fetched = true; return bytes; },
     });
     const p = await ensureDaemonBinary(deps, target);
     expect(p).toContain(filename);
-    expect(fetched).toBe(false);
+    expect(fetched).toBe(false);       // no binary download
+    expect(deps.written.size).toBe(0); // nothing re-written
+  });
+
+  it('RE-DOWNLOADS when the cached binary sha does NOT match (stale from a prior plugin version)', async () => {
+    let fetched = false;
+    const stale = new Uint8Array([0x00, 0x11, 0x22]); // different bytes → different sha
+    const deps = makeDeps({
+      readCached: async () => stale,
+      fetchBinary: async () => { fetched = true; return bytes; },
+    });
+    const p = await ensureDaemonBinary(deps, target);
+    expect(fetched).toBe(true);                  // stale cache → fetched fresh
+    expect(deps.written.get(p)).toEqual(bytes);  // overwritten with the correct binary
   });
 
   it('throws DaemonVerificationError on sha256 mismatch (never caches)', async () => {
@@ -183,5 +193,7 @@ describe('resolveDaemonConsent', () => {
 describe('deferred hardening (#406 review)', () => {
   it.todo('verifies the cosign .bundle (sigstore) against the GitHub OIDC identity before deploy — closes the MITM gap that sha256-from-the-same-channel leaves open');
   it.todo('shares the daemon binary cache across vaults/profiles (e.g. ~/.obsidian-remote/server-bin) so a second profile reuses the first download + single consent');
-  it.todo('re-verifies a cache-hit binary against its sha256 before reuse — defends post-write on-disk corruption (the atomic tmp+rename write already closes the mid-download crash window)');
+  // Implemented: ensureDaemonBinary now re-checks a cached binary's sha256
+  // against the release manifest before reuse (see the reuse / re-download
+  // tests above), which also refreshes a stale binary after a plugin upgrade.
 });

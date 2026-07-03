@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { logger } from '../util/logger';
+import { errorMessage } from '../util/errorMessage';
 
 /**
  * One entry in `obsidian.json`'s `vaults` map.
@@ -102,6 +104,57 @@ export class ObsidianRegistry {
     cfg.vaults[id] = { path: vaultPath, ts: Date.now() };
     this.writeAtomic(cfg);
     return { id, created: true };
+  }
+
+  /**
+   * Repoint an existing vault entry from `oldPath` to `newPath`,
+   * keeping the same Obsidian vault id. Used by the transitional
+   * shadow-dir rename (legacy UUID name → friendly name) so the
+   * registration follows the moved directory instead of leaving a
+   * dead entry pointing at the old path. No-op (returns false) when no
+   * entry matches `oldPath`.
+   */
+  updatePath(oldPath: string, newPath: string): boolean {
+    const cfg = this.read();
+    const target = canonicalisePath(oldPath);
+    for (const [id, entry] of Object.entries(cfg.vaults)) {
+      if (canonicalisePath(entry.path) === target) {
+        cfg.vaults[id] = { ...entry, path: newPath };
+        this.writeAtomic(cfg);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether Obsidian currently has this vault open, per the
+   * `obsidian.json` `open` flag. Used by the shadow-dir migration to
+   * avoid renaming a live vault's directory — on Windows that corrupts
+   * the open junction/handles (dangling plugin dir → daemon ENOENT).
+   *
+   * A registered path with `open !== true`, or a path not in the vault
+   * list at all, is "not open" (safe to migrate). But an UNREADABLE
+   * `obsidian.json` is treated as OPEN: we can't tell, and a false
+   * "closed" here would let the caller rename a live vault and cause the
+   * very corruption this guards against. Deferring a migration by one
+   * bootstrap is the trivial cost of failing safe.
+   */
+  isOpen(vaultPath: string): boolean {
+    try {
+      const cfg = this.read();
+      const target = canonicalisePath(vaultPath);
+      for (const entry of Object.values(cfg.vaults)) {
+        if (canonicalisePath(entry.path) === target) return entry.open === true;
+      }
+      return false; // registered nowhere → Obsidian doesn't have it open
+    } catch (e) {
+      logger.warn(
+        `ObsidianRegistry.isOpen: unreadable obsidian.json (${errorMessage(e)}); ` +
+        'assuming open, deferring rename',
+      );
+      return true;
+    }
   }
 
   /**

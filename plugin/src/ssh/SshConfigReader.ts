@@ -14,6 +14,20 @@ export interface SshConfigEntry {
   port: number;
   identityFile?: string;
   proxyJump?: ProxyJumpEntry;
+  /**
+   * Raw `ProxyCommand` directive value, with OpenSSH %-tokens (`%h`,
+   * `%p`, `%r`) left intact — they are expanded at connect time once
+   * the concrete host/port/user are known (see `ProxyCommandTunnel`).
+   * A command-based proxy (e.g. `cloudflared access ssh --hostname %h`)
+   * is distinct from `ProxyJump`, which opens an SSH bastion hop.
+   */
+  proxyCommand?: string;
+  /**
+   * `IdentityAgent` socket path (tilde-expanded), e.g. 1Password's
+   * `~/.1password/agent.sock`. Lets auth go through a specific agent
+   * rather than `$SSH_AUTH_SOCK`.
+   */
+  identityAgent?: string;
 }
 
 /**
@@ -44,6 +58,8 @@ interface RawFields {
   port?: number;
   identityFile?: string;
   proxyJump?: string;
+  proxyCommand?: string;
+  identityAgent?: string;
 }
 
 /**
@@ -112,11 +128,16 @@ function parseBlocks(content: string): RawHostBlock[] {
     if (!current) continue;
 
     switch (key) {
-      case 'hostname':     current.fields.hostname = value; break;
-      case 'user':         current.fields.user = value; break;
-      case 'port':         current.fields.port = parseInt(value, 10) || 22; break;
-      case 'identityfile': current.fields.identityFile = expandTilde(value); break;
-      case 'proxyjump':    current.fields.proxyJump = value; break;
+      case 'hostname':      current.fields.hostname = value; break;
+      case 'user':          current.fields.user = value; break;
+      case 'port':          current.fields.port = parseInt(value, 10) || 22; break;
+      case 'identityfile':  current.fields.identityFile = expandTilde(value); break;
+      case 'proxyjump':     current.fields.proxyJump = value; break;
+      // ProxyCommand is kept raw: the %-tokens (%h/%p/%r) are expanded
+      // at connect time, not here. IdentityAgent is a socket path, so
+      // it tilde-expands like IdentityFile.
+      case 'proxycommand':  current.fields.proxyCommand = value; break;
+      case 'identityagent': current.fields.identityAgent = expandTilde(value); break;
     }
   }
 
@@ -133,11 +154,13 @@ function mergeDefaults(blocks: RawHostBlock[]): RawFields {
   const defaults: RawFields = {};
   for (const b of blocks) {
     if (!b.isDefaults) continue;
-    if (b.fields.hostname     !== undefined) defaults.hostname     = b.fields.hostname;
-    if (b.fields.user         !== undefined) defaults.user         = b.fields.user;
-    if (b.fields.port         !== undefined) defaults.port         = b.fields.port;
-    if (b.fields.identityFile !== undefined) defaults.identityFile = b.fields.identityFile;
-    if (b.fields.proxyJump    !== undefined) defaults.proxyJump    = b.fields.proxyJump;
+    if (b.fields.hostname      !== undefined) defaults.hostname      = b.fields.hostname;
+    if (b.fields.user          !== undefined) defaults.user          = b.fields.user;
+    if (b.fields.port          !== undefined) defaults.port          = b.fields.port;
+    if (b.fields.identityFile  !== undefined) defaults.identityFile  = b.fields.identityFile;
+    if (b.fields.proxyJump     !== undefined) defaults.proxyJump     = b.fields.proxyJump;
+    if (b.fields.proxyCommand  !== undefined) defaults.proxyCommand  = b.fields.proxyCommand;
+    if (b.fields.identityAgent !== undefined) defaults.identityAgent = b.fields.identityAgent;
   }
   return defaults;
 }
@@ -150,8 +173,10 @@ function buildEntry(
   const hostname     = fields.hostname     ?? defaults.hostname     ?? alias;
   const user         = fields.user         ?? defaults.user         ?? defaultUserName();
   const port         = fields.port         ?? defaults.port         ?? 22;
-  const identityFile = fields.identityFile ?? defaults.identityFile;
-  const rawJump      = fields.proxyJump    ?? defaults.proxyJump;
+  const identityFile  = fields.identityFile  ?? defaults.identityFile;
+  const rawJump       = fields.proxyJump      ?? defaults.proxyJump;
+  const proxyCommand  = fields.proxyCommand   ?? defaults.proxyCommand;
+  const identityAgent = fields.identityAgent  ?? defaults.identityAgent;
 
   return {
     alias,
@@ -164,6 +189,8 @@ function buildEntry(
     // from the referenced alias when available, falling back to the
     // parent host's user when no alias matched.
     proxyJump: rawJump !== undefined ? parseProxyJumpRaw(rawJump) : undefined,
+    proxyCommand,
+    identityAgent,
   };
 }
 
