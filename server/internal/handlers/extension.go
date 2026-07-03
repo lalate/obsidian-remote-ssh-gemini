@@ -32,8 +32,14 @@ type extensionRunner struct {
 	active map[string]activeInvocation
 }
 
+// activeInvocation tracks a running extension process.
+//
+// The daemon uses a single-principal model — one token minted at startup
+// that every session authenticates with. *Session is a transport handle,
+// not an identity, so there is no per-session authorization boundary.
+// session is the (rebindable) stream target for live output; when nil,
+// output is persisted to the log for replay by a future reattach.
 type activeInvocation struct {
-	owner      *server.Session
 	session    *server.Session
 	stop       func() error
 	outputMode string
@@ -145,6 +151,8 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 	}
 }
 
+// resumeInvoke reattaches to a persisted invocation. Under the single-principal
+// model any authenticated session may reattach and replay.
 func (r *extensionRunner) resumeInvoke(ctx context.Context, p proto.ExtensionInvokeParams) (interface{}, *rpc.Error) {
 	if p.ResumeFrom < 0 {
 		return nil, rpc.ErrInvalidParams("extension.invoke: resumeFrom must be >= 0")
@@ -190,9 +198,8 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 			return nil, rpc.ErrInvalidParams(methodName + ": invocationId is required")
 		}
 
-		session := server.SessionFromContext(ctx)
 		inv, ok := r.lookupInvocation(p.InvocationID)
-		if !ok || inv.owner != session {
+		if !ok {
 			return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: false}, nil
 		}
 
@@ -208,7 +215,7 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, outputMode string, stop func() error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.active[invocationID] = activeInvocation{owner: session, session: session, outputMode: outputMode, stop: stop}
+	r.active[invocationID] = activeInvocation{session: session, outputMode: outputMode, stop: stop}
 }
 
 func (r *extensionRunner) lookupInvocation(invocationID string) (activeInvocation, bool) {
@@ -232,7 +239,6 @@ func (r *extensionRunner) rebindInvocation(invocationID string, session *server.
 		return activeInvocation{}, false
 	}
 	inv.session = session
-	inv.owner = session
 	r.active[invocationID] = inv
 	return inv, true
 }
@@ -311,36 +317,39 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 			return true
 		}
 		session := r.currentInvocationSession(invocationID)
-		if session == nil {
-			_ = cmd.Process.Kill()
-			return false
-		}
 		payload := append([]proto.CliOutputBatchItem(nil), batch...)
-		if outputMode == "single" {
-			for _, it := range payload {
-				if err := session.SendNotification("cli.output", proto.CliOutputParams{
-					InvocationID: invocationID,
-					Stream:       it.Stream,
-					Data:         it.Data,
-					Seq:          it.Seq,
-				}); err != nil {
-					_ = cmd.Process.Kill()
-					return false
-				}
-			}
-		} else {
-			if err := session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
-				InvocationID: invocationID,
-				Items:        payload,
-			}); err != nil {
-				_ = cmd.Process.Kill()
-				return false
-			}
-		}
+
+		// Persist to log first so a reattaching session can replay.
 		if persistEnabled {
 			ok, err := r.logs.AppendBatch(invocationID, payload)
 			if err != nil || !ok {
 				persistEnabled = false
+			}
+		}
+
+		// Stream to the active session if one exists.
+		// When session is nil (dropped with no reattach) or send fails,
+		// the process keeps running — output is already persisted above
+		// and can be replayed via resumeInvoke + ReplayFrom.
+		if session != nil {
+			if outputMode == "single" {
+				for _, it := range payload {
+					if err := session.SendNotification("cli.output", proto.CliOutputParams{
+						InvocationID: invocationID,
+						Stream:       it.Stream,
+						Data:         it.Data,
+						Seq:          it.Seq,
+					}); err != nil {
+						session = nil
+					}
+				}
+			} else {
+				if err := session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
+					InvocationID: invocationID,
+					Items:        payload,
+				}); err != nil {
+					session = nil
+				}
 			}
 		}
 		batch = batch[:0]

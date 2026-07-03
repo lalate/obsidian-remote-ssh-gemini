@@ -66,34 +66,7 @@ func TestExtensionKill_NotFound_ReturnsKilledFalse(t *testing.T) {
 	}
 }
 
-func TestExtensionKill_OtherSessionCannotKill(t *testing.T) {
-	r := NewExtensionRunner(nil, nil, "")
-	owner := server.NewSession()
-	called := false
-	r.registerInvocation("inv-1", owner, "batch", func() error {
-		called = true
-		return nil
-	})
-
-	h := r.Kill()
-	otherCtx := server.WithSession(context.Background(), server.NewSession())
-	res, rpcErr := h(otherCtx, json.RawMessage(`{"invocationId":"inv-1"}`))
-	if rpcErr != nil {
-		t.Fatalf("unexpected rpc error: %v", rpcErr)
-	}
-	out, ok := res.(proto.ExtensionKillResult)
-	if !ok {
-		t.Fatalf("unexpected result type: %T", res)
-	}
-	if out.Killed {
-		t.Fatalf("Killed = true, want false")
-	}
-	if called {
-		t.Fatalf("stop should not be called for non-owner session")
-	}
-}
-
-func TestExtensionKill_OwnerCanKill(t *testing.T) {
+func TestExtensionKill_ExistingInvocationCanBeKilled(t *testing.T) {
 	r := NewExtensionRunner(nil, nil, "")
 	owner := server.NewSession()
 	called := false
