@@ -37,6 +37,7 @@ import * as os from 'os';
 import { ObservabilityInstaller } from './util/ObservabilityInstaller';
 import { normalizeRemotePath } from './util/pathUtils';
 import { PathMapper } from './path/PathMapper';
+import { preSpawnRemotePath } from './shadow/preSpawnPaths';
 import { withTimeout } from './util/withTimeout';
 import * as path from 'path';
 import { errorMessage } from "./util/errorMessage";
@@ -1168,10 +1169,7 @@ export default class RemoteSshPlugin extends Plugin {
     // `PathMapper.toRemote` is identity for non-private paths (community-plugins.json,
     // plugins/…), so those still round-trip shared, unchanged.
     const mapper = new PathMapper(ConnectionManager.resolveClientId(this.settings), remoteConfigDir);
-    const toRemote = (p: string): string => {
-      const mapped = mapper.toRemote(p);
-      return remoteBase === '.' ? mapped : `${remoteBase}/${mapped}`;
-    };
+    const toRemote = (p: string): string => preSpawnRemotePath(mapper, remoteBase, p);
 
     const client = new SftpClient(
       this.authResolver,
