@@ -1,0 +1,3 @@
+# Ignore generated certificates and keys
+*
+!.gitignore

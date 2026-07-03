@@ -1,0 +1,47 @@
+services:
+  relay-health:
+    build:
+      context: ../..
+      dockerfile: deploy/relay-health/Dockerfile
+      args:
+        VERSION: ${RELAY_HEALTH_VERSION:-0.0.0-dev}
+    image: obsidian-remote-relay-health:latest
+    container_name: obsidian-remote-relay-health
+    restart: unless-stopped
+    environment:
+      RELAY_PROBE_TOKEN: ${RELAY_PROBE_TOKEN:-}
+      RELAY_RPC_MODE: ${RELAY_RPC_MODE:-stub}
+      RELAY_SSH_SOCKET_PATH: ${RELAY_SSH_SOCKET_PATH:-~/.obsidian-remote/server.sock}
+      RELAY_SSH_TOKEN_PATH: ${RELAY_SSH_TOKEN_PATH:-~/.obsidian-remote/token}
+      RELAY_SSH_PRIVATE_KEY_BASE64: ${RELAY_SSH_PRIVATE_KEY_BASE64:-}
+      RELAY_SSH_PRIVATE_KEY_FILE: ${RELAY_SSH_PRIVATE_KEY_FILE:-}
+      RELAY_SSH_PASSWORD: ${RELAY_SSH_PASSWORD:-}
+      RELAY_SSH_KNOWN_HOSTS_FILE: ${RELAY_SSH_KNOWN_HOSTS_FILE:-}
+      RELAY_SSH_INSECURE_IGNORE_HOST_KEY: ${RELAY_SSH_INSECURE_IGNORE_HOST_KEY:-true}
+      RELAY_SSH_CONNECT_TIMEOUT_MS: ${RELAY_SSH_CONNECT_TIMEOUT_MS:-5000}
+    command:
+      - --listen=:8080
+      - --path=/healthz
+      - --allow-origin=${ALLOW_ORIGIN:-*}
+      - --rpc-mode=${RELAY_RPC_MODE:-stub}
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  relay-tls:
+    image: caddy:2-alpine
+    container_name: obsidian-remote-relay-tls
+    restart: unless-stopped
+    profiles: ["tls"]
+    depends_on:
+      relay-health:
+        condition: service_healthy
+    ports:
+      - "${TLS_HOST_PORT:-8443}:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/certs:ro

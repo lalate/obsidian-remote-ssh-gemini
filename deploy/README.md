@@ -13,6 +13,9 @@ In every model, the plugin's profile points at the SSH endpoint
 (host / port / user / private key) and the rest of the wiring
 happens automatically.
 
+For mobile relay endpoint scaffolding and HTTPS certificate setup,
+see [`relay-health/`](./relay-health/README.md).
+
 ## Existing infrastructure
 
 If you already have an SSH server you log into for other things, you
