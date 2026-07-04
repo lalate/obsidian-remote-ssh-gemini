@@ -1,5 +1,5 @@
 import type { App, PluginManifest } from 'obsidian';
-import { FileSystemAdapter, Notice, Platform, TFile, TFolder } from 'obsidian';
+import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
 import { VaultModelBuilder } from '../vault/VaultModelBuilder';
 import { LocalOpRegistry } from './LocalOpRegistry';
 import type { PluginSettings } from '../types';
@@ -135,7 +135,8 @@ export class AdapterManager {
     const mapper = new PathMapper(clientId, this.app.vault.configDir);
     logger.info(`PathMapper: clientId="${clientId}"`);
 
-    if (Platform.isMobile) {
+    const canUseResourceBridge = typeof Buffer !== 'undefined' && typeof Buffer.alloc === 'function';
+    if (!canUseResourceBridge) {
       this.resourceBridge = null;
       logger.info('ResourceBridge: disabled on mobile runtime');
     } else {
@@ -202,8 +203,9 @@ export class AdapterManager {
         const queue = this.offlineQueue;
         this.pendingEditsBar.startPolling(() => queue.pending().length);
       } catch (e) {
-        const msg = `OfflineQueue: open failed (${errorMessage(e)}); offline writes will throw`;
-        if (Platform.isMobile) logger.info(msg);
+        const reason = errorMessage(e);
+        const msg = `OfflineQueue: open failed (${reason}); offline writes will throw`;
+        if (reason.includes('not FileSystemAdapter-backed')) logger.info(msg);
         else logger.warn(msg);
         this.offlineQueue = null;
       }
