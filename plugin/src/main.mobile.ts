@@ -877,9 +877,14 @@ export default class RemoteSshMobilePlugin extends Plugin {
     };
     if (Array.isArray(setting.settingTabs)) {
       setting.settingTabs = setting.settingTabs.filter((tab) => {
-        if (!(tab instanceof MobileSettingsTab)) return true;
-        const maybe = tab as { plugin?: { manifest?: { id?: string } } };
-        return maybe.plugin?.manifest?.id !== this.manifest.id;
+        const maybe = tab as {
+          id?: string;
+          plugin?: { manifest?: { id?: string } };
+        };
+        const byPluginId = maybe.plugin?.manifest?.id === this.manifest.id;
+        const byTabId = maybe.id === this.manifest.id;
+        if (!byPluginId && !byTabId) return true;
+        return false;
       });
     }
     if (setting.pluginTabs && this.manifest.id in setting.pluginTabs) {
