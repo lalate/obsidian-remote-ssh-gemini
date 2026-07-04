@@ -425,8 +425,10 @@ export class SftpDataAdapter {
     const folders: string[] = [];
     const prefix = normalizedPath ? normalizedPath + '/' : '';
     const seen = new Set<string>();
+    const isHiddenSegmentPath = (p: string): boolean =>
+      p.split('/').some((seg) => seg.startsWith('.'));
     const emit = (entry: RemoteEntry) => {
-      if (entry.name.startsWith('.')) return;
+      if (isHiddenSegmentPath(entry.name)) return;
       if (seen.has(entry.name)) return;
       seen.add(entry.name);
       const childPath = prefix + entry.name;
