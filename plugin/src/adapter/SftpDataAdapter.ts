@@ -318,7 +318,12 @@ export class SftpDataAdapter {
    */
   private applied(echoPaths: string[], run: (r: WriterReflector) => void): void {
     this.localOpRegistry?.record(echoPaths);
+    if (echoPaths.some((p) => this.isHiddenVaultPath(p))) return;
     this.reflect(run);
+  }
+
+  private isHiddenVaultPath(path: string): boolean {
+    return path.split('/').some((seg) => seg.startsWith('.'));
   }
 
   // ─── DataAdapter (read-side) ─────────────────────────────────────────────
