@@ -5,7 +5,7 @@ import { LocalOpRegistry } from './LocalOpRegistry';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
-import { SftpDataAdapter } from './SftpDataAdapter';
+import { SftpDataAdapter, type LocalFallbackAdapter } from './SftpDataAdapter';
 import { AdapterPatcher } from './AdapterPatcher';
 import { ResourceBridge } from './ResourceBridge';
 import { WriteConflictModal } from '../ui/WriteConflictModal';
@@ -222,6 +222,38 @@ export class AdapterManager {
       shadowBasePath,
       this.transferTracker,
     );
+    // Capture original adapter methods before patching so the
+    // data adapter can use them as a local fallback (e.g. on mobile
+    // where iOS vault files only exist on the device).
+    const localFallback: LocalFallbackAdapter | null = (
+      typeof targetAdapter.exists === 'function' &&
+      typeof targetAdapter.list === 'function' &&
+      typeof targetAdapter.read === 'function' &&
+      typeof targetAdapter.readBinary === 'function'
+    ) ? {
+      exists:     targetAdapter.exists.bind(targetAdapter),
+      list:       targetAdapter.list.bind(targetAdapter),
+      read:       targetAdapter.read.bind(targetAdapter),
+      readBinary: targetAdapter.readBinary.bind(targetAdapter),
+    } : null;
+    if (localFallback) {
+      this._dataAdapter = new SftpDataAdapter(
+        fsClient,
+        adapterRemoteBase,
+        this.readCache,
+        this.dirCache,
+        this.app.vault.getName(),
+        mapper,
+        this.resourceBridge,
+        conflictResolver,
+        this.ancestorTracker,
+        this.offlineQueue,
+        shadowBasePath,
+        this.transferTracker,
+        localFallback,
+      );
+    }
+
     this.patcher = new AdapterPatcher(targetAdapter, this._dataAdapter);
     try {
       this.patcher.patch(PATCHED_METHODS);

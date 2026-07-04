@@ -87,8 +87,15 @@ export async function connectDirectWs(inputs: DirectWsInputs): Promise<DirectWsC
     throw e;
   }
 
+  // Start keep-alive pings so NAT/proxy middleboxes don't drop the
+  // WebSocket during idle periods (~30 s interval).
+  const stopKeepAlive = rpc.startKeepAlive(30_000);
+
   return {
     rpc,
-    close: () => rpc.close(),
+    close: () => {
+      stopKeepAlive();
+      rpc.close();
+    },
   };
 }

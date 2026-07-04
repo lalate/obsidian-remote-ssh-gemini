@@ -21,12 +21,25 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/auth"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/rpc"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/server"
+)
+
+const (
+	// pingInterval controls how often the server sends a WebSocket ping
+	// frame to the client. The browser WebSocket API auto-responds with
+	// a pong, keeping the TCP connection alive through NAT / firewalls
+	// that drop idle connections after ~60–120 s.
+	pingInterval = 30 * time.Second
+
+	// pongTimeout is how long the server waits for a pong response
+	// before closing the connection as dead.
+	pongTimeout = 60 * time.Second
 )
 
 // SubscriptionCleaner drops watcher subscriptions when a session closes.
@@ -143,7 +156,21 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	log := s.log.With("ws_conn", connID, "remote", r.RemoteAddr)
 	log.Info("ws connection opened")
 
+	// Enable keep-alive: the server sends a WebSocket Ping frame every
+	// 30 s; the browser auto-responds with a Pong. If no Pong arrives
+	// within 60 s the connection is torn down. This prevents NAT /
+	// firewall / proxy middleboxes from dropping the TCP stream after
+	// ~60–120 s of silence.
+	if err := conn.SetReadDeadline(time.Now().Add(pongTimeout)); err != nil {
+		log.Warn("ws SetReadDeadline", "err", err.Error())
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+
 	session := server.NewSession()
+	wsCtx, stopPing := context.WithCancel(context.Background())
+	defer stopPing()
 	defer func() {
 		if s.opts.SubscriptionCleaner != nil {
 			s.opts.SubscriptionCleaner.CleanupSubscriptions(session.SubscriptionIDs())
@@ -153,6 +180,28 @@ func (s *Server) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	var writeMu sync.Mutex
+
+	// Background ping ticker — sends a WebSocket Ping frame every
+	// pingInterval to keep the TCP stream alive. Stops when the
+	// connection handler returns (stopPing cancels the context).
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeMu.Lock()
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				writeMu.Unlock()
+				if err != nil {
+					return
+				}
+			case <-wsCtx.Done():
+				return
+			}
+		}
+	}()
+
 	session.SetNotifier(func(method string, params interface{}, meta *proto.Meta) error {
 		paramsBytes, err := json.Marshal(params)
 		if err != nil {

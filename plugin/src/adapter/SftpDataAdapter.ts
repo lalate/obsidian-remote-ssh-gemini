@@ -37,6 +37,21 @@ import { logger } from '../util/logger';
 import { perfTracer } from '../util/PerfTracer';
 import { isPreconditionFailed } from '../proto/rpcError';
 import { errorMessage } from "../util/errorMessage";
+import type { RpcError } from '../transport/RpcError';
+import { ErrorCode } from '../proto/types';
+
+/**
+ * Minimal local adapter interface for fallback operations.
+ * On mobile/iOS, the original `app.vault.adapter` implements these
+ * methods against the device's local filesystem. When no fallback
+ * is configured the adapter operates in remote-only mode.
+ */
+export interface LocalFallbackAdapter {
+  exists(normalizedPath: string, sensitive?: boolean): Promise<boolean>;
+  list(normalizedPath: string): Promise<ListedFiles>;
+  read(normalizedPath: string): Promise<string>;
+  readBinary(normalizedPath: string): Promise<ArrayBuffer>;
+}
 
 export type { ThreeWayPanes, TextConflictDecision } from '../conflict/ConflictResolver';
 
@@ -68,6 +83,14 @@ export type { ThreeWayPanes, TextConflictDecision } from '../conflict/ConflictRe
  * boundary later.
  */
 export class SftpDataAdapter {
+  /**
+   * Set of vault-relative paths known to exist on the remote.
+   * Populated by `list()` / `exists()` / `read()` successes for
+   * remote files. Callers can use `isRemotePath()` to check whether
+   * a file lives on the remote vs only locally.
+   */
+  private remotePaths = new Set<string>();
+
   constructor(
     private client: RemoteFsClient,
     /** Normalized remote base path (no trailing slash, no leading "~/"). */
@@ -141,6 +164,15 @@ export class SftpDataAdapter {
      * (#127). When omitted (e.g. unit tests), no UI signaling occurs.
      */
     private transferTracker: TransferTracker | null = null,
+    /**
+     * Optional local adapter for fallback operations. When set,
+     * `list()` merges local entries with remote results, and
+     * `read()` / `readBinary()` / `exists()` fall back to the
+     * local adapter on remote FileNotFound. This is used on
+     * mobile/iOS where the vault may contain local-only files
+     * that shouldn't be hidden by the remote adapter patch.
+     */
+    private localFallback: LocalFallbackAdapter | null = null,
   ) {}
 
   /**
@@ -177,6 +209,16 @@ export class SftpDataAdapter {
   swapClient(newClient: RemoteFsClient): void {
     this.client = newClient;
     this.conflictResolver?.swapClient(newClient);
+  }
+
+  /**
+   * Check whether a vault-relative path is known to exist on the
+   * remote. Returns `true` if the path was seen in a successful
+   * remote `list()`, `exists()`, or `read()` call. Paths that only
+   * exist locally (detected via the local fallback) are not marked.
+   */
+  isRemotePath(normalizedPath: string): boolean {
+    return this.remotePaths.has(normalizedPath);
   }
 
   /** True between the start of a reconnect loop and its terminal state. */
@@ -287,7 +329,23 @@ export class SftpDataAdapter {
 
   async exists(normalizedPath: string, _sensitive?: boolean): Promise<boolean> {
     if (this.reconnecting) throw reconnectingError();
-    return this.client.exists(this.toRemote(normalizedPath));
+    try {
+      const remote = await this.client.exists(this.toRemote(normalizedPath));
+      if (remote) {
+        this.remotePaths.add(normalizedPath);
+        return true;
+      }
+    } catch {
+      // remote error (e.g. network) — fall through to local check
+    }
+    if (this.localFallback) {
+      try {
+        return await this.localFallback.exists(normalizedPath, _sensitive);
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   async stat(normalizedPath: string): Promise<Stat | null> {
@@ -312,11 +370,22 @@ export class SftpDataAdapter {
     const plan = this.planList(normalizedPath);
     const primaryRemote = this.joinRemote(plan.primary);
 
-    let primaryEntries = this.dirCache.get(primaryRemote);
-    if (!primaryEntries) {
-      primaryEntries = await this.client.list(primaryRemote);
-      this.dirCache.put(primaryRemote, primaryEntries);
+    // ── remote entries ──────────────────────────────────────────────
+    let primaryEntries: RemoteEntry[] = [];
+    let remoteAvailable = false;
+    let cachedPrimary = this.dirCache.get(primaryRemote);
+    if (!cachedPrimary) {
+      try {
+        cachedPrimary = await this.client.list(primaryRemote);
+        this.dirCache.put(primaryRemote, cachedPrimary);
+      } catch {
+        cachedPrimary = [];
+      }
     }
+    primaryEntries = cachedPrimary;
+    remoteAvailable = primaryEntries.length > 0 ||
+      cachedPrimary !== undefined; // dir exists remotely even if empty
+
     if (plan.hideUserDirName) {
       primaryEntries = primaryEntries.filter(e => e.name !== plan.hideUserDirName);
     }
@@ -330,14 +399,50 @@ export class SftpDataAdapter {
           cached = await this.client.list(userRemote);
           this.dirCache.put(userRemote, cached);
         } catch {
-          // The per-client subtree doesn't exist yet — that's fine on
-          // first connect, no entries to merge.
           cached = [];
         }
       }
       userEntries = cached;
     }
 
+    // ── local fallback entries ──────────────────────────────────────
+    let localEntries: RemoteEntry[] = [];
+    if (this.localFallback) {
+      try {
+        const localList = await this.localFallback.list(normalizedPath);
+        // Convert local ListedFiles to RemoteEntry[] for merging
+        const localSet = new Set<string>();
+        for (const f of localList.files) {
+          const name = f.startsWith(normalizedPath ? normalizedPath + '/' : '')
+            ? f.slice((normalizedPath ? normalizedPath + '/' : '').length)
+            : f;
+          localSet.add(name);
+        }
+        for (const d of localList.folders) {
+          const name = d.startsWith(normalizedPath ? normalizedPath + '/' : '')
+            ? d.slice((normalizedPath ? normalizedPath + '/' : '').length)
+            : d;
+          localSet.add(name);
+        }
+        // Build local entries
+        const allLocalNames = [...localSet];
+        const localDirNames = new Set(
+          localList.folders.map(f =>
+            f.startsWith(normalizedPath ? normalizedPath + '/' : '')
+              ? f.slice((normalizedPath ? normalizedPath + '/' : '').length)
+              : f
+          )
+        );
+        localEntries = allLocalNames.map(name => ({
+          name,
+          isDirectory: localDirNames.has(name),
+        }));
+      } catch {
+        // local list failed — use remote-only
+      }
+    }
+
+    // ── merge ───────────────────────────────────────────────────────
     const files: string[] = [];
     const folders: string[] = [];
     const prefix = normalizedPath ? normalizedPath + '/' : '';
@@ -349,11 +454,20 @@ export class SftpDataAdapter {
       if (entry.isDirectory) folders.push(childPath);
       else files.push(childPath);
     };
-    // The user-subtree entries take precedence — their names always
-    // appear in the merged listing, even if a same-named placeholder
-    // somehow exists in the primary listing.
+
+    // Track remote entries
+    for (const e of primaryEntries) {
+      this.remotePaths.add(prefix + e.name);
+    }
+    for (const e of userEntries) {
+      this.remotePaths.add(prefix + e.name);
+    }
+
+    // The user-subtree entries take precedence
     for (const e of userEntries) emit(e);
     for (const e of primaryEntries) emit(e);
+    // Local-only entries fill in the gaps
+    for (const e of localEntries) emit(e);
     return { files, folders };
   }
 
@@ -375,7 +489,21 @@ export class SftpDataAdapter {
   }
 
   async read(normalizedPath: string): Promise<string> {
-    const buf = await this.readBuffer(normalizedPath);
+    let buf: Buffer;
+    try {
+      buf = await this.readBuffer(normalizedPath);
+      this.remotePaths.add(normalizedPath);
+    } catch (err) {
+      if (this.localFallback && this.isFileNotFound(err)) {
+        try {
+          const text = await this.localFallback.read(normalizedPath);
+          return text;
+        } catch {
+          throw err;
+        }
+      }
+      throw err;
+    }
     const text = buf.toString('utf8');
     // Snapshot the just-read content so a subsequent conflicting write
     // can show the user a real ancestor pane in the 3-way modal.
@@ -387,12 +515,39 @@ export class SftpDataAdapter {
   }
 
   async readBinary(normalizedPath: string): Promise<ArrayBuffer> {
-    const buf = await this.readBuffer(normalizedPath);
+    let buf: Buffer;
+    try {
+      buf = await this.readBuffer(normalizedPath);
+      this.remotePaths.add(normalizedPath);
+    } catch (err) {
+      if (this.localFallback && this.isFileNotFound(err)) {
+        try {
+          return await this.localFallback.readBinary(normalizedPath);
+        } catch {
+          throw err;
+        }
+      }
+      throw err;
+    }
     // Copy into a fresh ArrayBuffer so callers can't accidentally mutate
     // the cached Buffer's underlying memory through the returned view.
     const ab = new ArrayBuffer(buf.byteLength);
     new Uint8Array(ab).set(buf);
     return ab;
+  }
+
+  /**
+   * Check if an error represents "file not found" from the remote.
+   * Returns true for RpcError with code FileNotFound (-32010) or
+   * any error whose message contains "no such file" / "ENOENT".
+   */
+  private isFileNotFound(err: unknown): boolean {
+    if (err && typeof err === 'object' && 'name' in err && (err as { name: string }).name === 'RpcError' && 'code' in err) {
+      const code = (err as { code: number }).code;
+      if (code === ErrorCode.FileNotFound) return true;
+    }
+    const msg = errorMessage(err);
+    return msg.includes('no such file') || msg.includes('ENOENT');
   }
 
   /**

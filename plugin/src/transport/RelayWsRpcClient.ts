@@ -92,6 +92,42 @@ export class RelayWsRpcClient {
     this.handleClose(undefined);
   }
 
+  /**
+   * Send a JSON-RPC 2.0 notification (no `id`, no response expected).
+   * Useful for keep-alive pings that should not accumulate pending
+   * calls or produce errors on the wire.
+   */
+  notify(method: string, params: unknown): void {
+    if (this.closed) return;
+    const request = { jsonrpc: '2.0' as const, method, params };
+    try {
+      this.ws.send(JSON.stringify(request));
+    } catch {
+      // send failures surface through onclose; ignore here.
+    }
+  }
+
+  /**
+   * Start a lightweight keep-alive timer that periodically sends a
+   * `system.ping` notification. The browser WebSocket API auto-responds
+   * to server Ping frames, but this adds defense-in-depth for NAT /
+   * proxy middleboxes that track application-level traffic.
+   *
+   * The timer stops automatically when the connection closes or when
+   * the returned disposer is called.
+   */
+  startKeepAlive(intervalMs: number = 30_000): () => void {
+    if (this.closed) return () => {};
+    const id = setInterval(() => {
+      if (this.closed) {
+        clearInterval(id);
+        return;
+      }
+      this.notify('system.ping', {});
+    }, intervalMs);
+    return () => clearInterval(id);
+  }
+
   // ─── internal ──────────────────────────────────────────────────────────────
 
   private handleMessage(data: string): void {
