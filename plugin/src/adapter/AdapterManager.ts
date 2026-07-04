@@ -1,5 +1,5 @@
 import type { App, PluginManifest } from 'obsidian';
-import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
+import { FileSystemAdapter, Notice, Platform, TFile, TFolder } from 'obsidian';
 import { VaultModelBuilder } from '../vault/VaultModelBuilder';
 import { LocalOpRegistry } from './LocalOpRegistry';
 import type { PluginSettings } from '../types';
@@ -135,33 +135,38 @@ export class AdapterManager {
     const mapper = new PathMapper(clientId, this.app.vault.configDir);
     logger.info(`PathMapper: clientId="${clientId}"`);
 
-    // Spin up the localhost binary bridge so getResourcePath has
-    // somewhere to send Obsidian. The bridge is best-effort: if it
-    // fails to bind we still patch and just lose image rendering.
-    //
-    // When the active session is RPC AND the daemon advertises
-    // `fs.thumbnail`, also wire the thumbnail fetcher — image-extension
-    // requests get served from the daemon's resize path (small, cached)
-    // instead of pulling the full original on every <img>.
-    const bridge = new ResourceBridge();
-    const fetchThumbnail = this.makeThumbnailFetcherIfSupported();
-    const fetchBinaryRange = this.makeBinaryRangeFetcherIfSupported();
-    try {
-      await bridge.start(
-        p => this.fetchBinaryForBridge(p),
-        fetchThumbnail ?? undefined,
-        fetchBinaryRange ?? undefined,
-      );
-      this.resourceBridge = bridge;
-      if (fetchThumbnail) {
-        logger.info('ResourceBridge: thumbnail fast path enabled (daemon supports fs.thumbnail)');
-      }
-      if (fetchBinaryRange) {
-        logger.info('ResourceBridge: range fast path enabled (daemon supports fs.readBinaryRange)');
-      }
-    } catch (e) {
-      logger.warn(`ResourceBridge: start failed: ${errorMessage(e)}`);
+    if (Platform.isMobile) {
       this.resourceBridge = null;
+      logger.info('ResourceBridge: disabled on mobile runtime');
+    } else {
+      // Spin up the localhost binary bridge so getResourcePath has
+      // somewhere to send Obsidian. The bridge is best-effort: if it
+      // fails to bind we still patch and just lose image rendering.
+      //
+      // When the active session is RPC AND the daemon advertises
+      // `fs.thumbnail`, also wire the thumbnail fetcher — image-extension
+      // requests get served from the daemon's resize path (small, cached)
+      // instead of pulling the full original on every <img>.
+      const bridge = new ResourceBridge();
+      const fetchThumbnail = this.makeThumbnailFetcherIfSupported();
+      const fetchBinaryRange = this.makeBinaryRangeFetcherIfSupported();
+      try {
+        await bridge.start(
+          p => this.fetchBinaryForBridge(p),
+          fetchThumbnail ?? undefined,
+          fetchBinaryRange ?? undefined,
+        );
+        this.resourceBridge = bridge;
+        if (fetchThumbnail) {
+          logger.info('ResourceBridge: thumbnail fast path enabled (daemon supports fs.thumbnail)');
+        }
+        if (fetchBinaryRange) {
+          logger.info('ResourceBridge: range fast path enabled (daemon supports fs.readBinaryRange)');
+        }
+      } catch (e) {
+        logger.warn(`ResourceBridge: start failed: ${errorMessage(e)}`);
+        this.resourceBridge = null;
+      }
     }
 
     // The Go daemon already knows the absolute vault root via its
@@ -197,7 +202,9 @@ export class AdapterManager {
         const queue = this.offlineQueue;
         this.pendingEditsBar.startPolling(() => queue.pending().length);
       } catch (e) {
-        logger.warn(`OfflineQueue: open failed (${errorMessage(e)}); offline writes will throw`);
+        const msg = `OfflineQueue: open failed (${errorMessage(e)}); offline writes will throw`;
+        if (Platform.isMobile) logger.info(msg);
+        else logger.warn(msg);
         this.offlineQueue = null;
       }
     }
