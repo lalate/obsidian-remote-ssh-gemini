@@ -179,7 +179,10 @@ export class AdapterManager {
     // (or — when a stale doubled mirror exists — quietly listing it).
     // The SFTP transport has no such root-knowing server; it does need
     // the prefix to anchor calls at the vault.
-    const adapterRemoteBase = this.conn.rpcConnection ? '' : this.conn.activeRemoteBasePath;
+    const rpcVersion = this.conn.rpcConnection?.info.version ?? '';
+    const adapterRemoteBase = this.conn.rpcConnection
+      ? (rpcVersion === 'direct-ws' ? (this.conn.activeRemoteBasePath ?? '') : '')
+      : this.conn.activeRemoteBasePath;
     // Per-session ancestor snapshot store. Powers the 3-way merge UI;
     // cleared on disconnect with the rest of the patched-adapter state.
     this.ancestorTracker = new AncestorTracker();

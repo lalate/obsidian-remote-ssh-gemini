@@ -333,7 +333,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
         this.transferTracker,
       );
 
-      this.addSettingTab(new MobileSettingsTab(this.app, this));
+      this.installSettingsTab();
 
       this.pushMobilePreviewLog(`Mobile plugin loaded (session ${this.mobileSessionId})`);
 
@@ -868,6 +868,24 @@ export default class RemoteSshMobilePlugin extends Plugin {
     if (this.mobilePreviewLogs.length > 500) {
       this.mobilePreviewLogs.shift();
     }
+  }
+
+  private installSettingsTab(): void {
+    const setting = this.app.setting as unknown as {
+      settingTabs?: unknown[];
+      pluginTabs?: Record<string, unknown>;
+    };
+    if (Array.isArray(setting.settingTabs)) {
+      setting.settingTabs = setting.settingTabs.filter((tab) => {
+        if (!(tab instanceof MobileSettingsTab)) return true;
+        const maybe = tab as { plugin?: { manifest?: { id?: string } } };
+        return maybe.plugin?.manifest?.id !== this.manifest.id;
+      });
+    }
+    if (setting.pluginTabs && this.manifest.id in setting.pluginTabs) {
+      delete setting.pluginTabs[this.manifest.id];
+    }
+    this.addSettingTab(new MobileSettingsTab(this.app, this));
   }
 
   // ─── Settings tab interface (called by MobileSettingsTab) ────────────────────

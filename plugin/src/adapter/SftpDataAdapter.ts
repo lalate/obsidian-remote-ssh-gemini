@@ -439,6 +439,13 @@ export class SftpDataAdapter {
     // The user-subtree entries take precedence
     for (const e of userEntries) emit(e);
     for (const e of primaryEntries) emit(e);
+    if (normalizedPath === '') {
+      logger.info('SftpDataAdapter.list root', {
+        remoteBasePath: this.remoteBasePath,
+        files: files.length,
+        folders: folders.length,
+      });
+    }
     return { files, folders };
   }
 
@@ -1123,4 +1130,3 @@ function parentDirRemote(p: string): string {
 function reconnectingError(): Error {
   return new Error('Remote SSH: reconnecting — try again once the connection is restored');
 }
-
