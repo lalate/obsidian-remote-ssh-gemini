@@ -314,7 +314,6 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       this.fsChangeListener = new FsChangeListener(this.app);
       this.chatUI = new ChatUI(this.app, this.conn as unknown as ConnectionManagerClass, this);
-      this.chatUI.enable();
 
       this.pendingEditsBar = new PendingEditsBar(this, () => {});
 
@@ -339,6 +338,14 @@ export default class RemoteSshMobilePlugin extends Plugin {
       if (relayProfile) {
         this.vaultLogger?.log('INFO', 'Auto-connecting via relay-rpc profile', { profile: relayProfile.name });
         await this.mobileConnect();
+      }
+
+      // Enable chat UI AFTER auto-connect — updateController() calls
+      // buildFsClient() which throws if no RPC session exists yet.
+      try {
+        this.chatUI.enable();
+      } catch (e) {
+        this.vaultLogger?.log('WARN', 'ChatUI enable (expected if not connected)', { error: errorMessage(e) });
       }
 
       new Notice('Remote SSH: mobile mode enabled');
