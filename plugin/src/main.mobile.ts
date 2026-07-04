@@ -338,6 +338,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       this.pushMobilePreviewLog(`Mobile plugin loaded (session ${this.mobileSessionId})`);
 
       this.registerCommands();
+      this.registerMobileQuickActions();
       this.registerResumeReconnectHandlers();
 
       // Auto-connect if there's a relay-rpc profile (mirrors desktop autoConnectProfileId behavior)
@@ -486,6 +487,26 @@ export default class RemoteSshMobilePlugin extends Plugin {
         );
         new Notice('Remote SSH: connection probe report copied');
       },
+    });
+
+    this.addCommand({
+      id: 'mobile-dump-explorer-snapshot',
+      name: 'Mobile: dump file explorer snapshot',
+      callback: () => {
+        this.dumpExplorerSnapshot('command');
+      },
+    });
+  }
+
+  private registerMobileQuickActions(): void {
+    this.addRibbonIcon('plug', 'Remote SSH: mobile connect', () => {
+      void this.mobileConnect();
+    });
+    this.addRibbonIcon('plug-zap', 'Remote SSH: mobile disconnect', () => {
+      void this.mobileDisconnect();
+    });
+    this.addRibbonIcon('list-tree', 'Remote SSH: dump explorer snapshot', () => {
+      this.dumpExplorerSnapshot('ribbon');
     });
   }
 
@@ -961,6 +982,32 @@ export default class RemoteSshMobilePlugin extends Plugin {
     if (this.mobilePreviewLogs.length > 500) {
       this.mobilePreviewLogs.shift();
     }
+  }
+
+  private dumpExplorerSnapshot(trigger: 'command' | 'ribbon'): void {
+    const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
+    const paths = Object.keys(map).sort();
+    const hidden = paths.filter((p) => p.split('/').some((seg) => seg.startsWith('.')));
+    const root = this.app.vault.getRoot() as unknown as { children?: Array<{ path?: string }> };
+    const rootChildren = Array.isArray(root.children)
+      ? root.children.map((c) => c.path ?? '(unknown)').sort()
+      : [];
+    const rootHidden = rootChildren.filter((p) => p.split('/').some((seg) => seg.startsWith('.')));
+
+    this.pushMobilePreviewLog(
+      `Explorer snapshot (${trigger}): total=${paths.length}, hidden=${hidden.length}, ` +
+      `rootChildren=${rootChildren.length}, rootHidden=${rootHidden.length}`,
+    );
+    logger.info('Explorer snapshot', {
+      trigger,
+      totalPaths: paths.length,
+      hiddenCount: hidden.length,
+      rootChildrenCount: rootChildren.length,
+      rootHiddenCount: rootHidden.length,
+      hiddenSample: hidden.slice(0, 20),
+      rootHiddenSample: rootHidden.slice(0, 20),
+    });
+    new Notice('Remote SSH: explorer snapshot logged');
   }
 
   private installSettingsTab(): void {

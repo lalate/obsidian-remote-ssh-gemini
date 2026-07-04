@@ -189,6 +189,7 @@ export class FsChangeListener {
 
     const action = interpretWatchEvent(params.path, pathMapper);
     if (!action) return;
+    if (this.isHiddenVaultPath(action.vaultPath)) return;
 
     // #341 echo de-dup: the writer adapter records every op it
     // applied (rename records both old + new), then reflects it
@@ -211,6 +212,7 @@ export class FsChangeListener {
     if (params.event === 'renamed' && params.newPath) {
       const newAction = interpretWatchEvent(params.newPath, pathMapper);
       if (newAction) {
+        if (this.isHiddenVaultPath(newAction.vaultPath)) return;
         dataAdapter.invalidateRemotePath(newAction.remotePath);
         newVaultPath = newAction.vaultPath;
       }
@@ -301,5 +303,9 @@ export class FsChangeListener {
     } finally {
       perfTracer.end(__t4b, { event, path: oldVaultPath, newPath: newVaultPath });
     }
+  }
+
+  private isHiddenVaultPath(vaultPath: string): boolean {
+    return vaultPath.split('/').some((seg) => seg.startsWith('.'));
   }
 }
