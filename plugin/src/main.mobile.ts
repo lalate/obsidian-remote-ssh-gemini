@@ -519,7 +519,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
                 : this.createDefaultMobileProfile().id,
             port: Number.isFinite(v.port) ? Number(v.port) : 22,
             transport:
-              v.transport === 'sftp' || v.transport === 'rpc' || v.transport === 'relay-rpc'
+              v.transport === 'sftp' || v.transport === 'rpc' || v.transport === 'relay-rpc' || v.transport === 'direct-ws'
                 ? v.transport
                 : 'sftp',
             authMethod:
