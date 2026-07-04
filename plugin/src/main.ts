@@ -11,7 +11,7 @@ type DelegatePlugin = Plugin & {
 };
 
 // ===== Simple VaultLogger (inline, no extra files) =====
-const DEBUG_LOG_FILE = '.remote-ssh-debug.log';
+const DEBUG_LOG_FILE = 'remote-ssh-debug.log';
 const MAX_LOG_LINES = 500;
 const FLUSH_INTERVAL_MS = 1000;
 const BUFFER_FLUSH_THRESHOLD = 20;
