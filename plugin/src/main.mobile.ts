@@ -17,6 +17,7 @@ import { VaultModelBuilder } from './vault/VaultModelBuilder';
 import { FsChangeListener } from './vault/FsChangeListener';
 import { BulkWalker } from './vault/BulkWalker';
 import { PendingEditsBar } from './ui/PendingEditsBar';
+import { connectDirectWs } from './transport/DirectWsConnection';
 import { establishRelayWsConnection } from './transport/RelayWsConnection';
 import { logger } from './util/logger';
 import { normalizeRemotePath } from './util/pathUtils';
@@ -42,11 +43,15 @@ type MobileProfile = {
   connectTimeoutMs: number;
   keepaliveIntervalMs: number;
   keepaliveCountMax: number;
-  transport?: 'sftp' | 'rpc' | 'relay-rpc';
+  transport?: 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws';
   relayBaseUrl?: string;
   relayAuthToken?: string;
   relayRpcUsername?: string;
   relayRpcPassword?: string;
+  /** Direct WebSocket transport fields (used when transport === 'direct-ws'). */
+  wsHost?: string;
+  wsPort?: number;
+  wsToken?: string;
   jumpHost?: {
     host: string;
     port: number;
@@ -525,6 +530,9 @@ export default class RemoteSshMobilePlugin extends Plugin {
             relayAuthToken: typeof v.relayAuthToken === 'string' ? v.relayAuthToken : '',
             relayRpcUsername: typeof v.relayRpcUsername === 'string' ? v.relayRpcUsername : '',
             relayRpcPassword: typeof v.relayRpcPassword === 'string' ? v.relayRpcPassword : '',
+            wsHost: typeof v.wsHost === 'string' ? v.wsHost : '',
+            wsPort: typeof v.wsPort === 'number' && Number.isFinite(v.wsPort) ? v.wsPort : 0,
+            wsToken: typeof v.wsToken === 'string' ? v.wsToken : '',
           }))
       : [];
 
@@ -556,78 +564,36 @@ export default class RemoteSshMobilePlugin extends Plugin {
       return;
     }
 
-    const relayProfile = this.mobileProfiles.find(
-      (p) => p.transport === 'relay-rpc' || !p.transport,
+    // Pick the first profile that supports mobile (relay-rpc or direct-ws).
+    // Legacy profiles without an explicit transport default to relay-rpc.
+    const profile = this.mobileProfiles.find(
+      (p) => p.transport === 'relay-rpc' || p.transport === 'direct-ws' || !p.transport,
     );
-    if (!relayProfile) {
-      this.vaultLogger?.log('WARN', 'mobileConnect failed — no relay-rpc profile');
-      new Notice('Remote SSH: no relay-rpc profile configured');
+    if (!profile) {
+      this.vaultLogger?.log('WARN', 'mobileConnect failed — no compatible profile (relay-rpc or direct-ws)');
+      new Notice('Remote SSH: no connectable profile configured');
       return;
     }
 
-    const effectivePath = normalizeRemotePath(relayProfile.remotePath);
-    const baseUrl =
-      relayProfile.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint;
-    if (!baseUrl) {
-      this.vaultLogger?.log('WARN', 'mobileConnect failed — no relay endpoint URL');
-      new Notice('Remote SSH: relay endpoint URL is required');
-      return;
-    }
+    const effectivePath = normalizeRemotePath(profile.remotePath);
 
     this.vaultLogger?.log('INFO', 'mobileConnect starting', {
-      profile: relayProfile.name,
-      target: `${relayProfile.username}@${relayProfile.host}:${relayProfile.port}`,
-      baseUrl: baseUrl.replace(/\/+$/, ''),
+      profile: profile.name,
+      transport: profile.transport ?? 'relay-rpc',
       remotePath: effectivePath,
     });
 
     this.state = SyncState.CONNECTING;
     this.pushMobilePreviewLog(
-      `Connecting via relay: ${relayProfile.username}@${relayProfile.host}:${relayProfile.port}${effectivePath}`,
+      `Connecting (${profile.transport ?? 'relay-rpc'}): ${profile.host || profile.wsHost}${effectivePath}`,
     );
 
     try {
-      this.vaultLogger?.log('INFO', 'Establishing relay WebSocket connection...');
-      const relayConn = await establishRelayWsConnection({
-        baseUrl,
-        target: {
-          host: relayProfile.host,
-          port: relayProfile.port,
-          username: relayProfile.username,
-          remotePath: effectivePath,
-        },
-        authToken:
-          relayProfile.relayAuthToken?.trim() ||
-          this.mobileRelayConfig.authToken?.trim() ||
-          undefined,
-        rpcCredentials: {
-          username:
-            relayProfile.relayRpcUsername?.trim() ||
-            this.mobileRelayConfig.rpcUsername?.trim() ||
-            'admin',
-          password:
-            relayProfile.relayRpcPassword?.trim() ||
-            this.mobileRelayConfig.rpcPassword?.trim() ||
-            'password',
-        },
-      });
-      this.vaultLogger?.log('INFO', 'Relay WebSocket connection established', {
-        sessionId: relayConn.sessionId,
-      });
-
-      this.conn.rpcConnection = {
-        rpc: relayConn.rpc as unknown as MobileRpcHandle['rpc'],
-        info: {
-          protocolVersion: 1,
-          version: 'relay-ws',
-          capabilities: [],
-        },
-        close: () => relayConn.close(),
-      };
-      this.conn.activeRemoteBasePath = effectivePath;
-      this.conn.activeProfile = relayProfile as unknown as SshProfile;
-
-      this.pushMobilePreviewLog(`Relay session established (${relayConn.sessionId})`);
+      if (profile.transport === 'direct-ws') {
+        await this.mobileConnectDirectWs(profile, effectivePath);
+      } else {
+        await this.mobileConnectRelay(profile, effectivePath);
+      }
 
       // Patch adapter
       this.vaultLogger?.log('INFO', 'Patching adapter...');
@@ -653,9 +619,10 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       this.state = SyncState.CONNECTED;
       const userLabel = MobileConnectionManager.formatUserLabel(this.settings);
-      this.vaultLogger?.log('INFO', 'mobileConnect COMPLETE', { userLabel });
-      new Notice(`Remote SSH: Connected to ${relayProfile.name} as ${userLabel} via RELAY-RPC`);
-      this.pushMobilePreviewLog(`Connected: ${relayProfile.name} as ${userLabel}`);
+      const transportLabel = (profile.transport ?? 'relay-rpc').toUpperCase();
+      this.vaultLogger?.log('INFO', 'mobileConnect COMPLETE', { userLabel, transport: transportLabel });
+      new Notice(`Remote SSH: Connected to ${profile.name} as ${userLabel} via ${transportLabel}`);
+      this.pushMobilePreviewLog(`Connected: ${profile.name} as ${userLabel}`);
     } catch (e) {
       this.state = SyncState.ERROR;
       const msg = errorMessage(e);
@@ -665,6 +632,85 @@ export default class RemoteSshMobilePlugin extends Plugin {
       new Notice(`Remote SSH: connect failed — ${msg}`);
       this.conn.rpcConnection = null;
     }
+  }
+
+  /** Connect via relay server handshake (POST /v1/connect + WebSocket). */
+  private async mobileConnectRelay(profile: MobileProfile, effectivePath: string): Promise<void> {
+    const baseUrl = profile.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint;
+    if (!baseUrl) {
+      throw new Error('Relay endpoint URL is required for relay-rpc transport');
+    }
+
+    this.vaultLogger?.log('INFO', 'Establishing relay WebSocket connection...');
+    const relayConn = await establishRelayWsConnection({
+      baseUrl,
+      target: {
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        remotePath: effectivePath,
+      },
+      authToken: profile.relayAuthToken?.trim() || this.mobileRelayConfig.authToken?.trim() || undefined,
+      rpcCredentials: {
+        username: profile.relayRpcUsername?.trim() || this.mobileRelayConfig.rpcUsername?.trim() || 'admin',
+        password: profile.relayRpcPassword?.trim() || this.mobileRelayConfig.rpcPassword?.trim() || 'password',
+      },
+    });
+    this.vaultLogger?.log('INFO', 'Relay WebSocket connection established', {
+      sessionId: relayConn.sessionId,
+    });
+
+    this.conn.rpcConnection = {
+      rpc: relayConn.rpc as unknown as MobileRpcHandle['rpc'],
+      info: { protocolVersion: 1, version: 'relay-ws', capabilities: [] },
+      close: () => relayConn.close(),
+    };
+    this.conn.activeRemoteBasePath = effectivePath;
+    this.conn.activeProfile = profile as unknown as SshProfile;
+    this.pushMobilePreviewLog(`Relay session established (${relayConn.sessionId})`);
+  }
+
+  /** Connect directly to the Go daemon's --ws-addr endpoint (no relay). */
+  private async mobileConnectDirectWs(profile: MobileProfile, effectivePath: string): Promise<void> {
+    const host = profile.wsHost?.trim();
+    const port = profile.wsPort;
+    if (!host || !port) {
+      throw new Error('Direct WebSocket requires wsHost and wsPort');
+    }
+
+    // Fetch auth token from the daemon's /token endpoint if not pre-configured.
+    let token = profile.wsToken?.trim();
+    if (!token) {
+      const tokenUrl = `http://${host}:${port}/token`;
+      this.vaultLogger?.log('INFO', 'Fetching token from daemon...', { url: tokenUrl });
+      try {
+        const resp = await requestUrl({ url: tokenUrl, method: 'GET' });
+        const body = resp.json as { token?: string };
+        if (!body.token) {
+          throw new Error(`Daemon returned no token field: ${JSON.stringify(body)}`);
+        }
+        token = body.token;
+        this.vaultLogger?.log('INFO', 'Token fetched successfully');
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(`Failed to fetch token from daemon: ${detail}`);
+      }
+    }
+
+    const wsUrl = `ws://${host}:${port}/`;
+    this.vaultLogger?.log('INFO', 'Establishing direct WebSocket connection...', { url: wsUrl });
+
+    const directConn = await connectDirectWs({ url: wsUrl, token });
+    this.vaultLogger?.log('INFO', 'Direct WebSocket connection established');
+
+    this.conn.rpcConnection = {
+      rpc: directConn.rpc as unknown as MobileRpcHandle['rpc'],
+      info: { protocolVersion: 1, version: 'direct-ws', capabilities: [] },
+      close: () => directConn.close(),
+    };
+    this.conn.activeRemoteBasePath = effectivePath;
+    this.conn.activeProfile = profile as unknown as SshProfile;
+    this.pushMobilePreviewLog('Direct WebSocket session established');
   }
 
   private async mobileDisconnect(): Promise<void> {
@@ -736,6 +782,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       connectTimeoutMs: 15000,
       keepaliveIntervalMs: 10000,
       keepaliveCountMax: 3,
+      wsPort: 0,
     };
   }
 
@@ -765,11 +812,14 @@ export default class RemoteSshMobilePlugin extends Plugin {
     port: number;
     username: string;
     remotePath: string;
-    transport?: 'sftp' | 'rpc' | 'relay-rpc';
+    transport?: 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws';
     relayBaseUrl?: string;
     relayAuthToken?: string;
     relayRpcUsername?: string;
     relayRpcPassword?: string;
+    wsHost?: string;
+    wsPort?: number;
+    wsToken?: string;
   }> {
     return this.mobileProfiles.map((p) => ({
       id: p.id,
@@ -783,6 +833,9 @@ export default class RemoteSshMobilePlugin extends Plugin {
       relayAuthToken: p.relayAuthToken,
       relayRpcUsername: p.relayRpcUsername,
       relayRpcPassword: p.relayRpcPassword,
+      wsHost: p.wsHost,
+      wsPort: p.wsPort,
+      wsToken: p.wsToken,
     }));
   }
 
@@ -818,11 +871,14 @@ export default class RemoteSshMobilePlugin extends Plugin {
       port?: number;
       username?: string;
       remotePath?: string;
-      transport?: 'sftp' | 'rpc' | 'relay-rpc';
+      transport?: 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws';
       relayBaseUrl?: string;
       relayAuthToken?: string;
       relayRpcUsername?: string;
       relayRpcPassword?: string;
+      wsHost?: string;
+      wsPort?: number;
+      wsToken?: string;
     },
   ): Promise<void> {
     const profile = this.mobileProfiles.find((p) => p.id === id);

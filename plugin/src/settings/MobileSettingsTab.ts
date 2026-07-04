@@ -9,11 +9,14 @@ type MobilePreviewPlugin = Plugin & {
     port: number;
     username: string;
     remotePath: string;
-    transport?: 'sftp' | 'rpc' | 'relay-rpc';
+    transport?: 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws';
     relayBaseUrl?: string;
     relayAuthToken?: string;
     relayRpcUsername?: string;
     relayRpcPassword?: string;
+    wsHost?: string;
+    wsPort?: number;
+    wsToken?: string;
   }>;
   getMobileRelayConfig: () => {
     endpoint: string;
@@ -34,11 +37,14 @@ type MobilePreviewPlugin = Plugin & {
     port?: number;
     username?: string;
     remotePath?: string;
-    transport?: 'sftp' | 'rpc' | 'relay-rpc';
+    transport?: 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws';
     relayBaseUrl?: string;
     relayAuthToken?: string;
     relayRpcUsername?: string;
     relayRpcPassword?: string;
+    wsHost?: string;
+    wsPort?: number;
+    wsToken?: string;
   }) => Promise<void>;
   removeMobileProfile: (id: string) => Promise<void>;
   runMobileVerification: () => {
@@ -249,8 +255,8 @@ export class MobileSettingsTab extends PluginSettingTab {
 
     containerEl.createEl('p', {
       text:
-        'Desktop parity mode is being expanded on mobile. This panel keeps local logs so ' +
-        'you can validate runtime behavior while relay-rpc mainline support is rolling out.',
+        'Mobile profiles support relay-rpc (via relay server) and direct-ws (via Tailscale + Go daemon). ' +
+        'This panel keeps local logs so you can validate runtime behavior.',
       cls: 'setting-item-description',
     });
 
@@ -259,7 +265,7 @@ export class MobileSettingsTab extends PluginSettingTab {
     const ul = warn.createEl('ul');
     ul.createEl('li', { text: 'Direct SSH on mobile depends on runtime Node API availability.' });
     ul.createEl('li', { text: 'Remote terminal and daemon controls are desktop-only in this phase.' });
-    ul.createEl('li', { text: 'For desktop-equivalent path, set transport=relay-rpc per profile.' });
+    ul.createEl('li', { text: 'For desktop-equivalent path, set transport=relay-rpc or direct-ws per profile.' });
 
     new Setting(containerEl)
       .setName('Profiles (preview)')
@@ -599,21 +605,58 @@ export class MobileSettingsTab extends PluginSettingTab {
 
       new Setting(containerEl)
         .setName('Transport')
-        .setDesc('Desktop parity: select relay-rpc to use relay JSON-RPC as mainline path.')
+        .setDesc('Desktop parity: relay-rpc uses relay server; direct-ws connects over Tailscale directly to Go daemon.')
         .addDropdown(d => d
           .addOption('sftp', 'SFTP')
           .addOption('rpc', 'SSH + RPC daemon')
           .addOption('relay-rpc', 'Relay-RPC')
+          .addOption('direct-ws', 'Direct WebSocket')
           .setValue(p.transport ?? 'sftp')
           .onChange(async v => {
-            await this.pluginRef.updateMobileProfile(p.id, { transport: v as 'sftp' | 'rpc' | 'relay-rpc' });
+            await this.pluginRef.updateMobileProfile(p.id, { transport: v as 'sftp' | 'rpc' | 'relay-rpc' | 'direct-ws' });
             this.display();
           }));
 
-      if ((p.transport ?? 'sftp') !== 'relay-rpc') {
+      if ((p.transport ?? 'sftp') !== 'relay-rpc' && p.transport !== 'direct-ws') {
         new Setting(containerEl)
           .setName('Mobile transport note')
-          .setDesc('SFTP/RPC may fail on mobile depending on runtime Node API availability. For desktop-equivalent behavior, use relay-rpc.');
+          .setDesc('SFTP/RPC may fail on mobile depending on runtime Node API availability. For desktop-equivalent behavior, use relay-rpc or direct-ws.');
+      }
+
+      if (p.transport === 'direct-ws') {
+        new Setting(containerEl)
+          .setName('WebSocket host')
+          .setDesc('Tailscale IP or hostname of the Go daemon.')
+          .addText(t => t
+            .setPlaceholder('100.x.y.z')
+            .setValue(p.wsHost ?? '')
+            .onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { wsHost: v.trim() });
+            }));
+
+        new Setting(containerEl)
+          .setName('WebSocket port')
+          .setDesc('Port of the Go daemon --ws-addr (default 9023).')
+          .addText(t => t
+            .setPlaceholder('9023')
+            .setValue(p.wsPort ? String(p.wsPort) : '')
+            .onChange(async v => {
+              const n = Number.parseInt(v, 10);
+              if (Number.isFinite(n) && n > 0 && n <= 65535) {
+                await this.pluginRef.updateMobileProfile(p.id, { wsPort: n });
+              }
+            }));
+
+        new Setting(containerEl)
+          .setName('WebSocket token (optional)')
+          .setDesc('When left empty, the token is fetched automatically from http://host:port/token.')
+          .addText(t => {
+            t.inputEl.type = 'password';
+            t.setValue(p.wsToken ?? '');
+            t.onChange(async v => {
+              await this.pluginRef.updateMobileProfile(p.id, { wsToken: v.trim() });
+            });
+          });
       }
 
       if ((p.transport ?? 'sftp') === 'relay-rpc') {

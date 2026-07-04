@@ -23,6 +23,7 @@ import (
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/handlers/thumbnails"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/server"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/watcher"
+	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/ws"
 )
 
 // Version is replaced at link time via -ldflags "-X main.Version=...".
@@ -44,6 +45,7 @@ func run(args []string) (int, error) {
 		vaultRoot   = fs.String("vault-root", "", "absolute path of the vault on this host (required)")
 		socketPath  = fs.String("socket", "", "unix socket to listen on (default ~/.obsidian-remote/server.sock)")
 		tokenPath   = fs.String("token-file", "", "file to write the session token to (default ~/.obsidian-remote/token)")
+		wsAddr      = fs.String("ws-addr", "", "TCP address for direct WebSocket transport, e.g. \":9023\" (default: disabled)")
 		versionFlag = fs.Bool("version", false, "print version and exit")
 		verbose     = fs.Bool("verbose", false, "log connection and dispatch events to stderr")
 	)
@@ -177,19 +179,51 @@ func run(args []string) (int, error) {
 	disp.Handle("fs.watch", handlers.RequireAuth(handlers.FsWatch(vaultWatcher, cidCor)))
 	disp.Handle("fs.unwatch", handlers.RequireAuth(handlers.FsUnwatch(vaultWatcher)))
 
-	// Wire signal-driven shutdown: closing the listener unwinds Serve.
+	// Wire signal-driven shutdown: closing the listener(s) unwinds Serve.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// ── WebSocket transport (optional) ──────────────────────────────────────
+	var wsListener net.Listener
+	if *wsAddr != "" {
+		wsListener, err = net.Listen("tcp", *wsAddr)
+		if err != nil {
+			return 1, fmt.Errorf("ws listen %q: %w", *wsAddr, err)
+		}
+		defer func() { _ = wsListener.Close() }()
+		logger.Info("WebSocket transport enabled", "addr", wsListener.Addr().String())
+	}
+
 	go func() {
 		<-ctx.Done()
 		logger.Info("shutdown signal received")
 		_ = listener.Close()
+		if wsListener != nil {
+			_ = wsListener.Close()
+		}
 	}()
+
+	// Start the WebSocket server in the background when --ws-addr is set.
+	if wsListener != nil {
+		wsSrv := ws.New(disp, ws.Options{
+			Token:               token,
+			Logger:              logger,
+			SubscriptionCleaner: watcherCleaner{vaultWatcher},
+		})
+		go func() {
+			if err := wsSrv.Serve(ctx, wsListener); err != nil {
+				logger.Error("WebSocket server exited", "err", err.Error())
+			}
+		}()
+	}
 
 	fmt.Fprintf(os.Stderr, "obsidian-remote-server %s\n", Version)
 	fmt.Fprintf(os.Stderr, "  vault:  %s\n", absRoot)
 	fmt.Fprintf(os.Stderr, "  socket: %s\n", *socketPath)
 	fmt.Fprintf(os.Stderr, "  token:  %s\n", *tokenPath)
+	if *wsAddr != "" {
+		fmt.Fprintf(os.Stderr, "  ws:     %s\n", *wsAddr)
+	}
 
 	if err := srv.Serve(ctx, listener); err != nil && !errors.Is(err, net.ErrClosed) {
 		return 1, err
