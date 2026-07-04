@@ -611,6 +611,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       // Populate vault file tree
       try {
+        this.resetVaultModelToRoot();
         this.vaultLogger?.log('INFO', 'Populating vault from remote...');
         const summary = await this.populateVaultFromRemote('mobile-connect');
         this.pushMobilePreviewLog(`Vault populated: ${summary}`);
@@ -838,6 +839,16 @@ export default class RemoteSshMobilePlugin extends Plugin {
       if (!this.isHiddenVaultPath(path)) continue;
       builder.removeOne(path);
     }
+  }
+
+  private resetVaultModelToRoot(): void {
+    const root = this.app.vault.getRoot() as unknown as { path: string; children?: unknown[] };
+    if (Array.isArray(root.children)) root.children.length = 0;
+    const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
+    for (const key of Object.keys(map)) {
+      delete map[key];
+    }
+    map[root.path] = root;
   }
 
   private isHiddenVaultPath(path: string): boolean {
