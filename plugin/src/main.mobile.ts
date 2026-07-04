@@ -365,6 +365,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
   onunload() {
     this.vaultLogger?.log('INFO', 'Mobile delegate unloading');
+    this.pruneSettingsTabs();
     this.chatUI?.disable();
     this.adapterMgr?.restore();
     void this.mobileDisconnect().catch(() => {
@@ -725,6 +726,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
     this.pushMobilePreviewLog('Disconnecting…');
     try {
       this.adapterMgr?.restore();
+      await this.syncVaultModelToCurrentAdapter('mobile-disconnect');
       await this.conn.disconnectTransport();
       this.state = SyncState.IDLE;
       this.vaultLogger?.log('INFO', 'mobileDisconnect complete');
@@ -792,6 +794,35 @@ export default class RemoteSshMobilePlugin extends Plugin {
       this.conn.rpcConnection = null;
       new Notice(`Remote SSH: connection lost — ${reason}`);
     });
+  }
+
+  private async syncVaultModelToCurrentAdapter(label: string): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter as unknown as {
+        exists(path: string): Promise<boolean>;
+      };
+      const builder = new VaultModelBuilder(this.app.vault, { TFile, TFolder });
+      const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
+      for (const path of Object.keys(map)) {
+        if (!path) continue;
+        let keep = false;
+        try {
+          keep = await adapter.exists(path);
+        } catch {
+          keep = false;
+        }
+        if (!keep) builder.removeOne(path);
+      }
+
+      const walk = await new BulkWalker({ adapter: this.app.vault.adapter }).walk('');
+      const result = await builder.build(walk.entries);
+      this.pushMobilePreviewLog(
+        `Vault synced (${label}): ${result.filesAdded}f + ${result.foldersAdded}d, ` +
+        `${result.skipped} skipped, ${result.errors.length} errors`,
+      );
+    } catch (e) {
+      logger.warn(`syncVaultModelToCurrentAdapter(${label}) failed: ${errorMessage(e)}`);
+    }
   }
 
   // ─── Vault population ───────────────────────────────────────────────────────
@@ -871,6 +902,11 @@ export default class RemoteSshMobilePlugin extends Plugin {
   }
 
   private installSettingsTab(): void {
+    this.pruneSettingsTabs();
+    this.addSettingTab(new MobileSettingsTab(this.app, this));
+  }
+
+  private pruneSettingsTabs(): void {
     const setting = this.app.setting as unknown as {
       settingTabs?: unknown[];
       pluginTabs?: Record<string, unknown>;
@@ -879,18 +915,30 @@ export default class RemoteSshMobilePlugin extends Plugin {
       setting.settingTabs = setting.settingTabs.filter((tab) => {
         const maybe = tab as {
           id?: string;
+          name?: string;
           plugin?: { manifest?: { id?: string } };
         };
         const byPluginId = maybe.plugin?.manifest?.id === this.manifest.id;
         const byTabId = maybe.id === this.manifest.id;
-        if (!byPluginId && !byTabId) return true;
-        return false;
+        const byName = maybe.name === this.manifest.name;
+        return !(byPluginId || byTabId || byName);
       });
     }
-    if (setting.pluginTabs && this.manifest.id in setting.pluginTabs) {
-      delete setting.pluginTabs[this.manifest.id];
+    if (setting.pluginTabs) {
+      for (const [key, value] of Object.entries(setting.pluginTabs)) {
+        const maybe = value as {
+          id?: string;
+          name?: string;
+          plugin?: { manifest?: { id?: string } };
+        };
+        const byPluginId = maybe.plugin?.manifest?.id === this.manifest.id;
+        const byTabId = maybe.id === this.manifest.id || key === this.manifest.id;
+        const byName = maybe.name === this.manifest.name;
+        if (byPluginId || byTabId || byName) {
+          delete setting.pluginTabs[key];
+        }
+      }
     }
-    this.addSettingTab(new MobileSettingsTab(this.app, this));
   }
 
   // ─── Settings tab interface (called by MobileSettingsTab) ────────────────────
