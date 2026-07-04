@@ -335,8 +335,11 @@ export class SftpDataAdapter {
         this.remotePaths.add(normalizedPath);
         return true;
       }
-    } catch {
-      // remote error (e.g. network) — fall through to local check
+    } catch (e) {
+      logger.warn(`SftpDataAdapter.exists: remote check failed for "${this.toRemote(normalizedPath)}"`, {
+        error: errorMessage(e),
+      });
+      // fall through to local check
     }
     if (this.localFallback) {
       try {
@@ -360,7 +363,10 @@ export class SftpDataAdapter {
         mtime: s.mtime,
         size: s.size,
       };
-    } catch {
+    } catch (e) {
+      logger.warn(`SftpDataAdapter.stat: remote stat failed for "${this.toRemote(normalizedPath)}"`, {
+        error: errorMessage(e),
+      });
       return null;
     }
   }
@@ -378,7 +384,10 @@ export class SftpDataAdapter {
       try {
         cachedPrimary = await this.client.list(primaryRemote);
         this.dirCache.put(primaryRemote, cachedPrimary);
-      } catch {
+      } catch (e) {
+        logger.warn(`SftpDataAdapter.list: remote list failed for "${primaryRemote}"`, {
+          error: errorMessage(e),
+        });
         cachedPrimary = [];
       }
     }
@@ -398,7 +407,10 @@ export class SftpDataAdapter {
         try {
           cached = await this.client.list(userRemote);
           this.dirCache.put(userRemote, cached);
-        } catch {
+        } catch (e) {
+          logger.warn(`SftpDataAdapter.list: user subtree list failed for "${userRemote}"`, {
+            error: errorMessage(e),
+          });
           cached = [];
         }
       }
@@ -494,6 +506,9 @@ export class SftpDataAdapter {
       buf = await this.readBuffer(normalizedPath);
       this.remotePaths.add(normalizedPath);
     } catch (err) {
+      logger.warn(`SftpDataAdapter.read: remote read failed for "${normalizedPath}"`, {
+        error: errorMessage(err),
+      });
       if (this.localFallback && this.isFileNotFound(err)) {
         try {
           const text = await this.localFallback.read(normalizedPath);
@@ -520,6 +535,9 @@ export class SftpDataAdapter {
       buf = await this.readBuffer(normalizedPath);
       this.remotePaths.add(normalizedPath);
     } catch (err) {
+      logger.warn(`SftpDataAdapter.readBinary: remote read failed for "${normalizedPath}"`, {
+        error: errorMessage(err),
+      });
       if (this.localFallback && this.isFileNotFound(err)) {
         try {
           return await this.localFallback.readBinary(normalizedPath);

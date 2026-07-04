@@ -678,6 +678,8 @@ export default class RemoteSshMobilePlugin extends Plugin {
       throw new Error('Direct WebSocket requires wsHost and wsPort');
     }
 
+    new Notice('Remote SSH: connecting via direct WebSocket…');
+
     // Fetch auth token from the daemon's /token endpoint if not pre-configured.
     let token = profile.wsToken?.trim();
     if (!token) {
