@@ -607,6 +607,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
         throw new Error('Adapter patching failed');
       }
       this.vaultLogger?.log('INFO', 'Adapter patched successfully');
+      this.pruneHiddenEntriesFromVaultModel();
 
       // Populate vault file tree
       try {
@@ -805,6 +806,10 @@ export default class RemoteSshMobilePlugin extends Plugin {
       const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
       for (const path of Object.keys(map)) {
         if (!path) continue;
+        if (this.isHiddenVaultPath(path)) {
+          builder.removeOne(path);
+          continue;
+        }
         let keep = false;
         try {
           keep = await adapter.exists(path);
@@ -823,6 +828,20 @@ export default class RemoteSshMobilePlugin extends Plugin {
     } catch (e) {
       logger.warn(`syncVaultModelToCurrentAdapter(${label}) failed: ${errorMessage(e)}`);
     }
+  }
+
+  private pruneHiddenEntriesFromVaultModel(): void {
+    const builder = new VaultModelBuilder(this.app.vault, { TFile, TFolder });
+    const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
+    for (const path of Object.keys(map)) {
+      if (!path) continue;
+      if (!this.isHiddenVaultPath(path)) continue;
+      builder.removeOne(path);
+    }
+  }
+
+  private isHiddenVaultPath(path: string): boolean {
+    return path.split('/').some((seg) => seg.startsWith('.'));
   }
 
   // ─── Vault population ───────────────────────────────────────────────────────
