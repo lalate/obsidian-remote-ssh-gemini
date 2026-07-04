@@ -608,6 +608,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       }
       this.vaultLogger?.log('INFO', 'Adapter patched successfully');
       this.pruneHiddenEntriesFromVaultModel();
+      this.forcePruneHiddenEntriesFromVaultModel();
 
       // Populate vault file tree
       try {
@@ -839,6 +840,35 @@ export default class RemoteSshMobilePlugin extends Plugin {
       if (!path) continue;
       if (!this.isHiddenVaultPath(path)) continue;
       builder.removeOne(path);
+    }
+  }
+
+  private forcePruneHiddenEntriesFromVaultModel(): void {
+    const vault = this.app.vault as unknown as {
+      fileMap: Record<string, unknown>;
+      getRoot(): { children?: unknown[] };
+    };
+    const map = vault.fileMap;
+    for (const path of Object.keys(map)) {
+      if (!path) continue;
+      if (!this.isHiddenVaultPath(path)) continue;
+      const entry = map[path] as {
+        parent?: { children?: unknown[] };
+      };
+      const parentChildren = entry.parent?.children;
+      if (Array.isArray(parentChildren)) {
+        const idx = parentChildren.indexOf(entry);
+        if (idx >= 0) parentChildren.splice(idx, 1);
+      }
+      delete map[path];
+    }
+    const root = vault.getRoot();
+    if (Array.isArray(root.children)) {
+      root.children = root.children.filter((child) => {
+        const maybe = child as { path?: string };
+        const p = maybe.path;
+        return typeof p !== 'string' || !this.isHiddenVaultPath(p);
+      });
     }
   }
 
