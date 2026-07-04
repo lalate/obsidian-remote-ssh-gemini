@@ -611,9 +611,8 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       // Populate vault file tree
       try {
-        this.resetVaultModelToRoot();
         this.vaultLogger?.log('INFO', 'Populating vault from remote...');
-        const summary = await this.populateVaultFromRemote('mobile-connect');
+        const summary = await this.syncVaultModelToCurrentAdapter('mobile-connect');
         this.pushMobilePreviewLog(`Vault populated: ${summary}`);
         this.vaultLogger?.log('INFO', 'Vault populated', { summary });
       } catch (popErr) {
@@ -798,7 +797,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
     });
   }
 
-  private async syncVaultModelToCurrentAdapter(label: string): Promise<void> {
+  private async syncVaultModelToCurrentAdapter(label: string): Promise<string> {
     try {
       const adapter = this.app.vault.adapter as unknown as {
         exists(path: string): Promise<boolean>;
@@ -822,12 +821,14 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       const walk = await new BulkWalker({ adapter: this.app.vault.adapter }).walk('');
       const result = await builder.build(walk.entries);
-      this.pushMobilePreviewLog(
-        `Vault synced (${label}): ${result.filesAdded}f + ${result.foldersAdded}d, ` +
-        `${result.skipped} skipped, ${result.errors.length} errors`,
-      );
+      const summary =
+        `${result.filesAdded}f + ${result.foldersAdded}d, ` +
+        `${result.skipped} skipped, ${result.errors.length} errors`;
+      this.pushMobilePreviewLog(`Vault synced (${label}): ${summary}`);
+      return summary;
     } catch (e) {
       logger.warn(`syncVaultModelToCurrentAdapter(${label}) failed: ${errorMessage(e)}`);
+      throw e;
     }
   }
 
@@ -839,16 +840,6 @@ export default class RemoteSshMobilePlugin extends Plugin {
       if (!this.isHiddenVaultPath(path)) continue;
       builder.removeOne(path);
     }
-  }
-
-  private resetVaultModelToRoot(): void {
-    const root = this.app.vault.getRoot() as unknown as { path: string; children?: unknown[] };
-    if (Array.isArray(root.children)) root.children.length = 0;
-    const map = (this.app.vault as unknown as { fileMap: Record<string, unknown> }).fileMap;
-    for (const key of Object.keys(map)) {
-      delete map[key];
-    }
-    map[root.path] = root;
   }
 
   private isHiddenVaultPath(path: string): boolean {
