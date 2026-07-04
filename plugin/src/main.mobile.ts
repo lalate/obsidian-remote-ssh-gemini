@@ -286,6 +286,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
   private mobileRelayConfig: MobileRelayConfig = { endpoint: '' };
   private state: SyncState = SyncState.IDLE;
   private vaultLogger?: VaultLogger;
+  private suppressRpcCloseNotice = false;
 
   // ─── VaultLogger integration ──────────────────────────────────────────────────
 
@@ -309,10 +310,8 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
       // Wire structured logger into mobile preview logs
       logger.onLine((line) => {
-        this.mobilePreviewLogs.push(line.message);
-        if (this.mobilePreviewLogs.length > 500) {
-          this.mobilePreviewLogs.splice(0, this.mobilePreviewLogs.length - 500);
-        }
+        const fields = line.fields ? ` ${JSON.stringify(line.fields)}` : '';
+        this.pushMobilePreviewLog(`[${line.level.toUpperCase()}] ${line.message}${fields}`);
       });
 
       this.vaultLogger?.log('INFO', 'Settings loaded', { profiles: this.mobileProfiles?.length });
@@ -665,6 +664,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       info: { protocolVersion: 1, version: 'relay-ws', capabilities: [] },
       close: () => relayConn.close(),
     };
+    this.bindRpcCloseHandler('relay-rpc');
     this.conn.activeRemoteBasePath = effectivePath;
     this.conn.activeProfile = profile as unknown as SshProfile;
     this.pushMobilePreviewLog(`Relay session established (${relayConn.sessionId})`);
@@ -710,19 +710,41 @@ export default class RemoteSshMobilePlugin extends Plugin {
       info: { protocolVersion: 1, version: 'direct-ws', capabilities: [] },
       close: () => directConn.close(),
     };
+    this.bindRpcCloseHandler('direct-ws');
     this.conn.activeRemoteBasePath = effectivePath;
     this.conn.activeProfile = profile as unknown as SshProfile;
     this.pushMobilePreviewLog('Direct WebSocket session established');
   }
 
   private async mobileDisconnect(): Promise<void> {
+    this.suppressRpcCloseNotice = true;
     this.vaultLogger?.log('INFO', 'mobileDisconnect');
     this.pushMobilePreviewLog('Disconnecting…');
-    this.adapterMgr?.restore();
-    await this.conn.disconnectTransport();
-    this.state = SyncState.IDLE;
-    this.vaultLogger?.log('INFO', 'mobileDisconnect complete');
-    new Notice('Remote SSH: disconnected');
+    try {
+      this.adapterMgr?.restore();
+      await this.conn.disconnectTransport();
+      this.state = SyncState.IDLE;
+      this.vaultLogger?.log('INFO', 'mobileDisconnect complete');
+      new Notice('Remote SSH: disconnected');
+    } finally {
+      this.suppressRpcCloseNotice = false;
+    }
+  }
+
+  private bindRpcCloseHandler(transport: 'relay-rpc' | 'direct-ws'): void {
+    const conn = this.conn.rpcConnection;
+    if (!conn) return;
+    conn.rpc.onClose((err) => {
+      const reason = err ? errorMessage(err) : 'connection closed';
+      this.vaultLogger?.log('WARN', 'RPC connection closed', { transport, reason });
+      this.pushMobilePreviewLog(`RPC closed (${transport}): ${reason}`);
+      if (this.suppressRpcCloseNotice) return;
+      if (this.state !== SyncState.CONNECTED) return;
+      this.state = SyncState.ERROR;
+      this.adapterMgr?.restore();
+      this.conn.rpcConnection = null;
+      new Notice(`Remote SSH: connection lost — ${reason}`);
+    });
   }
 
   // ─── Vault population ───────────────────────────────────────────────────────
