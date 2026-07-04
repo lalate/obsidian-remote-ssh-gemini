@@ -421,6 +421,7 @@ export class SftpDataAdapter {
     const prefix = normalizedPath ? normalizedPath + '/' : '';
     const seen = new Set<string>();
     const emit = (entry: RemoteEntry) => {
+      if (entry.name.startsWith('.')) return;
       if (seen.has(entry.name)) return;
       seen.add(entry.name);
       const childPath = prefix + entry.name;
