@@ -378,7 +378,6 @@ export class SftpDataAdapter {
 
     // ── remote entries ──────────────────────────────────────────────
     let primaryEntries: RemoteEntry[] = [];
-    let remoteAvailable = false;
     let cachedPrimary = this.dirCache.get(primaryRemote);
     if (!cachedPrimary) {
       try {
@@ -392,8 +391,6 @@ export class SftpDataAdapter {
       }
     }
     primaryEntries = cachedPrimary;
-    remoteAvailable = primaryEntries.length > 0 ||
-      cachedPrimary !== undefined; // dir exists remotely even if empty
 
     if (plan.hideUserDirName) {
       primaryEntries = primaryEntries.filter(e => e.name !== plan.hideUserDirName);
@@ -417,44 +414,8 @@ export class SftpDataAdapter {
       userEntries = cached;
     }
 
-    // ── local fallback entries ──────────────────────────────────────
-    let localEntries: RemoteEntry[] = [];
-    if (this.localFallback) {
-      try {
-        const localList = await this.localFallback.list(normalizedPath);
-        // Convert local ListedFiles to RemoteEntry[] for merging
-        const localSet = new Set<string>();
-        for (const f of localList.files) {
-          const name = f.startsWith(normalizedPath ? normalizedPath + '/' : '')
-            ? f.slice((normalizedPath ? normalizedPath + '/' : '').length)
-            : f;
-          localSet.add(name);
-        }
-        for (const d of localList.folders) {
-          const name = d.startsWith(normalizedPath ? normalizedPath + '/' : '')
-            ? d.slice((normalizedPath ? normalizedPath + '/' : '').length)
-            : d;
-          localSet.add(name);
-        }
-        // Build local entries
-        const allLocalNames = [...localSet];
-        const localDirNames = new Set(
-          localList.folders.map(f =>
-            f.startsWith(normalizedPath ? normalizedPath + '/' : '')
-              ? f.slice((normalizedPath ? normalizedPath + '/' : '').length)
-              : f
-          )
-        );
-        localEntries = allLocalNames.map(name => ({
-          name,
-          isDirectory: localDirNames.has(name),
-        }));
-      } catch {
-        // local list failed — use remote-only
-      }
-    }
-
-    // ── merge ───────────────────────────────────────────────────────
+    // ── merge (remote-only; local fallback list is intentionally
+    //    excluded to avoid showing files from other local vaults) ──────
     const files: string[] = [];
     const folders: string[] = [];
     const prefix = normalizedPath ? normalizedPath + '/' : '';
@@ -478,8 +439,6 @@ export class SftpDataAdapter {
     // The user-subtree entries take precedence
     for (const e of userEntries) emit(e);
     for (const e of primaryEntries) emit(e);
-    // Local-only entries fill in the gaps
-    for (const e of localEntries) emit(e);
     return { files, folders };
   }
 
@@ -506,9 +465,14 @@ export class SftpDataAdapter {
       buf = await this.readBuffer(normalizedPath);
       this.remotePaths.add(normalizedPath);
     } catch (err) {
-      logger.warn(`SftpDataAdapter.read: remote read failed for "${normalizedPath}"`, {
-        error: errorMessage(err),
-      });
+      if (this.isFileNotFound(err)) {
+        // FileNotFound is expected for local-only files; fall through
+        // to local fallback instead of logging a warning.
+      } else {
+        logger.warn(`SftpDataAdapter.read: remote read failed for "${normalizedPath}"`, {
+          error: errorMessage(err),
+        });
+      }
       if (this.localFallback && this.isFileNotFound(err)) {
         try {
           const text = await this.localFallback.read(normalizedPath);
@@ -535,9 +499,11 @@ export class SftpDataAdapter {
       buf = await this.readBuffer(normalizedPath);
       this.remotePaths.add(normalizedPath);
     } catch (err) {
-      logger.warn(`SftpDataAdapter.readBinary: remote read failed for "${normalizedPath}"`, {
-        error: errorMessage(err),
-      });
+      if (!this.isFileNotFound(err)) {
+        logger.warn(`SftpDataAdapter.readBinary: remote read failed for "${normalizedPath}"`, {
+          error: errorMessage(err),
+        });
+      }
       if (this.localFallback && this.isFileNotFound(err)) {
         try {
           return await this.localFallback.readBinary(normalizedPath);
