@@ -22,6 +22,7 @@ import { logger } from './util/logger';
 import { normalizeRemotePath } from './util/pathUtils';
 import { errorMessage } from './util/errorMessage';
 import { sanitizeClientId, defaultClientId, defaultUserName } from './path/PathMapper';
+import { VaultLogger } from './main';
 
 // ───── Mobile profile types ────────────────────────────────────────────────────
 
@@ -279,54 +280,88 @@ export default class RemoteSshMobilePlugin extends Plugin {
   private mobileProfiles: MobileProfile[] = [];
   private mobileRelayConfig: MobileRelayConfig = { endpoint: '' };
   private state: SyncState = SyncState.IDLE;
+  private vaultLogger?: VaultLogger;
+
+  // ─── VaultLogger integration ──────────────────────────────────────────────────
+
+  setVaultLogger(logger: VaultLogger): void {
+    this.vaultLogger = logger;
+  }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────────────
 
   async onload() {
-    await this.loadSettings();
-    this.mobileSessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.vaultLogger?.log('INFO', '>>> Mobile delegate onload START');
 
-    this.ensureBufferGlobal();
+    try {
+      await this.loadSettings();
+      this.mobileSessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-    logger.setDebug(this.settings.enableDebugLog);
-    logger.setMaxLines(this.settings.maxLogLines);
+      this.ensureBufferGlobal();
 
-    // Wire structured logger into mobile preview logs
-    logger.onLine((line) => {
-      this.mobilePreviewLogs.push(line.message);
-      if (this.mobilePreviewLogs.length > 500) {
-        this.mobilePreviewLogs.splice(0, this.mobilePreviewLogs.length - 500);
+      logger.setDebug(this.settings.enableDebugLog);
+      logger.setMaxLines(this.settings.maxLogLines);
+
+      // Wire structured logger into mobile preview logs
+      logger.onLine((line) => {
+        this.mobilePreviewLogs.push(line.message);
+        if (this.mobilePreviewLogs.length > 500) {
+          this.mobilePreviewLogs.splice(0, this.mobilePreviewLogs.length - 500);
+        }
+      });
+
+      this.vaultLogger?.log('INFO', 'Settings loaded', { profiles: this.mobileProfiles?.length });
+
+      this.fsChangeListener = new FsChangeListener(this.app);
+      this.chatUI = new ChatUI(this.app, this.conn as unknown as ConnectionManagerClass, this);
+      this.chatUI.enable();
+
+      this.pendingEditsBar = new PendingEditsBar(this, () => {});
+
+      this.adapterMgr = new AdapterManager(
+        this.app,
+        this.manifest,
+        this.conn as unknown as ConnectionManagerClass,
+        this.fsChangeListener,
+        this.pendingEditsBar,
+        () => this.settings,
+        this.transferTracker,
+      );
+
+      this.addSettingTab(new MobileSettingsTab(this.app, this));
+
+      this.pushMobilePreviewLog(`Mobile plugin loaded (session ${this.mobileSessionId})`);
+
+      this.registerCommands();
+
+      // Auto-connect if there's a relay-rpc profile (mirrors desktop autoConnectProfileId behavior)
+      const relayProfile = this.mobileProfiles.find(p => p.transport === 'relay-rpc');
+      if (relayProfile) {
+        this.vaultLogger?.log('INFO', 'Auto-connecting via relay-rpc profile', { profile: relayProfile.name });
+        await this.mobileConnect();
       }
+
+      new Notice('Remote SSH: mobile mode enabled');
+      this.vaultLogger?.log('INFO', '>>> Mobile delegate onload COMPLETE');
+    } catch (e) {
+      this.vaultLogger?.log('ERROR', 'Mobile onload FAILED', { error: String(e), stack: e instanceof Error ? e.stack : undefined });
+      throw e;
+    }
+  }
+
+  onunload() {
+    this.vaultLogger?.log('INFO', 'Mobile delegate unloading');
+    this.chatUI?.disable();
+    this.adapterMgr?.restore();
+    void this.mobileDisconnect().catch(() => {
+      /* ignore */
     });
+    this.pushMobilePreviewLog('Unloaded mobile plugin');
+  }
 
-    this.fsChangeListener = new FsChangeListener(this.app);
-    this.chatUI = new ChatUI(this.app, this.conn as unknown as ConnectionManagerClass, this);
-    this.chatUI.enable();
+  // ── Commands ────────────────────────────────────────────────────────────
 
-    // PendingEditsBar for mobile Obsidian — uses addStatusBarItem() which
-    // is available on both mobile and desktop. No-op onClick since we don't
-    // have a pending-edits modal for mobile yet.
-    this.pendingEditsBar = new PendingEditsBar(this, () => {});
-
-    // Cast conn to satisfy AdapterManager's ConnectionManager parameter type.
-    // MobileConnectionManager is structurally compatible but TypeScript
-    // still needs the explicit cast because the class shapes aren't identical.
-    this.adapterMgr = new AdapterManager(
-      this.app,
-      this.manifest,
-      this.conn as unknown as ConnectionManagerClass,
-      this.fsChangeListener,
-      this.pendingEditsBar,
-      () => this.settings,
-      this.transferTracker,
-    );
-
-    this.addSettingTab(new MobileSettingsTab(this.app, this));
-
-    this.pushMobilePreviewLog(`Mobile plugin loaded (session ${this.mobileSessionId})`);
-
-    // ── Commands ────────────────────────────────────────────────────────────
-
+  private registerCommands(): void {
     this.addCommand({
       id: 'mobile-connect',
       name: 'Connect to remote vault (mobile)',
@@ -437,17 +472,6 @@ export default class RemoteSshMobilePlugin extends Plugin {
         new Notice('Remote SSH: connection probe report copied');
       },
     });
-
-    new Notice('Remote SSH: mobile mode enabled');
-  }
-
-  onunload() {
-    this.chatUI?.disable();
-    this.adapterMgr?.restore();
-    void this.mobileDisconnect().catch(() => {
-      /* ignore */
-    });
-    this.pushMobilePreviewLog('Unloaded mobile plugin');
   }
 
   // ─── Settings persistence ───────────────────────────────────────────────────
@@ -520,6 +544,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
   private async mobileConnect(): Promise<void> {
     if (this.state === SyncState.CONNECTED) {
+      this.vaultLogger?.log('INFO', 'mobileConnect skipped — already connected');
       new Notice('Remote SSH: already connected');
       return;
     }
@@ -528,6 +553,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       (p) => p.transport === 'relay-rpc' || !p.transport,
     );
     if (!relayProfile) {
+      this.vaultLogger?.log('WARN', 'mobileConnect failed — no relay-rpc profile');
       new Notice('Remote SSH: no relay-rpc profile configured');
       return;
     }
@@ -536,9 +562,17 @@ export default class RemoteSshMobilePlugin extends Plugin {
     const baseUrl =
       relayProfile.relayBaseUrl?.trim() || this.mobileRelayConfig.endpoint;
     if (!baseUrl) {
+      this.vaultLogger?.log('WARN', 'mobileConnect failed — no relay endpoint URL');
       new Notice('Remote SSH: relay endpoint URL is required');
       return;
     }
+
+    this.vaultLogger?.log('INFO', 'mobileConnect starting', {
+      profile: relayProfile.name,
+      target: `${relayProfile.username}@${relayProfile.host}:${relayProfile.port}`,
+      baseUrl: baseUrl.replace(/\/+$/, ''),
+      remotePath: effectivePath,
+    });
 
     this.state = SyncState.CONNECTING;
     this.pushMobilePreviewLog(
@@ -546,6 +580,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
     );
 
     try {
+      this.vaultLogger?.log('INFO', 'Establishing relay WebSocket connection...');
       const relayConn = await establishRelayWsConnection({
         baseUrl,
         target: {
@@ -569,6 +604,9 @@ export default class RemoteSshMobilePlugin extends Plugin {
             'password',
         },
       });
+      this.vaultLogger?.log('INFO', 'Relay WebSocket connection established', {
+        sessionId: relayConn.sessionId,
+      });
 
       this.conn.rpcConnection = {
         rpc: relayConn.rpc as unknown as MobileRpcHandle['rpc'],
@@ -585,28 +623,36 @@ export default class RemoteSshMobilePlugin extends Plugin {
       this.pushMobilePreviewLog(`Relay session established (${relayConn.sessionId})`);
 
       // Patch adapter
+      this.vaultLogger?.log('INFO', 'Patching adapter...');
       const patched = await this.adapterMgr.patch();
       if (!patched) {
         this.state = SyncState.ERROR;
+        this.vaultLogger?.log('ERROR', 'Adapter patching failed');
         throw new Error('Adapter patching failed');
       }
+      this.vaultLogger?.log('INFO', 'Adapter patched successfully');
 
       // Populate vault file tree
       try {
+        this.vaultLogger?.log('INFO', 'Populating vault from remote...');
         const summary = await this.populateVaultFromRemote('mobile-connect');
         this.pushMobilePreviewLog(`Vault populated: ${summary}`);
+        this.vaultLogger?.log('INFO', 'Vault populated', { summary });
       } catch (popErr) {
+        this.vaultLogger?.log('WARN', 'Vault population failed (continuing)', { error: errorMessage(popErr) });
         this.pushMobilePreviewLog(`Vault populate error: ${errorMessage(popErr)}`);
         logger.warn('Vault population failed, continuing with empty file tree');
       }
 
       this.state = SyncState.CONNECTED;
       const userLabel = MobileConnectionManager.formatUserLabel(this.settings);
+      this.vaultLogger?.log('INFO', 'mobileConnect COMPLETE', { userLabel });
       new Notice(`Remote SSH: Connected to ${relayProfile.name} as ${userLabel} via RELAY-RPC`);
       this.pushMobilePreviewLog(`Connected: ${relayProfile.name} as ${userLabel}`);
     } catch (e) {
       this.state = SyncState.ERROR;
       const msg = errorMessage(e);
+      this.vaultLogger?.log('ERROR', 'mobileConnect FAILED', { error: msg });
       this.pushMobilePreviewLog(`Connect failed: ${msg}`);
       logger.error(`Mobile connect failed: ${msg}`);
       new Notice(`Remote SSH: connect failed — ${msg}`);
@@ -615,10 +661,12 @@ export default class RemoteSshMobilePlugin extends Plugin {
   }
 
   private async mobileDisconnect(): Promise<void> {
+    this.vaultLogger?.log('INFO', 'mobileDisconnect');
     this.pushMobilePreviewLog('Disconnecting…');
     this.adapterMgr?.restore();
     await this.conn.disconnectTransport();
     this.state = SyncState.IDLE;
+    this.vaultLogger?.log('INFO', 'mobileDisconnect complete');
     new Notice('Remote SSH: disconnected');
   }
 
@@ -626,12 +674,19 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
   private async populateVaultFromRemote(label: string): Promise<string> {
     const start = Date.now();
+    this.vaultLogger?.log('INFO', 'populateVaultFromRemote start', { label });
 
     const walker = new BulkWalker({
       adapter: this.app.vault.adapter,
       rpcConnection: this.conn.rpcConnection ?? undefined,
     });
     const walk = await walker.walk('');
+    this.vaultLogger?.log('INFO', 'Tree walk result', {
+      source: walk.source,
+      entries: walk.entries.length,
+      walkMs: walk.walkMs,
+      fastPathError: walk.fastPathError ?? undefined,
+    });
     logger.info(
       `populateVaultFromRemote(${label}): ${walk.source}, ${walk.entries.length} entries ` +
         `in ${walk.walkMs}ms` +
@@ -644,11 +699,16 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
     const summary = `${result.filesAdded}f + ${result.foldersAdded}d built, ${result.skipped} skipped, ${result.errors.length} errors (${totalMs}ms)`;
     if (result.errors.length > 0) {
+      this.vaultLogger?.log('WARN', 'Vault build had errors', {
+        errorCount: result.errors.length,
+        firstErrors: result.errors.slice(0, 5),
+      });
       logger.warn(
         `populateVaultFromRemote(${label}): first 5 errors: ` +
           JSON.stringify(result.errors.slice(0, 5), null, 2),
       );
     }
+    this.vaultLogger?.log('INFO', 'populateVaultFromRemote complete', { summary, totalMs });
     return summary;
   }
 

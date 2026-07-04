@@ -28,6 +28,10 @@ plugin/test-results/
 # OpenCode session state — per-developer, not project source.
 .omo/
 
+# Environment files — may contain secrets (SSH passwords, tokens)
+.env
+.env.*
+
 # Go build artifacts
 server/bin/
 
