@@ -287,6 +287,8 @@ export default class RemoteSshMobilePlugin extends Plugin {
   private state: SyncState = SyncState.IDLE;
   private vaultLogger?: VaultLogger;
   private suppressRpcCloseNotice = false;
+  private autoReconnectInFlight = false;
+  private lastResumeReconnectAt = 0;
 
   // ─── VaultLogger integration ──────────────────────────────────────────────────
 
@@ -336,6 +338,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
       this.pushMobilePreviewLog(`Mobile plugin loaded (session ${this.mobileSessionId})`);
 
       this.registerCommands();
+      this.registerResumeReconnectHandlers();
 
       // Auto-connect if there's a relay-rpc profile (mirrors desktop autoConnectProfileId behavior)
       const relayProfile = this.mobileProfiles.find(p => p.transport === 'relay-rpc');
@@ -728,6 +731,50 @@ export default class RemoteSshMobilePlugin extends Plugin {
       new Notice('Remote SSH: disconnected');
     } finally {
       this.suppressRpcCloseNotice = false;
+    }
+  }
+
+  private registerResumeReconnectHandlers(): void {
+    const onResume = () => {
+      void this.maybeReconnectAfterResume();
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', onResume);
+      this.register(() => window.removeEventListener('focus', onResume));
+    }
+
+    if (typeof document !== 'undefined') {
+      const onVisibility = () => {
+        if (document.visibilityState === 'visible') onResume();
+      };
+      document.addEventListener('visibilitychange', onVisibility);
+      this.register(() => document.removeEventListener('visibilitychange', onVisibility));
+    }
+  }
+
+  private isResumeAutoReconnectEnabled(): boolean {
+    const maybe = this.settings as PluginSettings & { mobileAutoReconnectOnResume?: boolean };
+    return maybe.mobileAutoReconnectOnResume ?? true;
+  }
+
+  private async maybeReconnectAfterResume(): Promise<void> {
+    if (!this.isResumeAutoReconnectEnabled()) return;
+    if (this.autoReconnectInFlight) return;
+    if (this.state !== SyncState.ERROR) return;
+    if (this.conn.rpcConnection) return;
+
+    const now = Date.now();
+    if (now - this.lastResumeReconnectAt < 1500) return;
+    this.lastResumeReconnectAt = now;
+
+    this.autoReconnectInFlight = true;
+    this.pushMobilePreviewLog('App resumed — reconnecting…');
+    new Notice('Remote SSH: app resumed, reconnecting...');
+    try {
+      await this.mobileConnect();
+    } finally {
+      this.autoReconnectInFlight = false;
     }
   }
 

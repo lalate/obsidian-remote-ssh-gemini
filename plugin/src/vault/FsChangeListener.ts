@@ -149,7 +149,11 @@ export class FsChangeListener {
       // (process restart, connection drop) the call will reject and
       // we just log it.
       rpcConnection.rpc.call('fs.unwatch', { subscriptionId: id })
-        .catch(e => logger.warn(`fs.unwatch failed: ${errorMessage(e)}`));
+        .catch((e) => {
+          const msg = errorMessage(e);
+          if (msg.includes('socket is closed')) return;
+          logger.warn(`fs.unwatch failed: ${msg}`);
+        });
     }
     if (this.handlerDisposer) {
       this.handlerDisposer();
