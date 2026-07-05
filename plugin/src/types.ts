@@ -192,6 +192,17 @@ export interface PluginSettings {
   terminalFontSize?: number;
   terminalScrollback?: number;
   /**
+   * Name/path of the LLM CLI tool invoked by the AI chat feature.
+   * The tool is looked up in PATH on the remote server.
+   * Default: "gemini"
+   */
+  llmToolName?: string;
+  /**
+   * Extra arguments passed to the LLM CLI tool (e.g. model name,
+   * temperature). Merged with the `prompt` argument before sending.
+   */
+  llmToolArgs?: Record<string, string>;
+  /**
    * Shadow-vault marker (Phase 4). When set, the plugin's
    * `onLayoutReady` callback finds the matching profile and
    * automatically connects to it, then runs `VaultModelBuilder` to

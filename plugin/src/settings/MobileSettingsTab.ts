@@ -402,6 +402,32 @@ export class MobileSettingsTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName('AI Chat (iOS)')
+      .setHeading();
+
+    containerEl.createEl('p', {
+      text: 'Configure the CLI tool that powers the AI chat feature on iOS. ' +
+        'The tool is spawned on the remote server via extension.invoke.',
+      cls: 'setting-item-description',
+    });
+
+    const llmPlugin = this.pluginRef as Plugin & {
+      settings: { llmToolName?: string; llmToolArgs?: Record<string, string> };
+      saveSettings: () => Promise<void>;
+    };
+
+    new Setting(containerEl)
+      .setName('LLM tool name')
+      .setDesc('Command to invoke on the remote server. Must be in PATH. Default: gemini')
+      .addText(t => t
+        .setPlaceholder('gemini')
+        .setValue(llmPlugin.settings.llmToolName ?? 'gemini')
+        .onChange(async v => {
+          llmPlugin.settings.llmToolName = v.trim() || 'gemini';
+          await llmPlugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName('Relay probe')
       .setDesc('Checks whether the configured relay endpoint is reachable from mobile.')
       .addButton(btn => btn

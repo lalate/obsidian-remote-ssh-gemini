@@ -10,7 +10,6 @@ type RemoteFsClient = RpcRemoteFsClient | SftpRemoteFsClient;
 function assertRpcClient(c: RemoteFsClient): asserts c is RpcRemoteFsClient {
   if (!('invokeExtension' in c)) throw new Error('Extension invoke not supported on this transport');
 }
-
 const CHAT_TAIL_BYTES = 64 * 1024; // 64KB - enough for recent messages
 
 type Disposer = () => void;
@@ -24,12 +23,19 @@ export class ChatController {
   private disposers: Disposer[] = [];
   private pendingResponse = '';
   private isStreaming = false;
+  private _toolName = 'gemini';
+  private _toolArgs: Record<string, string> = {};
 
   constructor(
     private app: App,
     private client: RemoteFsClient,
     private getVaultRoot: () => string
   ) {}
+
+  setToolConfig(toolName: string, toolArgs: Record<string, string> = {}): void {
+    this._toolName = toolName;
+    this._toolArgs = toolArgs;
+  }
 
   async sendLastSection(editor: Editor, file: TFile): Promise<void> {
     const text = editor.getValue();
@@ -87,9 +93,10 @@ export class ChatController {
 
     try {
       const vaultRoot = this.getVaultRoot();
+      const args: Record<string, unknown> = { ...this._toolArgs, prompt };
       const result = await this.callExtensionInvoke({
-        tool: 'gemini',
-        args: { prompt },
+        tool: this._toolName,
+        args,
         workingDir: vaultRoot,
         persist: true,
       });
@@ -115,7 +122,6 @@ export class ChatController {
 
   private setupStreamHandlers(editor: Editor, _file: TFile): void {
     assertRpcClient(this.client);
-
     const onBatch = (params: CliOutputBatchParams) => {
       if (params.invocationId !== this.currentInvocationId) return;
       for (const item of params.items) {

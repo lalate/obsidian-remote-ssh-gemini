@@ -284,6 +284,19 @@ export class ConnectionManager {
     return this.client.isAlive();
   }
 
+  getActiveProfile(): SshProfile | null {
+    return this.activeProfile;
+  }
+
+  getActiveClient(): RemoteFsClient | null {
+    if (!this.activeProfile) return null;
+    return this.buildFsClient();
+  }
+
+  getRemoteVaultPath(): string | null {
+    return this.activeRemoteBasePath;
+  }
+
   static resolveClientId(settings: { clientId?: string }): string {
     const override = (settings.clientId ?? '').trim();
     if (override) return sanitizeClientId(override);

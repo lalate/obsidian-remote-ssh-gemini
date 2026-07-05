@@ -58,6 +58,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   // safe; these constants are the canonical "user hasn't customised" values.
   terminalFontSize: 12,
   terminalScrollback: 1000,
+  llmToolName: 'gemini',
+  llmToolArgs: {},
 };
 
 export const MAX_RETRY = 4;

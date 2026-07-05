@@ -3,12 +3,14 @@ import { ChatController } from './ChatController';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
 import { ConnectionManager } from '../ConnectionManager';
+import type { PluginSettings } from '../types';
 
 type RemoteFsClient = RpcRemoteFsClient | SftpRemoteFsClient;
 
 export class ChatUI {
   private controller: ChatController | null = null;
   private leafChangeHandler: (() => void) | null = null;
+  private statusBarItem: HTMLElement | null = null;
 
   constructor(
     private app: App,
@@ -17,9 +19,23 @@ export class ChatUI {
   ) {}
 
   enable(): void {
-    this.leafChangeHandler = () => this.updateController();
+    this.leafChangeHandler = () => {
+      this.updateController();
+      this.updateStatusBarVisibility();
+    };
     this.app.workspace.on('active-leaf-change', this.leafChangeHandler);
     this.updateController();
+    this.updateStatusBarVisibility();
+
+    // Status bar button — the primary trigger on iOS (no Cmd+Shift+Enter).
+    this.statusBarItem = this.plugin.addStatusBarItem();
+    this.statusBarItem.setText('Send to LLM');
+    this.statusBarItem.addClass('remote-ssh-chat-send');
+    this.statusBarItem.style.cursor = 'pointer';
+    this.statusBarItem.style.display = 'none';
+    this.statusBarItem.addEventListener('click', () => {
+      void this.handleSendFromStatusBar();
+    });
 
     this.plugin.addCommand({
       id: 'send-last-chat-section',
@@ -37,8 +53,31 @@ export class ChatUI {
       this.app.workspace.off('active-leaf-change', this.leafChangeHandler);
       this.leafChangeHandler = null;
     }
+    this.statusBarItem?.remove();
+    this.statusBarItem = null;
     this.controller?.destroy();
     this.controller = null;
+  }
+
+  private updateStatusBarVisibility(): void {
+    if (!this.statusBarItem) return;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || !view.file) {
+      this.statusBarItem.style.display = 'none';
+      return;
+    }
+    const content = view.editor.getValue();
+    const isChatFile = /^## (user|assistant)/im.test(content);
+    this.statusBarItem.style.display = isChatFile ? 'inline-flex' : 'none';
+  }
+
+  private async handleSendFromStatusBar(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view || !view.file) {
+      new Notice('No active editor');
+      return;
+    }
+    await this.handleSendLastSection(view.editor, view);
   }
 
   private updateController(): void {
@@ -52,6 +91,8 @@ export class ChatUI {
 
     const vaultRoot = this.connectionManager.activeRemoteBasePath ?? profile.remotePath;
     this.controller = new ChatController(this.app, client as RemoteFsClient, () => vaultRoot);
+    const settings = (this.plugin as { settings: PluginSettings }).settings;
+    this.controller.setToolConfig(settings.llmToolName ?? 'gemini', settings.llmToolArgs ?? {});
   }
 
   private async handleSendLastSection(editor: Editor, ctx: MarkdownView | MarkdownFileInfo): Promise<void> {
