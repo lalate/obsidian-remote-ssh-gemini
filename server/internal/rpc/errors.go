@@ -37,8 +37,8 @@ func ErrInternal(msg string) *Error { return Err(proto.ErrorInternalError, msg, 
 // ErrAuthRequired and friends are convenience builders for the custom
 // error codes defined in proto/types.go.
 
-func ErrAuthRequired() *Error    { return Err(proto.ErrorAuthRequired, "auth required", nil) }
-func ErrAuthInvalid() *Error     { return Err(proto.ErrorAuthInvalid, "invalid token", nil) }
+func ErrAuthRequired() *Error { return Err(proto.ErrorAuthRequired, "auth required", nil) }
+func ErrAuthInvalid() *Error  { return Err(proto.ErrorAuthInvalid, "invalid token", nil) }
 func ErrFileNotFound(p string) *Error {
 	return Err(proto.ErrorFileNotFound, "no such file: "+p, nil)
 }
@@ -73,6 +73,16 @@ func ErrPathOutsideVault(p string) *Error {
 // ErrPreconditionFailed signals that an expectedMtime did not match.
 func ErrPreconditionFailed(msg string) *Error {
 	return Err(proto.ErrorPreconditionFailed, msg, nil)
+}
+
+// ErrExtensionDenied signals that a tool is not allowed by the manifest.
+func ErrExtensionDenied(tool string) *Error {
+	return Err(proto.ErrorExtensionDenied, "extension denied: "+tool, nil)
+}
+
+// ErrBinaryHashMismatch signals executable digest mismatch against manifest.
+func ErrBinaryHashMismatch(tool string) *Error {
+	return Err(proto.ErrorBinaryHashMismatch, "binary hash mismatch: "+tool, nil)
 }
 
 // encodeResult marshals a result value for WriteSuccess. Centralised
