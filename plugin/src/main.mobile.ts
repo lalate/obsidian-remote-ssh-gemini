@@ -23,7 +23,7 @@ import { logger } from './util/logger';
 import { normalizeRemotePath } from './util/pathUtils';
 import { errorMessage } from './util/errorMessage';
 import { sanitizeClientId, defaultClientId, defaultUserName } from './path/PathMapper';
-import { VaultLogger } from './main';
+import { VaultLogger } from './util/VaultLogger';
 
 // ───── Mobile profile types ────────────────────────────────────────────────────
 

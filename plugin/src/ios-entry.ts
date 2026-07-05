@@ -6,7 +6,7 @@
  */
 import { Platform, Plugin } from 'obsidian';
 import type { App, PluginManifest } from 'obsidian';
-import { VaultLogger } from './main';
+import { VaultLogger } from './util/VaultLogger';
 import MobileDelegate from './main.mobile';
 
 type DelegatePlugin = Plugin & {
