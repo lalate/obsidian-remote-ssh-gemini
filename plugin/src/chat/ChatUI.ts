@@ -1,4 +1,4 @@
-import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, MarkdownView, MarkdownFileInfo, Notice, Plugin, TFile } from 'obsidian';
+import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, MarkdownView, MarkdownFileInfo, Notice, Plugin, TFile, TFolder } from 'obsidian';
 import { ChatController } from './ChatController';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
@@ -45,6 +45,14 @@ export class ChatUI {
       },
     });
 
+    this.plugin.addCommand({
+      id: 'init-chat-markdown',
+      name: 'Init Chat Markdown',
+      callback: () => {
+        void this.handleInitChatMarkdown();
+      },
+    });
+
     this.plugin.registerEditorSuggest(new ChatSectionSuggest(this.app, this));
   }
 
@@ -78,6 +86,27 @@ export class ChatUI {
       return;
     }
     await this.handleSendLastSection(view.editor, view);
+  }
+
+  private async handleInitChatMarkdown(): Promise<void> {
+    const ts = new Date().toISOString().slice(0, 16).replace('T', '-');
+    const baseName = `LLM Chat ${ts}.md`;
+    const content = `## user\n\n`;
+
+    let name = baseName;
+    let i = 1;
+    while (await this.app.vault.adapter.exists(name)) {
+      name = `${baseName.replace('.md', '')} (${i}).md`;
+      i++;
+    }
+
+    try {
+      const file = await this.app.vault.create(name, content);
+      await this.app.workspace.getLeaf().openFile(file);
+      new Notice(`Chat file created: ${name}`);
+    } catch (e) {
+      new Notice(`Failed to create chat file: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   private updateController(): void {
