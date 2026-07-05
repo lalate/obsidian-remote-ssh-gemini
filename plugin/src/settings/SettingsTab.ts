@@ -78,6 +78,8 @@ export class SettingsTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    this.renderLlmPanel(containerEl);
+
     this.renderDaemonPanel(containerEl);
 
     this.renderTelemetryPanel(containerEl);
@@ -162,6 +164,21 @@ export class SettingsTab extends PluginSettingTab {
             this.plugin.settings.terminalScrollback = n;
             await this.plugin.saveSettings();
           }
+        }));
+  }
+
+  private renderLlmPanel(containerEl: HTMLElement) {
+    new Setting(containerEl).setName('AI Chat').setHeading();
+
+    new Setting(containerEl)
+      .setName('LLM tool name')
+      .setDesc('Command to invoke on the remote server via extension.invoke. Must be in PATH. Default: gemini')
+      .addText(t => t
+        .setPlaceholder('gemini')
+        .setValue(this.plugin.settings.llmToolName ?? 'gemini')
+        .onChange(async v => {
+          this.plugin.settings.llmToolName = v.trim() || 'gemini';
+          await this.plugin.saveSettings();
         }));
   }
 
