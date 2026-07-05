@@ -49,7 +49,8 @@ export class ChatController {
     const structuredText = ensureChatFileStructure(text);
     if (structuredText !== text) {
       editor.setValue(structuredText);
-      await this.app.vault.modify(file, structuredText);
+      // Don't save to remote here — let streaming updates handle it,
+      // otherwise auto-save races with fs.watch notifications.
     }
 
     await this.invokeLlm(editor, file, userContent.trim());
@@ -120,7 +121,25 @@ export class ChatController {
     return this.client.invokeExtension(params);
   }
 
-  private setupStreamHandlers(editor: Editor, _file: TFile): void {
+  private replaceAssistantContent(editor: Editor): void {
+    const ASST_RE = /^##\s+Assistant\s*$/i;
+    const lineCount = editor.lineCount();
+    let headingLine = -1;
+    for (let i = lineCount - 1; i >= 0; i--) {
+      if (ASST_RE.test(editor.getLine(i))) { headingLine = i; break; }
+    }
+    if (headingLine === -1) {
+      const text = editor.getValue();
+      const newText = text.trimEnd() + '\n\n## Assistant\n\n' + this.pendingResponse.trim() + '\n';
+      if (newText !== text) editor.setValue(newText);
+      return;
+    }
+    const from = { line: headingLine + 1, ch: 0 };
+    const to = { line: lineCount - 1, ch: editor.getLine(lineCount - 1).length };
+    editor.replaceRange(this.pendingResponse.trimEnd() + '\n', from, to);
+  }
+
+  private setupStreamHandlers(editor: Editor, file: TFile): void {
     assertRpcClient(this.client);
     const onBatch = (params: CliOutputBatchParams) => {
       if (params.invocationId !== this.currentInvocationId) return;
@@ -129,14 +148,20 @@ export class ChatController {
           this.pendingResponse += item.data;
         }
       }
-      this.updateEditorWithResponse(editor);
+      this.replaceAssistantContent(editor);
     };
 
-    const onDone = (params: CliDoneParams) => {
+    const onDone = async (params: CliDoneParams) => {
       if (params.invocationId !== this.currentInvocationId) return;
       this.cleanup();
       this.isStreaming = false;
       this.currentInvocationId = null;
+
+      if (this.pendingResponse) {
+        this.replaceAssistantContent(editor);
+        try { await this.app.vault.modify(file, editor.getValue()); } catch (e) { /* write-through */ }
+      }
+
       if (params.exitCode !== 0) {
         new Notice(`LLM finished with exit code ${params.exitCode}`);
       } else {
@@ -148,14 +173,6 @@ export class ChatController {
     const disposeDone = this.client.onCliDone(onDone);
 
     this.disposers.push(disposeBatch, disposeDone);
-  }
-
-  private updateEditorWithResponse(editor: Editor): void {
-    const text = editor.getValue();
-    const newText = replaceAssistantResponse(text, this.pendingResponse);
-    if (newText !== text) {
-      editor.setValue(newText);
-    }
   }
 
   private cleanup(): void {
