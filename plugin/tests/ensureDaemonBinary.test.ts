@@ -13,7 +13,7 @@ vi.mock('../src/ui/RemoteTerminalView', () => ({
 }));
 
 import { App } from 'obsidian';
-import RemoteSshPlugin from '../src/main';
+import RemoteSshPlugin from '../src/main.desktop';
 
 /** A fake SftpClient whose `exec` answers the daemon's `uname` probe. */
 const linuxAmd64Client = {

@@ -30,7 +30,7 @@ vi.mock('../src/ui/RemoteTerminalView', () => ({
 }));
 
 import { App, recordedNotices, clearNotices } from 'obsidian';
-import RemoteSshPlugin from '../src/main';
+import RemoteSshPlugin from '../src/main.desktop';
 import type { SshProfile } from '../src/types';
 
 const profile = { id: 'p1', name: 'Prod', remotePath: '~/v' } as unknown as SshProfile;

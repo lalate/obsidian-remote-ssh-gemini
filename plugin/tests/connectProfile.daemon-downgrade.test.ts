@@ -9,7 +9,7 @@ vi.mock('../src/ui/RemoteTerminalView', () => ({
 }));
 
 import { App, recordedNotices, clearNotices } from 'obsidian';
-import RemoteSshPlugin from '../src/main';
+import RemoteSshPlugin from '../src/main.desktop';
 import { DaemonUnavailableError } from '../src/ConnectionManager';
 import { DaemonVerificationError } from '../src/transport/DaemonDownloader';
 import type { SshProfile } from '../src/types';
