@@ -19,24 +19,6 @@ export class ChatUI {
   ) {}
 
   enable(): void {
-    this.leafChangeHandler = () => {
-      this.updateController();
-      this.updateStatusBarVisibility();
-    };
-    this.app.workspace.on('active-leaf-change', this.leafChangeHandler);
-    this.updateController();
-    this.updateStatusBarVisibility();
-
-    // Status bar button — the primary trigger on iOS (no Cmd+Shift+Enter).
-    this.statusBarItem = this.plugin.addStatusBarItem();
-    this.statusBarItem.setText('Send to LLM');
-    this.statusBarItem.addClass('remote-ssh-chat-send');
-    this.statusBarItem.style.cursor = 'pointer';
-    this.statusBarItem.style.display = 'none';
-    this.statusBarItem.addEventListener('click', () => {
-      void this.handleSendFromStatusBar();
-    });
-
     this.plugin.addCommand({
       id: 'send-last-chat-section',
       name: 'Send last chat section to LLM',
@@ -53,7 +35,24 @@ export class ChatUI {
       },
     });
 
+    this.statusBarItem = this.plugin.addStatusBarItem();
+    this.statusBarItem.setText('Send to LLM');
+    this.statusBarItem.addClass('remote-ssh-chat-send');
+    this.statusBarItem.style.cursor = 'pointer';
+    this.statusBarItem.style.display = 'none';
+    this.statusBarItem.addEventListener('click', () => {
+      void this.handleSendFromStatusBar();
+    });
+
     this.plugin.registerEditorSuggest(new ChatSectionSuggest(this.app, this));
+
+    this.leafChangeHandler = () => {
+      this.updateController();
+      this.updateStatusBarVisibility();
+    };
+    this.app.workspace.on('active-leaf-change', this.leafChangeHandler);
+    try { this.updateController(); } catch { /* not connected */ }
+    this.updateStatusBarVisibility();
   }
 
   disable(): void {
@@ -111,13 +110,13 @@ export class ChatUI {
 
   private updateController(): void {
     const profile = this.connectionManager.activeProfile;
-    const client = this.connectionManager.buildFsClient();
     if (!profile) {
       this.controller?.destroy();
       this.controller = null;
       return;
     }
 
+    const client = this.connectionManager.buildFsClient();
     const vaultRoot = this.connectionManager.activeRemoteBasePath ?? profile.remotePath;
     this.controller = new ChatController(this.app, client as RemoteFsClient, () => vaultRoot);
     const settings = (this.plugin as { settings: PluginSettings }).settings;
