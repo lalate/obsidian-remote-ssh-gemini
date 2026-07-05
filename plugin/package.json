@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
+    "build:unified": "node scripts/build-unified.mjs",
     "dev:install": "node scripts/dev-install.mjs",
     "build:install": "node esbuild.config.mjs production && node scripts/dev-install.mjs",
     "build:server": "node scripts/build-server.mjs",
