@@ -430,6 +430,10 @@ export class Plugin {
   addSettingTab(): void { /* no-op */ }
 }
 
+export const Platform = {
+  isMobileApp: false,
+};
+
 // ─── requestUrl ──────────────────────────────────────────────────────
 //
 // Obsidian's cross-origin-friendly fetch wrapper. Actual HTTP calls
