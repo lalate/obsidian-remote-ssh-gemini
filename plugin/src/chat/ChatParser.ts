@@ -95,8 +95,8 @@ export function ensureChatFileStructure(text: string): string {
   if (!trimmed) {
     return '## User\n\n\n## Assistant\n\n';
   }
-  if (!trimmed.startsWith('## User')) {
-    return `## User\n\n${trimmed}\n\n## Assistant\n\n`;
+  if (/^##\s+(User|Assistant)\b/i.test(trimmed)) {
+    return text;
   }
-  return text;
+  return `## User\n\n${trimmed}\n\n## Assistant\n\n`;
 }
