@@ -88,7 +88,7 @@ export class ChatUI {
   }
 
   private async handleInitChatMarkdown(): Promise<void> {
-    const ts = new Date().toISOString().slice(0, 16).replace('T', '-');
+    const ts = new Date().toISOString().slice(0, 16).replace('T', '-').replace(/:/g, '-');
     const baseName = `LLM Chat ${ts}.md`;
     const content = `## user\n\n`;
 
