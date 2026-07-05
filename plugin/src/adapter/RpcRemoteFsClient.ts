@@ -148,7 +148,7 @@ export class RpcRemoteFsClient implements RemoteFsClient {
     cb: (params: { invocationId: string; items: Array<{ stream: string; data: string }> }) => void,
   ): () => void {
     return (this.rpc as { onNotification(m: string, h: (p: unknown) => void): () => void }).onNotification(
-      'cli.outputBatch',
+      'cli.output.batch',
       cb as (params: unknown) => void,
     );
   }
