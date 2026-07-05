@@ -428,6 +428,21 @@ export class MobileSettingsTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName('LLM tool args')
+      .setDesc('JSON object of additional arguments. Example: {"run":"run"}')
+      .addText(t => t
+        .setPlaceholder('{"run":"run"}')
+        .setValue(JSON.stringify(llmPlugin.settings.llmToolArgs ?? {}))
+        .onChange(async v => {
+          try {
+            const parsed = JSON.parse(v.trim() || '{}');
+            if (typeof parsed !== 'object' || parsed === null) throw new Error();
+            llmPlugin.settings.llmToolArgs = parsed;
+            await llmPlugin.saveSettings();
+          } catch (_) { /* invalid JSON during typing */ }
+        }));
+
+    new Setting(containerEl)
       .setName('Relay probe')
       .setDesc('Checks whether the configured relay endpoint is reachable from mobile.')
       .addButton(btn => btn
