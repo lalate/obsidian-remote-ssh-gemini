@@ -72,13 +72,14 @@ export class ChatController {
     logger.info('Chat after vault.modify', { cursor: editor.getCursor() });
 
     assertRpcClient(this.client);
-    try {
-      const argsList: string[] = Object.values(this._toolArgs).filter(Boolean);
+    // Declare outside try block so it's accessible after
+    const argsList: string[] = Object.values(this._toolArgs).filter(Boolean);
+    let contentForWrite = saveContent;
 
+    try {
       // Ensure session ID exists in file frontmatter
       const { meta: fileMeta } = parseFrontmatter(saveContent);
       let sessionId = fileMeta.ai_session || this._meta.ai_session;
-      let contentForWrite = saveContent;
       if (!sessionId) {
         sessionId = crypto.randomUUID();
         contentForWrite = mergeFrontmatter(saveContent, { ai_session: sessionId });
