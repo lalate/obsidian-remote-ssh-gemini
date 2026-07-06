@@ -1,7 +1,7 @@
 import type { RemoteEntry, RemoteStat } from '../types';
 import type { RpcClient } from '../transport/RpcClient';
 import type { CloseListener, RemoteFsClient } from './RemoteFsClient';
-import type { Entry, Stat } from '../proto/types';
+import type { ChatStartParams, ChatStartResult, Entry, Stat } from '../proto/types';
 import { RpcError } from '../transport/RpcError';
 import { withPerfTrace } from '../util/PerfTracer';
 
@@ -151,6 +151,13 @@ export class RpcRemoteFsClient implements RemoteFsClient {
       'cli.output.batch',
       cb as (params: unknown) => void,
     );
+  }
+
+  async chatStart(params: ChatStartParams): Promise<ChatStartResult> {
+    return (this.rpc as { call(m: string, p: unknown): Promise<unknown> }).call(
+      'chat.start',
+      params,
+    ) as Promise<ChatStartResult>;
   }
 
   onCliDone(

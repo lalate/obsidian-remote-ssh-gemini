@@ -1,4 +1,5 @@
 import type { RemoteEntry, RemoteStat } from '../types';
+import type { ChatStartParams, ChatStartResult } from '../proto/types';
 
 /**
  * The surface `SftpDataAdapter` (and friends) need from whatever is
@@ -79,6 +80,9 @@ export interface RemoteFsClient {
 
   /** Register a handler for CLI completion notifications. */
   onCliDone?(cb: (params: { invocationId: string; exitCode: number }) => void): () => void;
+
+  /** Start server-side AI chat processing (RPC-only). */
+  chatStart?(params: ChatStartParams): Promise<ChatStartResult>;
 }
 
 /** Called with `{unexpected:true}` when the connection dropped without a clean disconnect. */

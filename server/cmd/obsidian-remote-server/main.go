@@ -156,6 +156,7 @@ func run(args []string) (int, error) {
 	disp.Handle("extension.invoke", handlers.RequireAuth(extRunner.Invoke()))
 	disp.Handle("extension.kill", handlers.RequireAuth(extRunner.Kill()))
 	disp.Handle("cli.kill", handlers.RequireAuth(extRunner.KillCompat()))
+	disp.Handle("chat.start", handlers.RequireAuth(handlers.NewChatStarter(absRoot).Start()))
 	// fs.* handlers are gated behind session auth.
 	// Read side.
 	disp.Handle("fs.stat", handlers.RequireAuth(handlers.FsStat(absRoot)))

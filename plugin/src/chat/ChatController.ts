@@ -1,35 +1,28 @@
 import { App, Editor, Notice, TFile } from 'obsidian';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
-import { parseChatFile, extractLastUserSection, replaceAssistantResponse, ensureChatFileStructure } from './ChatParser';
-import type { CliOutputBatchParams, CliDoneParams, ExtensionInvokeParams, ExtensionInvokeResult } from '../proto/types';
+import { ensureChatFileStructure } from './ChatParser';
 
 type RemoteFsClient = RpcRemoteFsClient | SftpRemoteFsClient;
 
-/** Helper: narrows to RpcRemoteFsClient when extension support is present. */
 function assertRpcClient(c: RemoteFsClient): asserts c is RpcRemoteFsClient {
-  if (!('invokeExtension' in c)) throw new Error('Extension invoke not supported on this transport');
+  if (!('invokeExtension' in c)) throw new Error('Chat requires RPC transport');
 }
-const CHAT_TAIL_BYTES = 64 * 1024; // 64KB - enough for recent messages
 
-type Disposer = () => void;
-
-function hasExtensionSupport(client: RemoteFsClient): client is RpcRemoteFsClient {
-  return 'invokeExtension' in client && typeof client.invokeExtension === 'function';
-}
+const POLL_INTERVAL_MS = 1500;
 
 export class ChatController {
-  private currentInvocationId: string | null = null;
-  private disposers: Disposer[] = [];
-  private pendingResponse = '';
-  private isStreaming = false;
-  private _toolName = 'gemini';
+  private isProcessing = false;
+  private _toolName = 'opencode';
   private _toolArgs: Record<string, string> = {};
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private pollFile: TFile | null = null;
+  private lastPollContent = '';
 
   constructor(
     private app: App,
     private client: RemoteFsClient,
-    private getVaultRoot: () => string
+    private getVaultRoot: () => string,
   ) {}
 
   setToolConfig(toolName: string, toolArgs: Record<string, string> = {}): void {
@@ -38,153 +31,88 @@ export class ChatController {
   }
 
   async sendLastSection(editor: Editor, file: TFile): Promise<void> {
-    const text = editor.getValue();
-    const userContent = extractLastUserSection(text);
-
-    if (!userContent || !userContent.trim()) {
-      new Notice('No user message found. Add a "## user" section with content.');
+    if (this.isProcessing) {
+      new Notice('Already processing a chat request');
       return;
     }
 
+    const text = editor.getValue();
     const structuredText = ensureChatFileStructure(text);
     if (structuredText !== text) {
       editor.setValue(structuredText);
-      // Don't save to remote here — let streaming updates handle it,
-      // otherwise auto-save races with fs.watch notifications.
     }
 
-    await this.invokeLlm(editor, file, userContent.trim());
-  }
+    // Save user's input to the server before kicking off LLM.
+    await this.app.vault.modify(file, editor.getValue());
 
-  /** Fetch only the last N bytes of a chat file from remote. */
-  async fetchChatTail(remotePath: string): Promise<string> {
-    try {
-      const stat = await this.client.stat(remotePath);
-      if (!stat.isFile) return '';
-      const fileSize = stat.size;
-      const offset = Math.max(0, fileSize - CHAT_TAIL_BYTES);
-      const length = fileSize - offset;
-      assertRpcClient(this.client);
-      const result = await this.client.readBinaryRange(remotePath, offset, length);
-      return result.data.toString('utf8');
-    } catch (e) {
-      if (e instanceof Error && e.message.includes('no such file')) {
-        return '';
-      }
-      throw e;
-    }
-  }
-
-  /** Get the last user message from remote chat file without loading entire file. */
-  async getLastUserMessage(remotePath: string): Promise<string | null> {
-    const tail = await this.fetchChatTail(remotePath);
-    if (!tail) return null;
-    const parsed = parseChatFile(tail);
-    return parsed.lastUserMessage?.content ?? null;
-  }
-
-  private async invokeLlm(editor: Editor, file: TFile, prompt: string): Promise<void> {
-    if (this.isStreaming) {
-      new Notice('Already streaming a response');
-      return;
-    }
-
-    this.isStreaming = true;
-    this.pendingResponse = '';
-
-    try {
-      const vaultRoot = this.getVaultRoot();
-      const args: Record<string, unknown> = { ...this._toolArgs, prompt };
-      const result = await this.callExtensionInvoke({
-        tool: this._toolName,
-        args,
-        workingDir: vaultRoot,
-        persist: true,
-      });
-
-      this.currentInvocationId = result.invocationId;
-
-      this.setupStreamHandlers(editor, file);
-
-      new Notice(`LLM started (${result.invocationId})`);
-    } catch (e) {
-      this.isStreaming = false;
-      this.currentInvocationId = null;
-      new Notice(`Failed to start LLM: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  private async callExtensionInvoke(params: ExtensionInvokeParams): Promise<ExtensionInvokeResult> {
-    if (!hasExtensionSupport(this.client)) {
-      throw new Error('Extension invoke not supported on this transport');
-    }
-    return this.client.invokeExtension(params);
-  }
-
-  private replaceAssistantContent(editor: Editor): void {
-    const ASST_RE = /^##\s+Assistant\s*$/i;
-    const lineCount = editor.lineCount();
-    let headingLine = -1;
-    for (let i = lineCount - 1; i >= 0; i--) {
-      if (ASST_RE.test(editor.getLine(i))) { headingLine = i; break; }
-    }
-    if (headingLine === -1) {
-      const text = editor.getValue();
-      const newText = text.trimEnd() + '\n\n## Assistant\n\n' + this.pendingResponse.trim() + '\n';
-      if (newText !== text) editor.setValue(newText);
-      return;
-    }
-    const from = { line: headingLine + 1, ch: 0 };
-    const to = { line: lineCount - 1, ch: editor.getLine(lineCount - 1).length };
-    editor.replaceRange(this.pendingResponse.trimEnd() + '\n', from, to);
-  }
-
-  private setupStreamHandlers(editor: Editor, file: TFile): void {
     assertRpcClient(this.client);
-    const onBatch = (params: CliOutputBatchParams) => {
-      if (params.invocationId !== this.currentInvocationId) return;
-      for (const item of params.items) {
-        if (item.stream === 'stdout') {
-          this.pendingResponse += item.data;
-        }
+    try {
+      const argsList: string[] = Object.values(this._toolArgs).filter(Boolean);
+      const result = await this.client.chatStart({
+        filePath: file.path,
+        tool: this._toolName,
+        args: argsList,
+      });
+      if (!result.accepted) {
+        new Notice('Chat request rejected by server');
+        return;
       }
-      this.replaceAssistantContent(editor);
-    };
+    } catch (e) {
+      new Notice(`Failed to start chat: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
 
-    const onDone = async (params: CliDoneParams) => {
-      if (params.invocationId !== this.currentInvocationId) return;
-      this.cleanup();
-      this.isStreaming = false;
-      this.currentInvocationId = null;
-
-      if (this.pendingResponse) {
-        this.replaceAssistantContent(editor);
-        try { await this.app.vault.modify(file, editor.getValue()); } catch (e) { /* write-through */ }
-      }
-
-      if (params.exitCode !== 0) {
-        new Notice(`LLM finished with exit code ${params.exitCode}`);
-      } else {
-        new Notice('LLM response complete');
-      }
-    };
-
-    const disposeBatch = this.client.onCliOutputBatch(onBatch);
-    const disposeDone = this.client.onCliDone(onDone);
-
-    this.disposers.push(disposeBatch, disposeDone);
+    this.isProcessing = true;
+    this.pollFile = file;
+    this.lastPollContent = text; // start from the save-time snapshot so the first poll is a no-op
+    this.startPolling(editor, file);
+    new Notice('Chat processing on server');
   }
 
-  private cleanup(): void {
-    for (const d of this.disposers) {
-      try { d(); } catch (_) { /* ignore disposal errors */ }
+  private startPolling(editor: Editor, file: TFile): void {
+    this.stopPolling();
+    let pollCount = 0;
+    this.pollTimer = setInterval(async () => {
+      pollCount++;
+      try {
+        const content = await this.app.vault.read(file);
+        if (content === this.lastPollContent) return;
+
+        this.lastPollContent = content;
+        editor.setValue(content);
+
+        // Detect completion: ## User heading appears after ## Assistant.
+        if (pollCount > 1 && hasUserAfterAssistant(content)) {
+          this.stopPolling();
+          this.isProcessing = false;
+          this.pollFile = null;
+          new Notice('Chat response complete');
+        }
+      } catch (e) {
+        console.error('Chat poll error:', e);
+      }
+    }, POLL_INTERVAL_MS);
+  }
+
+  private stopPolling(): void {
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
-    this.disposers = [];
   }
 
   destroy(): void {
-    this.cleanup();
-    this.isStreaming = false;
-    this.currentInvocationId = null;
+    this.stopPolling();
+    this.isProcessing = false;
+    this.pollFile = null;
   }
+}
+
+function hasUserAfterAssistant(content: string): boolean {
+  const asstRe = /^##\s+Assistant\s*$/im;
+  const userRe = /^##\s+User\s*$/im;
+  const asstMatch = asstRe.exec(content);
+  if (!asstMatch) return false;
+  const afterAsst = content.slice(asstMatch.index + asstMatch[0].length);
+  return userRe.test(afterAsst);
 }

@@ -72,7 +72,8 @@ export type MethodName =
   | 'fs.copy'
   | 'fs.trashLocal'
   | 'fs.watch'
-  | 'fs.unwatch';
+  | 'fs.unwatch'
+  | 'chat.start';
 
 export interface MethodMap {
   'auth':            { params: AuthParams;            result: AuthResult };
@@ -102,6 +103,8 @@ export interface MethodMap {
 
   'fs.watch':        { params: WatchParams;           result: WatchResult };
   'fs.unwatch':      { params: UnwatchParams;         result: Record<string, never> };
+
+  'chat.start':      { params: ChatStartParams;       result: ChatStartResult };
 }
 
 export type Params<M extends MethodName> = MethodMap[M]['params'];
@@ -232,6 +235,21 @@ export interface ThumbnailResult {
 export interface WatchParams { path: string; recursive?: boolean }
 export interface WatchResult { subscriptionId: string }
 export interface UnwatchParams { subscriptionId: string }
+
+// ─── chat (server-side AI processing) ─────────────────────────────────────────
+
+export interface ChatStartParams {
+  /** Vault-relative path to the chat markdown file. */
+  filePath: string;
+  /** LLM CLI binary to execute (e.g. "opencode"). */
+  tool: string;
+  /** Args passed to the tool binary before the prompt. */
+  args: string[];
+}
+
+export interface ChatStartResult {
+  accepted: boolean;
+}
 
 // ─── server-push notifications ───────────────────────────────────────────────
 

@@ -294,6 +294,23 @@ type ExtensionKillResult struct {
 	Killed       bool   `json:"killed"`
 }
 
+// ─── chat (server-side AI processing) ───────────────────────────────────────
+
+// ChatStartParams tells the daemon to process a chat file with an LLM tool.
+type ChatStartParams struct {
+	// FilePath is vault-relative path to the chat markdown file.
+	FilePath string `json:"filePath"`
+	// Tool is the LLM CLI binary to execute (e.g. "opencode").
+	Tool string `json:"tool"`
+	// Args are passed to the tool binary after Tool, before the prompt.
+	Args []string `json:"args,omitempty"`
+}
+
+// ChatStartResult is returned synchronously — the actual work runs async.
+type ChatStartResult struct {
+	Accepted bool `json:"accepted"`
+}
+
 // ─── server-push notifications ──────────────────────────────────────────────
 
 // FsChangeEvent is the kind of change the server observed on a watched path.
