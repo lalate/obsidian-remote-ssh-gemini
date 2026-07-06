@@ -1,5 +1,6 @@
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, MarkdownView, MarkdownFileInfo, Notice, Plugin, TFile, TFolder } from 'obsidian';
 import { ChatController } from './ChatController';
+import { DEFAULT_CHAT_TEMPLATE } from './ChatParser';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
 import { ConnectionManager } from '../ConnectionManager';
@@ -32,6 +33,14 @@ export class ChatUI {
       name: 'Init Chat Markdown',
       callback: () => {
         void this.handleInitChatMarkdown();
+      },
+    });
+
+    this.plugin.addCommand({
+      id: 'debug-chat-state',
+      name: 'Debug chat state',
+      editorCallback: (editor: Editor, ctx: MarkdownView | MarkdownFileInfo) => {
+        void this.handleDebugChatState(editor, ctx);
       },
     });
 
@@ -90,7 +99,7 @@ export class ChatUI {
   private async handleInitChatMarkdown(): Promise<void> {
     const ts = new Date().toISOString().slice(0, 16).replace('T', '-').replace(/:/g, '-');
     const baseName = `LLM Chat ${ts}.md`;
-    const content = `## user\n\n`;
+    const content = DEFAULT_CHAT_TEMPLATE;
 
     let name = baseName;
     let i = 1;
@@ -131,6 +140,16 @@ export class ChatUI {
     const file = 'file' in ctx ? ctx.file : null;
     if (!file) return;
     await this.controller.sendLastSection(editor, file);
+  }
+
+  private async handleDebugChatState(editor: Editor, ctx: MarkdownView | MarkdownFileInfo): Promise<void> {
+    if (!this.controller) {
+      new Notice('Not connected to a remote vault');
+      return;
+    }
+    const file = 'file' in ctx ? ctx.file : null;
+    if (!file) return;
+    await this.controller.debugChatState(editor, file);
   }
 }
 

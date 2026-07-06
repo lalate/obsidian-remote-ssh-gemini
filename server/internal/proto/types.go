@@ -296,6 +296,18 @@ type ExtensionKillResult struct {
 
 // ─── chat (server-side AI processing) ───────────────────────────────────────
 
+// AiSessionMeta carries session metadata written into the YAML frontmatter
+// of chat markdown files. The daemon updates these fields when it appends
+// an Assistant response.
+type AiSessionMeta struct {
+	// Session is the OpenCode session ID, or empty for a new session.
+	Session string `json:"session,omitempty"`
+	// Agent is the agent name (e.g. "auto", "architect").
+	Agent string `json:"agent,omitempty"`
+	// Model is the model identifier (e.g. "claude-sonnet-4").
+	Model string `json:"model,omitempty"`
+}
+
 // ChatStartParams tells the daemon to process a chat file with an LLM tool.
 type ChatStartParams struct {
 	// FilePath is vault-relative path to the chat markdown file.
@@ -304,6 +316,8 @@ type ChatStartParams struct {
 	Tool string `json:"tool"`
 	// Args are passed to the tool binary after Tool, before the prompt.
 	Args []string `json:"args,omitempty"`
+	// SessionMeta carries metadata to embed in the file frontmatter.
+	SessionMeta *AiSessionMeta `json:"sessionMeta,omitempty"`
 }
 
 // ChatStartResult is returned synchronously — the actual work runs async.

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/rpc"
@@ -42,12 +43,12 @@ func (r *ChatStarter) Start() rpc.Handler {
 		if strings.TrimSpace(p.Tool) == "" {
 			return nil, rpc.ErrInvalidParams("chat.start: tool is required")
 		}
-		go r.runChat(absPath, p.Tool, p.Args)
+		go r.runChat(absPath, p.Tool, p.Args, p.SessionMeta)
 		return proto.ChatStartResult{Accepted: true}, nil
 	}
 }
 
-func (r *ChatStarter) runChat(absPath, tool string, args []string) {
+func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.AiSessionMeta) {
 	// Phase 1 — lock, read prompt, unlock (lock is released during LLM execution).
 	prompt, err := func() (string, error) {
 		f, err := os.Open(absPath)
@@ -76,8 +77,6 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string) {
 	}
 
 	// Phase 2 — run the LLM tool (no lock, may take minutes).
-	// The prompt is passed as the last command-line arg (mirrors how
-	// extension.invoke builds the command line from capabilities.json args).
 	fullArgs := append(args, prompt)
 	cmd := exec.Command(tool, fullArgs...)
 	var stdout, stderr bytes.Buffer
@@ -91,7 +90,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string) {
 		response = strings.TrimSpace(stdout.String())
 	}
 
-	// Phase 3 — lock again, write assistant response, unlock.
+	// Phase 3 — lock again, merge frontmatter, write assistant response, unlock.
 	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
 	if err != nil {
 		return
@@ -107,7 +106,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string) {
 		return
 	}
 	currentContent := buf.String()
-	updatedContent := replaceAssistantContent(currentContent, response)
+	updatedContent := replaceAssistantContent(currentContent, response, meta)
 	if updatedContent == currentContent {
 		return
 	}
@@ -123,8 +122,126 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string) {
 	_ = f.Sync()
 }
 
+// ─── Frontmatter helpers ─────────────────────────────────────────────────────
+
+// frontmatterMeta mirrors proto.AiSessionMeta with an added Updated timestamp.
+type frontmatterMeta struct {
+	Session string `json:"session"`
+	Agent   string `json:"agent"`
+	Model   string `json:"model"`
+	Updated string `json:"updated"`
+}
+
+// hasFrontmatter reports whether text starts with YAML frontmatter (---).
+func hasFrontmatter(text string) bool {
+	return strings.HasPrefix(text, "---\n") || strings.HasPrefix(text, "---\r\n")
+}
+
+// parseFrontmatter extracts the frontmatter block (with delimiters), the body
+// after the frontmatter, and a key-value map of parsed fields.
+// When no frontmatter is present, block is empty and body is the full text.
+func parseFrontmatter(text string) (block, body string, meta map[string]string) {
+	meta = make(map[string]string)
+	if !hasFrontmatter(text) {
+		return "", text, meta
+	}
+	// Find end of first line (---\n)
+	nlLen := 1
+	rest := text[4:] // skip "---\n"
+	if strings.HasPrefix(text, "---\r\n") {
+		rest = text[5:] // skip "---\r\n"
+		nlLen = 2
+	}
+	endIdx := strings.Index(rest, "\n---")
+	if endIdx < 0 {
+		return "", text, meta
+	}
+	// block includes everything from "---\n" to "\n---\n"
+	blockEnd := endIdx + 5 + nlLen - 1 // +len("\n---\n") adjusted for \r\n
+	if nlLen == 2 {
+		blockEnd = endIdx + 6 - 1
+	}
+	block = text[:blockEnd]
+	body = text[blockEnd:]
+
+	fmLines := rest[:endIdx]
+	for _, raw := range strings.Split(fmLines, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		sep := strings.IndexByte(line, ':')
+		if sep < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:sep])
+		val := strings.TrimSpace(line[sep+1:])
+		val = strings.Trim(val, `"'`)
+		if val != "" {
+			meta[key] = val
+		}
+	}
+	return
+}
+
+// renderFrontmatter builds a frontmatter block from a key-value map.
+func renderFrontmatter(meta map[string]string) string {
+	// Define display order for known keys
+	order := []string{"ai_session", "ai_agent", "ai_model", "ai_updated"}
+	inOrder := make(map[string]bool)
+	for _, k := range order {
+		inOrder[k] = true
+	}
+
+	var b strings.Builder
+	b.WriteString("---\n")
+	for _, k := range order {
+		if v, ok := meta[k]; ok && v != "" {
+			writeFmValue(&b, k, v)
+		}
+	}
+	// Any remaining keys not in the predefined order
+	for k, v := range meta {
+		if !inOrder[k] && v != "" {
+			writeFmValue(&b, k, v)
+		}
+	}
+	b.WriteString("---")
+	return b.String()
+}
+
+func writeFmValue(b *strings.Builder, key, val string) {
+	if strings.ContainsAny(val, ":\n\"'") {
+		escaped := strings.ReplaceAll(val, `"`, `\"`)
+		b.WriteString(fmt.Sprintf("%s: \"%s\"\n", key, escaped))
+	} else {
+		b.WriteString(fmt.Sprintf("%s: %s\n", key, val))
+	}
+}
+
+// mergeFrontmatter updates or inserts frontmatter fields in text.
+// Fields in meta that are empty strings are removed.
+func mergeFrontmatter(text string, meta map[string]string) string {
+	_, body, existing := parseFrontmatter(text)
+	merged := make(map[string]string)
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for k, v := range meta {
+		if v == "" {
+			delete(merged, k)
+		} else {
+			merged[k] = v
+		}
+	}
+	return renderFrontmatter(merged) + body
+}
+
+// ─── Chat content helpers ────────────────────────────────────────────────────
+
 // extractLastUserSection finds the last ## User heading and returns the text
 // between it and the next section heading (## Assistant or ## User).
+// Frontmatter (everything before the first heading) is skipped automatically.
 func extractLastUserSection(content string) string {
 	headingRe := regexp.MustCompile(`(?im)^##\s+(User|Assistant)\s*$`)
 	lines := strings.Split(content, "\n")
@@ -151,72 +268,76 @@ func extractLastUserSection(content string) string {
 	return strings.TrimSpace(strings.Join(promptLines, "\n"))
 }
 
-// replaceAssistantContent rewrites the ## Assistant section with `response`
-// and ensures a ## User section follows. It preserves everything before
-// ## Assistant and after the subsequent ## User.
-func replaceAssistantContent(content, response string) string {
-	asstRe := regexp.MustCompile(`(?im)^##\s+Assistant\s*$`)
-	userRe := regexp.MustCompile(`(?im)^##\s+User\s*$`)
-	lines := strings.Split(content, "\n")
-
-	asstIdx := -1
-	for i, line := range lines {
-		if asstRe.MatchString(line) {
-			asstIdx = i
-			break
+func replaceAssistantContent(content, response string, meta *proto.AiSessionMeta) string {
+	// Build frontmatter updates
+	updates := make(map[string]string)
+	if meta != nil {
+		if meta.Session != "" {
+			updates["ai_session"] = meta.Session
+		}
+		if meta.Agent != "" {
+			updates["ai_agent"] = meta.Agent
+		}
+		if meta.Model != "" {
+			updates["ai_model"] = meta.Model
 		}
 	}
+	updates["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
 
-	var newLines []string
+	// Merge frontmatter, then get body (content after frontmatter)
+	_, body, _ := parseFrontmatter(content)
 
-	if asstIdx == -1 {
-		// No ## Assistant heading — insert before EOF.
-		newLines = append(newLines, strings.TrimRight(content, "\n"))
-		newLines = append(newLines, "", "## Assistant", "", response, "")
-	} else {
-		// Find ## User heading after ## Assistant.
-		nextUser := len(lines)
-		for i := asstIdx + 1; i < len(lines); i++ {
-			if userRe.MatchString(lines[i]) {
-				nextUser = i
-				break
+	// Append assistant response to body
+	trimmed := strings.TrimRight(body, "\n")
+	updatedBody := trimmed + "\n\n## Assistant\n\n" + response + "\n\n## User\n\n"
+
+	// Reassemble: frontmatter + body
+	// If there's no frontmatter, add one
+	if hasFrontmatter(content) {
+		_, _, existing := parseFrontmatter(content)
+		for k, v := range existing {
+			if _, set := updates[k]; !set {
+				updates[k] = v
 			}
 		}
-		// Lines before ## Assistant (keep verbatim).
-		newLines = append(newLines, lines[:asstIdx]...)
-		// New assistant block.
-		newLines = append(newLines, "", "## Assistant", "", response, "")
-		// Lines from ## User onward (preserve User section).
-		if nextUser < len(lines) {
-			after := lines[nextUser:]
-			// Strip leading blank line from after if present.
-			if len(after) > 0 && strings.TrimSpace(after[0]) == "" {
-				after = after[1:]
-			}
-			newLines = append(newLines, after...)
-		}
 	}
-
-	// Ensure a ## User section exists at the end.
-	joined := strings.Join(newLines, "\n")
-	trimmed := strings.TrimRight(joined, "\n")
-	if !userRe.MatchString(joined) {
-		trimmed += "\n\n## User\n\n"
-	} else if !strings.HasSuffix(trimmed, "\n") {
-		trimmed += "\n"
-	}
-	return trimmed
+	return mergeFrontmatter(updatedBody, updates)
 }
 
-// writeErrorToFile appends an error message as assistant content.
+// writeErrorToFile appends an error message as assistant content,
+// preserving frontmatter.
 func writeErrorToFile(absPath, errMsg string) {
-	f, err := os.OpenFile(absPath, os.O_RDWR|os.O_APPEND, 0644)
+	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
 	if err != nil {
 		return
 	}
 	defer f.Close()
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
-	_, _ = f.WriteString(fmt.Sprintf("\n## Assistant\n\n> Error: %s\n\n## User\n\n", errMsg))
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(f); err != nil {
+		return
+	}
+	currentContent := buf.String()
+
+	_, body, _ := parseFrontmatter(currentContent)
+	trimmed := strings.TrimRight(body, "\n")
+	updated := trimmed + fmt.Sprintf("\n\n## Assistant\n\n> Error: %s\n\n## User\n\n", errMsg)
+	// Preserve frontmatter if it existed
+	finalContent := updated
+	if hasFrontmatter(currentContent) {
+		_, _, meta := parseFrontmatter(currentContent)
+		meta["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
+		finalContent = mergeFrontmatter(updated, meta)
+	}
+
+	if err := f.Truncate(0); err != nil {
+		return
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return
+	}
+	_, _ = f.WriteString(finalContent)
 	_ = f.Sync()
 }

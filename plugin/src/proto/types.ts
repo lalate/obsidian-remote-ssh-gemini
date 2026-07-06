@@ -238,6 +238,19 @@ export interface UnwatchParams { subscriptionId: string }
 
 // ─── chat (server-side AI processing) ─────────────────────────────────────────
 
+/**
+ * Metadata written into the YAML frontmatter of chat markdown files.
+ * The daemon updates these fields when it appends an Assistant response.
+ */
+export interface AiSessionMeta {
+  /** OpenCode session ID, or empty for a new session. */
+  session?: string;
+  /** Agent name (e.g. "auto", "architect"). */
+  agent?: string;
+  /** Model identifier (e.g. "claude-sonnet-4"). */
+  model?: string;
+}
+
 export interface ChatStartParams {
   /** Vault-relative path to the chat markdown file. */
   filePath: string;
@@ -245,6 +258,8 @@ export interface ChatStartParams {
   tool: string;
   /** Args passed to the tool binary before the prompt. */
   args: string[];
+  /** Session metadata to embed in the file frontmatter. */
+  sessionMeta?: AiSessionMeta;
 }
 
 export interface ChatStartResult {
