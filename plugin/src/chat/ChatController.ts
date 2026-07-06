@@ -96,10 +96,15 @@ export class ChatController {
       return;
     }
 
+    const processingContent = saveContent.trimEnd() + '\n\n## Assistant\n\n';
+    await this.app.vault.modify(file, processingContent);
+    editor.setValue(processingContent);
+    editor.setCursor(editor.lastLine(), 0);
+
     this.isProcessing = true;
     this.pollFile = file;
-    this.lastPollContent = saveContent;
-    logger.info('Chat polling started', { intervalMs: POLL_INTERVAL_MS, lastPollLines: saveLines });
+    this.lastPollContent = processingContent;
+    logger.info('Chat polling started', { intervalMs: POLL_INTERVAL_MS, lastPollLines: processingContent.split('\n').length });
     this.startPolling(editor, file);
     new Notice('Chat processing on server');
   }

@@ -31,9 +31,6 @@ ai_agent: auto
 
 ## User
 
-
-## Assistant
-
 `;
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
@@ -211,11 +208,11 @@ export function ensureChatFileStructure(text: string): string {
   if (hasFrontmatter(trimmed)) {
     const { body } = parseFrontmatter(trimmed);
     const bodyTrimmed = body.trim();
-    if (!bodyTrimmed || /^##\s+(User|Assistant)\b/i.test(bodyTrimmed)) {
-      return text; // body either empty or starts with heading — valid
+    if (!bodyTrimmed || /^#+\s+\S/.test(bodyTrimmed)) {
+      return text; // body either empty or starts with a heading — valid
     }
     // Frontmatter exists but body is raw text — add structure
-    return text.trimEnd() + '\n\n# AI Conversation\n\n## User\n\n\n## Assistant\n\n';
+    return text.trimEnd() + '\n\n# AI Conversation\n\n## User\n\n';
   }
 
   // No frontmatter — add it
@@ -224,5 +221,5 @@ export function ensureChatFileStructure(text: string): string {
   }
 
   // Raw text — full wrap
-  return `---\nai_agent: auto\n---\n\n# AI Conversation\n\n## User\n\n${trimmed}\n\n## Assistant\n\n`;
+  return `---\nai_agent: auto\n---\n\n# AI Conversation\n\n## User\n\n${trimmed}\n\n`;
 }

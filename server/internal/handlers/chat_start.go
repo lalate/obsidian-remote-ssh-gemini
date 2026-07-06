@@ -284,15 +284,6 @@ func replaceAssistantContent(content, response string, meta *proto.AiSessionMeta
 	}
 	updates["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
 
-	// Merge frontmatter, then get body (content after frontmatter)
-	_, body, _ := parseFrontmatter(content)
-
-	// Append assistant response to body
-	trimmed := strings.TrimRight(body, "\n")
-	updatedBody := trimmed + "\n\n## Assistant\n\n" + response + "\n\n## User\n\n"
-
-	// Reassemble: frontmatter + body
-	// If there's no frontmatter, add one
 	if hasFrontmatter(content) {
 		_, _, existing := parseFrontmatter(content)
 		for k, v := range existing {
@@ -301,11 +292,29 @@ func replaceAssistantContent(content, response string, meta *proto.AiSessionMeta
 			}
 		}
 	}
-	return mergeFrontmatter(updatedBody, updates)
+
+	_, body, _ := parseFrontmatter(content)
+	lines := strings.Split(body, "\n")
+	headingRe := regexp.MustCompile(`(?i)^##\s+(User|Assistant)\s*$`)
+
+	lastAsstIdx := -1
+	for i, line := range lines {
+		if m := headingRe.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "Assistant") {
+			lastAsstIdx = i
+		}
+	}
+
+	if lastAsstIdx >= 0 {
+		prefix := strings.Join(lines[:lastAsstIdx], "\n")
+		body = prefix + "\n## Assistant\n\n" + response + "\n\n## User\n\n"
+	} else {
+		trimmed := strings.TrimRight(body, "\n")
+		body = trimmed + "\n\n## Assistant\n\n" + response + "\n\n## User\n\n"
+	}
+
+	return mergeFrontmatter(body, updates)
 }
 
-// writeErrorToFile appends an error message as assistant content,
-// preserving frontmatter.
 func writeErrorToFile(absPath, errMsg string) {
 	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
 	if err != nil {
@@ -321,17 +330,26 @@ func writeErrorToFile(absPath, errMsg string) {
 	}
 	currentContent := buf.String()
 
-	_, body, _ := parseFrontmatter(currentContent)
-	trimmed := strings.TrimRight(body, "\n")
-	updated := trimmed + fmt.Sprintf("\n\n## Assistant\n\n> Error: %s\n\n## User\n\n", errMsg)
-	// Preserve frontmatter if it existed
-	finalContent := updated
-	if hasFrontmatter(currentContent) {
-		_, _, meta := parseFrontmatter(currentContent)
-		meta["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
-		finalContent = mergeFrontmatter(updated, meta)
+	_, body, meta := parseFrontmatter(currentContent)
+	meta["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
+
+	lines := strings.Split(body, "\n")
+	headingRe := regexp.MustCompile(`(?i)^##\s+(User|Assistant)\s*$`)
+	lastAsstIdx := -1
+	for i, line := range lines {
+		if m := headingRe.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "Assistant") {
+			lastAsstIdx = i
+		}
 	}
 
+	errorBlock := fmt.Sprintf("## Assistant\n\n> Error: %s\n\n## User\n\n", errMsg)
+	if lastAsstIdx >= 0 {
+		body = strings.Join(lines[:lastAsstIdx], "\n") + "\n" + errorBlock
+	} else {
+		body = strings.TrimRight(body, "\n") + "\n\n" + errorBlock
+	}
+
+	finalContent := mergeFrontmatter(body, meta)
 	if err := f.Truncate(0); err != nil {
 		return
 	}

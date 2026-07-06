@@ -29,23 +29,17 @@ ai_agent: auto
 
 ## User
 
-
-## Assistant
-
 `;function Yt(s){return/^---\s*\n/.test(s)}function Zt(s){let t={};if(!Yt(s))return{block:"",body:s,meta:t};let e=s.slice(s.indexOf(`
 `)+1),r=e.indexOf(`
 ---`);if(r<0)return{block:"",body:s,meta:t};let n=e.slice(0,r),i=s.slice(0,r+5),o=e.slice(r+5);for(let a of n.split(`
 `)){let c=a.trim();if(!c||c.startsWith("#"))continue;let u=c.indexOf(":");if(u<0)continue;let l=c.slice(0,u).trim(),p=c.slice(u+1).trim();p=p.replace(/^["']|["']$/g,""),p&&(t[l]=p)}return{block:i,body:o,meta:t}}function ln(s){let t=["---"];for(let[e,r]of Object.entries(s))r!==void 0&&r!==""&&(/[:\n"']/.test(r)?t.push(`${e}: "${r.replace(/"/g,'\\"')}"`):t.push(`${e}: ${r}`));return t.push("---"),t.join(`
 `)}function cn(s,t){let{block:e,body:r,meta:n}=Zt(s),i={...n,...t};for(let[a,c]of Object.entries(t))c===void 0&&delete i[a];let o=ln(i);return o+`
 
-`+r.trimStart()}function nt(s){let t=s.trim();if(!t)return rt;if(Yt(t)){let{body:e}=Zt(t),r=e.trim();return!r||/^##\s+(User|Assistant)\b/i.test(r)?s:s.trimEnd()+`
+`+r.trimStart()}function nt(s){let t=s.trim();if(!t)return rt;if(Yt(t)){let{body:e}=Zt(t),r=e.trim();return!r||/^#+\s+\S/.test(r)?s:s.trimEnd()+`
 
 # AI Conversation
 
 ## User
-
-
-## Assistant
 
 `}return/^##\s+(User|Assistant)\b/i.test(t)?cn(s,{ai_agent:"auto"}):`---
 ai_agent: auto
@@ -57,12 +51,15 @@ ai_agent: auto
 
 ${t}
 
+`}function pn(s){if(!("invokeExtension"in s))throw new Error("Chat requires RPC transport")}var er=1500,K=class{constructor(t,e,r){this.app=t;this.client=e;this.getVaultRoot=r;this.isProcessing=!1;this._toolName="opencode";this._toolArgs={};this.pollTimer=null;this.pollFile=null;this.lastPollContent="";this._meta={}}setToolConfig(t,e={}){this._toolName=t,this._toolArgs=e}setMeta(t){this._meta=t}async sendLastSection(t,e){if(this.isProcessing){new A.Notice("Already processing a chat request");return}await this.app.vault.read(e).catch(()=>{});let r=t.getValue(),n=r.split(`
+`).length;d.info("Chat sendLastSection enter",{file:e.name,lines:n,textLen:r.length});let i=nt(r);if(i!==r){let u=t.getCursor();t.setValue(i);let l=i.split(`
+`).length;d.info("Chat ensureChatFileStructure restructured",{before:n,after:l});let p=t.lastLine();t.setCursor(Math.min(u.line,p),0),t.scrollIntoView({from:{line:p,ch:0},to:{line:p,ch:0}},!0)}let o=t.getValue(),a=o.split(`
+`).length;d.info("Chat before vault.modify",{lines:a,textLen:o.length}),await this.app.vault.modify(e,o),d.info("Chat after vault.modify",{cursor:t.getCursor()}),pn(this.client);try{let u=Object.values(this._toolArgs).filter(Boolean);d.info("Chat calling chatStart",{tool:this._toolName,args:u,filePath:e.path});let l={session:this._meta.ai_session,agent:this._meta.ai_agent,model:this._meta.ai_model},p=await this.client.chatStart({filePath:e.path,tool:this._toolName,args:u,sessionMeta:l});if(d.info("Chat chatStart result",{result:p}),!p.accepted){new A.Notice("Chat request rejected by server");return}}catch(u){new A.Notice(`Failed to start chat: ${u instanceof Error?u.message:String(u)}`);return}let c=o.trimEnd()+`
+
 ## Assistant
 
-`}function pn(s){if(!("invokeExtension"in s))throw new Error("Chat requires RPC transport")}var er=1500,K=class{constructor(t,e,r){this.app=t;this.client=e;this.getVaultRoot=r;this.isProcessing=!1;this._toolName="opencode";this._toolArgs={};this.pollTimer=null;this.pollFile=null;this.lastPollContent="";this._meta={}}setToolConfig(t,e={}){this._toolName=t,this._toolArgs=e}setMeta(t){this._meta=t}async sendLastSection(t,e){if(this.isProcessing){new A.Notice("Already processing a chat request");return}await this.app.vault.read(e).catch(()=>{});let r=t.getValue(),n=r.split(`
-`).length;d.info("Chat sendLastSection enter",{file:e.name,lines:n,textLen:r.length});let i=nt(r);if(i!==r){let c=t.getCursor();t.setValue(i);let u=i.split(`
-`).length;d.info("Chat ensureChatFileStructure restructured",{before:n,after:u});let l=t.lastLine();t.setCursor(Math.min(c.line,l),0),t.scrollIntoView({from:{line:l,ch:0},to:{line:l,ch:0}},!0)}let o=t.getValue(),a=o.split(`
-`).length;d.info("Chat before vault.modify",{lines:a,textLen:o.length}),await this.app.vault.modify(e,o),d.info("Chat after vault.modify",{cursor:t.getCursor()}),pn(this.client);try{let c=Object.values(this._toolArgs).filter(Boolean);d.info("Chat calling chatStart",{tool:this._toolName,args:c,filePath:e.path});let u={session:this._meta.ai_session,agent:this._meta.ai_agent,model:this._meta.ai_model},l=await this.client.chatStart({filePath:e.path,tool:this._toolName,args:c,sessionMeta:u});if(d.info("Chat chatStart result",{result:l}),!l.accepted){new A.Notice("Chat request rejected by server");return}}catch(c){new A.Notice(`Failed to start chat: ${c instanceof Error?c.message:String(c)}`);return}this.isProcessing=!0,this.pollFile=e,this.lastPollContent=o,d.info("Chat polling started",{intervalMs:er,lastPollLines:a}),this.startPolling(t,e),new A.Notice("Chat processing on server")}startPolling(t,e){this.stopPolling();let r=0;this.pollTimer=setInterval(async()=>{r++;try{let n=await this.app.vault.read(e);if(n===this.lastPollContent)return;let i=n.split(`
+`;await this.app.vault.modify(e,c),t.setValue(c),t.setCursor(t.lastLine(),0),this.isProcessing=!0,this.pollFile=e,this.lastPollContent=c,d.info("Chat polling started",{intervalMs:er,lastPollLines:c.split(`
+`).length}),this.startPolling(t,e),new A.Notice("Chat processing on server")}startPolling(t,e){this.stopPolling();let r=0;this.pollTimer=setInterval(async()=>{r++;try{let n=await this.app.vault.read(e);if(n===this.lastPollContent)return;let i=n.split(`
 `).length,o=this.lastPollContent.split(`
 `).length;d.info("Chat poll content changed",{pollCount:r,oldLines:o,newLines:i,textLen:n.length}),this.lastPollContent=n;let a=t.getValue();if(a===n||a.length<n.length){t.setValue(n);let c=t.lineCount(),u=t.getCursor();d.info("Chat poll editor.setValue done",{pollCount:r,editorLineCount:c,cursor:u}),t.setCursor(t.lastLine(),0),t.scrollIntoView({from:{line:t.lastLine(),ch:0},to:{line:t.lastLine(),ch:0}},!0)}else d.info("Chat poll editor has pending input, skipping setValue",{pollCount:r,editorLen:a.length,serverLen:n.length});r>1&&un(n)&&(d.info("Chat poll COMPLETE detected",{pollCount:r}),this.stopPolling(),this.isProcessing=!1,this.pollFile=null,new A.Notice("Chat response complete"))}catch(n){console.error("Chat poll error:",n)}},er)}stopPolling(){this.pollTimer!==null&&(clearInterval(this.pollTimer),this.pollTimer=null)}destroy(){this.stopPolling(),this.isProcessing=!1,this.pollFile=null}async debugChatState(t,e){d.info("Chat debug state start",{file:e.name});let r=t.getValue(),n=r.split(`
 `),i=t.getCursor();d.info("Chat debug editor state",{lines:n.length,textLen:r.length,cursor:i,isProcessing:this.isProcessing,pollFile:this.pollFile?.name??null});let o;try{o=await this.app.vault.read(e);let l=o.split(`
