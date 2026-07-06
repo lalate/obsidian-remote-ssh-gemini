@@ -156,11 +156,9 @@ func parseFrontmatter(text string) (block, body string, meta map[string]string) 
 	if endIdx < 0 {
 		return "", text, meta
 	}
-	// block includes everything from "---\n" to "\n---\n"
-	blockEnd := endIdx + 5 + nlLen - 1 // +len("\n---\n") adjusted for \r\n
-	if nlLen == 2 {
-		blockEnd = endIdx + 6 - 1
-	}
+	// block includes everything from opening "---\n" to closing "\n---\n"
+	//   4 bytes opening + endIdx content + 4 bytes closing (\n---\n or \n---\r\n)
+	blockEnd := 4 + endIdx + 4 + nlLen
 	block = text[:blockEnd]
 	body = text[blockEnd:]
 
@@ -206,7 +204,7 @@ func renderFrontmatter(meta map[string]string) string {
 			writeFmValue(&b, k, v)
 		}
 	}
-	b.WriteString("---")
+	b.WriteString("---\n")
 	return b.String()
 }
 

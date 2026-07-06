@@ -31,8 +31,8 @@ ai_agent: auto
 
 `;function Yt(s){return/^---\s*\n/.test(s)}function Zt(s){let t={};if(!Yt(s))return{block:"",body:s,meta:t};let e=s.slice(s.indexOf(`
 `)+1),r=e.indexOf(`
----`);if(r<0)return{block:"",body:s,meta:t};let n=e.slice(0,r),i=s.slice(0,r+5),o=e.slice(r+5);for(let a of n.split(`
-`)){let c=a.trim();if(!c||c.startsWith("#"))continue;let u=c.indexOf(":");if(u<0)continue;let l=c.slice(0,u).trim(),p=c.slice(u+1).trim();p=p.replace(/^["']|["']$/g,""),p&&(t[l]=p)}return{block:i,body:o,meta:t}}function ln(s){let t=["---"];for(let[e,r]of Object.entries(s))r!==void 0&&r!==""&&(/[:\n"']/.test(r)?t.push(`${e}: "${r.replace(/"/g,'\\"')}"`):t.push(`${e}: ${r}`));return t.push("---"),t.join(`
+---`);if(r<0)return{block:"",body:s,meta:t};let n=4+r+5,i=e.slice(0,r),o=s.slice(0,n),a=s.slice(n);for(let c of i.split(`
+`)){let u=c.trim();if(!u||u.startsWith("#"))continue;let l=u.indexOf(":");if(l<0)continue;let p=u.slice(0,l).trim(),h=u.slice(l+1).trim();h=h.replace(/^["']|["']$/g,""),h&&(t[p]=h)}return{block:o,body:a,meta:t}}function ln(s){let t=["---"];for(let[e,r]of Object.entries(s))r!==void 0&&r!==""&&(/[:\n"']/.test(r)?t.push(`${e}: "${r.replace(/"/g,'\\"')}"`):t.push(`${e}: ${r}`));return t.push("---"),t.join(`
 `)}function cn(s,t){let{block:e,body:r,meta:n}=Zt(s),i={...n,...t};for(let[a,c]of Object.entries(t))c===void 0&&delete i[a];let o=ln(i);return o+`
 
 `+r.trimStart()}function nt(s){let t=s.trim();if(!t)return rt;if(Yt(t)){let{body:e}=Zt(t),r=e.trim();return!r||/^#+\s+\S/.test(r)?s:s.trimEnd()+`

@@ -63,9 +63,10 @@ export function parseFrontmatter(text: string): {
     return { block: '', body: text, meta };
   }
 
+  const bodyStart = 4 + endIdx + 5; // opening ---\n + content + \n---\n
   const fmLines = rest.slice(0, endIdx);
-  const block = text.slice(0, endIdx + 5); // include ---\n...\n---\n
-  const body = rest.slice(endIdx + 5);      // past trailing ---\n
+  const block = text.slice(0, bodyStart);
+  const body = text.slice(bodyStart);
 
   for (const raw of fmLines.split('\n')) {
     const line = raw.trim();
