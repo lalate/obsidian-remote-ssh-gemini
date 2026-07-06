@@ -1,7 +1,7 @@
 import { App, Editor, Notice, TFile } from 'obsidian';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
-import { ensureChatFileStructure, type FrontmatterMeta } from './ChatParser';
+import { ensureChatFileStructure, parseFrontmatter, mergeFrontmatter, type FrontmatterMeta } from './ChatParser';
 import type { AiSessionMeta } from '../proto/types';
 import { logger } from '../util/logger';
 
@@ -74,11 +74,23 @@ export class ChatController {
     assertRpcClient(this.client);
     try {
       const argsList: string[] = Object.values(this._toolArgs).filter(Boolean);
-      logger.info('Chat calling chatStart', { tool: this._toolName, args: argsList, filePath: file.path });
+
+      // Ensure session ID exists in file frontmatter
+      const { meta: fileMeta } = parseFrontmatter(saveContent);
+      let sessionId = fileMeta.ai_session || this._meta.ai_session;
+      let contentForWrite = saveContent;
+      if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        contentForWrite = mergeFrontmatter(saveContent, { ai_session: sessionId });
+        editor.setValue(contentForWrite);
+        await this.app.vault.modify(file, contentForWrite);
+      }
+
+      logger.info('Chat calling chatStart', { tool: this._toolName, args: argsList, filePath: file.path, sessionId });
       const sessionMeta: AiSessionMeta = {
-        session: this._meta.ai_session,
-        agent: this._meta.ai_agent,
-        model: this._meta.ai_model,
+        session: sessionId,
+        agent: this._meta.ai_agent || fileMeta.ai_agent,
+        model: this._meta.ai_model || fileMeta.ai_model,
       };
       const result = await this.client.chatStart({
         filePath: file.path,
@@ -96,7 +108,7 @@ export class ChatController {
       return;
     }
 
-    const processingContent = saveContent.trimEnd() + '\n\n## Assistant\n\n';
+    const processingContent = contentForWrite.trimEnd() + '\n\n## Assistant\n\n';
     await this.app.vault.modify(file, processingContent);
     editor.setValue(processingContent);
     editor.setCursor(editor.lastLine(), 0);
