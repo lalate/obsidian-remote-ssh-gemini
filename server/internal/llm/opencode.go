@@ -71,15 +71,16 @@ func (p *OpenCodeProvider) discoverServePort() int {
 	return 0
 }
 
-// serveAddr returns "ws://host:port" or "" when serve is not reachable.
-func (p *OpenCodeProvider) serveAddr() string {
+// serveHTTPAddr returns "http://host:port" or "" when serve is not reachable.
+// The opencode CLI's --attach flag expects an HTTP URL, not a WebSocket URL.
+func (p *OpenCodeProvider) serveHTTPAddr() string {
 	if port := p.discoverServePort(); port > 0 {
-		return fmt.Sprintf("ws://%s:%d", p.serveHost, port)
+		return fmt.Sprintf("http://%s:%d", p.serveHost, port)
 	}
 	return ""
 }
 
-// Execute runs `opencode run --attach <addr> --format json --auto --pure <prompt>`
+// Execute runs `opencode run --attach <http-addr> --format json --pure <prompt>`
 // and parses the JSON event stream for the response text.
 func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string) (*LlmResponse, error) {
 	binary := p.Command()
@@ -87,12 +88,12 @@ func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []st
 		return &LlmResponse{Error: "opencode binary not found"}, nil
 	}
 
-	addr := p.serveAddr()
+	addr := p.serveHTTPAddr()
 	if addr == "" {
 		return &LlmResponse{Error: "opencode serve not running"}, nil
 	}
 
-	fullArgs := []string{"run", "--attach", addr, "--format", "json", "--auto", "--pure"}
+	fullArgs := []string{"run", "--attach", addr, "--format", "json", "--pure"}
 	fullArgs = append(fullArgs, args...)
 	fullArgs = append(fullArgs, prompt)
 
