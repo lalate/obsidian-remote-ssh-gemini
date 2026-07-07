@@ -73,7 +73,9 @@ export type MethodName =
   | 'fs.trashLocal'
   | 'fs.watch'
   | 'fs.unwatch'
-  | 'chat.start';
+  | 'chat.start'
+  | 'chat.cancel'
+  | 'chat.status';
 
 export interface MethodMap {
   'auth':            { params: AuthParams;            result: AuthResult };
@@ -105,6 +107,8 @@ export interface MethodMap {
   'fs.unwatch':      { params: UnwatchParams;         result: Record<string, never> };
 
   'chat.start':      { params: ChatStartParams;       result: ChatStartResult };
+  'chat.cancel':     { params: ChatCancelParams;       result: ChatCancelResult };
+  'chat.status':     { params: Record<string, never>; result: ChatStatusResult };
 }
 
 export type Params<M extends MethodName> = MethodMap[M]['params'];
@@ -264,6 +268,42 @@ export interface ChatStartParams {
 
 export interface ChatStartResult {
   accepted: boolean;
+}
+
+export interface ChatCancelParams {
+  filePath: string;
+}
+
+export interface ChatCancelResult {
+  killed: boolean;
+}
+
+export interface ExtensionArgRule {
+  name: string;
+  required?: boolean;
+  pattern?: string;
+  maxLength?: number;
+  allowFlags?: boolean;
+}
+
+export interface ChatToolStatus {
+  tool: string;
+  command?: string;
+  running: boolean;
+  available: boolean;
+  argRules?: ExtensionArgRule[];
+  error?: string;
+}
+
+export interface ChatStatusResult {
+  /** Every configured LLM tool and its health. */
+  tools: ChatToolStatus[];
+  /** Name of the primary LLM tool. */
+  defaultTool: string;
+  /** Port the opencode serve (if any) is listening on. */
+  serverPort?: number;
+  /** True when at least one tool is available and running. */
+  healthy: boolean;
 }
 
 // ─── server-push notifications ───────────────────────────────────────────────

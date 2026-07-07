@@ -44,6 +44,22 @@ export class ChatUI {
       },
     });
 
+    this.plugin.addCommand({
+      id: 'cancel-current-chat',
+      name: 'Cancel current chat processing',
+      callback: () => {
+        void this.handleCancelChat();
+      },
+    });
+
+    this.plugin.addCommand({
+      id: 'check-llm-status',
+      name: 'Check LLM status',
+      callback: () => {
+        void this.handleCheckLlmStatus();
+      },
+    });
+
     this.statusBarItem = this.plugin.addStatusBarItem();
     this.statusBarItem.setText('Send to LLM');
     this.statusBarItem.addClass('remote-ssh-chat-send');
@@ -129,7 +145,8 @@ export class ChatUI {
     const vaultRoot = this.connectionManager.activeRemoteBasePath ?? profile.remotePath;
     this.controller = new ChatController(this.app, client as RemoteFsClient, () => vaultRoot);
     const settings = (this.plugin as { settings: PluginSettings }).settings;
-    this.controller.setToolConfig(settings.llmToolName ?? 'gemini', settings.llmToolArgs ?? {});
+    this.controller.setToolConfig(settings.llmToolName ?? '', settings.llmToolArgs ?? {});
+    void this.controller.refreshToolConfig();
   }
 
   private async handleSendLastSection(editor: Editor, ctx: MarkdownView | MarkdownFileInfo): Promise<void> {
@@ -150,6 +167,38 @@ export class ChatUI {
     const file = 'file' in ctx ? ctx.file : null;
     if (!file) return;
     await this.controller.debugChatState(editor, file);
+  }
+
+  private async handleCancelChat(): Promise<void> {
+    if (!this.controller) {
+      new Notice('Not connected to a remote vault');
+      return;
+    }
+    await this.controller.cancel();
+  }
+
+  private async handleCheckLlmStatus(): Promise<void> {
+    const client = this.connectionManager.buildFsClient();
+    if (!('chatStatus' in client)) {
+      new Notice('LLM status check requires RPC transport');
+      return;
+    }
+    try {
+      const status = await (client as RpcRemoteFsClient).chatStatus();
+      const lines: string[] = [];
+      const icon = (v: boolean) => v ? '✅' : '❌';
+      for (const tool of status.tools) {
+        lines.push(`${icon(tool.available)} ${tool.tool}: ${tool.available ? 'installed' : 'missing'} | ${icon(tool.running)} ${tool.running ? 'running' : 'stopped'}${tool.error ? ` (${tool.error})` : ''}`);
+      }
+      if (status.serverPort) {
+        lines.push(`🔗 opencode serve port: ${status.serverPort}`);
+      }
+      const summary = status.healthy ? '✅ LLM toolchain healthy' : '❌ LLM toolchain unhealthy';
+      lines.push('', summary);
+      new Notice(lines.join('\n'), 8000);
+    } catch (e) {
+      new Notice(`LLM status check failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 }
 

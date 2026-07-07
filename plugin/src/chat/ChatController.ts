@@ -15,8 +15,12 @@ const POLL_INTERVAL_MS = 1500;
 
 export class ChatController {
   private isProcessing = false;
-  private _toolName = 'opencode';
-  private _toolArgs: Record<string, string> = {};
+  /** Tool name from settings (override) — empty means use server-discovered default. */
+  private _settingsToolName = '';
+  private _settingsToolArgs: Record<string, string> = {};
+  /** Tool discovered from server via chat.status. */
+  private _discoveredToolCommand = '';
+  private _hasServerConfig = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pollFile: TFile | null = null;
   private lastPollContent = '';
@@ -30,8 +34,38 @@ export class ChatController {
   ) {}
 
   setToolConfig(toolName: string, toolArgs: Record<string, string> = {}): void {
-    this._toolName = toolName;
-    this._toolArgs = toolArgs;
+    this._settingsToolName = toolName;
+    this._settingsToolArgs = toolArgs;
+  }
+
+  /**
+   * Query the server for the configured LLM tool and store the resolved
+   * command path. Falls back to settings if the server has no config.
+   * Safe to call multiple times — the latest result overwrites.
+   */
+  async refreshToolConfig(): Promise<boolean> {
+    if (!('chatStatus' in this.client)) {
+      return false;
+    }
+    try {
+      const status = await (this.client as RpcRemoteFsClient).chatStatus();
+      if (status.healthy && status.tools.length > 0) {
+        const def = status.tools.find(t => t.tool === status.defaultTool) ?? status.tools[0];
+        if (def.command) {
+          this._discoveredToolCommand = def.command;
+          this._hasServerConfig = true;
+          return true;
+        }
+      }
+    } catch {
+      // Server not reachable — settings fallback remains in place.
+    }
+    return false;
+  }
+
+  /** Return the effective command to pass as `tool` in chat.start. */
+  private resolveCommand(): string {
+    return this._settingsToolName || this._discoveredToolCommand || 'opencode';
   }
 
   setMeta(meta: FrontmatterMeta): void {
@@ -72,8 +106,8 @@ export class ChatController {
     logger.info('Chat after vault.modify', { cursor: editor.getCursor() });
 
     assertRpcClient(this.client);
-    // Declare outside try block so it's accessible after
-    const argsList: string[] = Object.values(this._toolArgs).filter(Boolean);
+    const tool = this.resolveCommand();
+    const argsList: string[] = Object.values(this._settingsToolArgs).filter(Boolean);
     let contentForWrite = saveContent;
 
     try {
@@ -87,7 +121,7 @@ export class ChatController {
         await this.app.vault.modify(file, contentForWrite);
       }
 
-      logger.info('Chat calling chatStart', { tool: this._toolName, args: argsList, filePath: file.path, sessionId });
+      logger.info('Chat calling chatStart', { tool, args: argsList, filePath: file.path, sessionId, hasServerConfig: this._hasServerConfig });
       const sessionMeta: AiSessionMeta = {
         session: sessionId,
         agent: this._meta.ai_agent || fileMeta.ai_agent,
@@ -95,7 +129,7 @@ export class ChatController {
       };
       const result = await this.client.chatStart({
         filePath: file.path,
-        tool: this._toolName,
+        tool,
         args: argsList,
         sessionMeta,
       });
@@ -180,6 +214,31 @@ export class ChatController {
 
   destroy(): void {
     this.stopPolling();
+    this.isProcessing = false;
+    this.pollFile = null;
+  }
+
+  async cancel(): Promise<void> {
+    if (!this.isProcessing) {
+      new Notice('No chat currently processing');
+      return;
+    }
+    this.stopPolling();
+    if ('chatCancel' in this.client) {
+      const filePath = this.pollFile?.path ?? '';
+      if (filePath) {
+        try {
+          const result = await (this.client as RpcRemoteFsClient).chatCancel({ filePath });
+          if (result.killed) {
+            new Notice('Chat processing cancelled');
+          } else {
+            new Notice('No running chat process to cancel');
+          }
+        } catch {
+          new Notice('Failed to cancel chat processing');
+        }
+      }
+    }
     this.isProcessing = false;
     this.pollFile = null;
   }

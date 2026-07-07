@@ -21,6 +21,7 @@ import (
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/correlator"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/extensions"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/handlers"
+	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/llm"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/handlers/thumbnails"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/server"
 	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/watcher"
@@ -156,7 +157,15 @@ func run(args []string) (int, error) {
 	disp.Handle("extension.invoke", handlers.RequireAuth(extRunner.Invoke()))
 	disp.Handle("extension.kill", handlers.RequireAuth(extRunner.Kill()))
 	disp.Handle("cli.kill", handlers.RequireAuth(extRunner.KillCompat()))
-	disp.Handle("chat.start", handlers.RequireAuth(handlers.NewChatStarter(absRoot).Start()))
+
+	llmRegistry := llm.NewRegistry(
+		llm.NewOpenCodeProvider(),
+		llm.NewOllamaProvider(),
+	)
+	chatStarter := handlers.NewChatStarter(absRoot, llmRegistry)
+	disp.Handle("chat.start", handlers.RequireAuth(chatStarter.Start()))
+	disp.Handle("chat.cancel", handlers.RequireAuth(chatStarter.Cancel()))
+	disp.Handle("chat.status", handlers.RequireAuth(handlers.NewChatStatusHandler(capManager, llmRegistry).Status()))
 	// fs.* handlers are gated behind session auth.
 	// Read side.
 	disp.Handle("fs.stat", handlers.RequireAuth(handlers.FsStat(absRoot)))

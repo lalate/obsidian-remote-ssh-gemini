@@ -325,6 +325,48 @@ type ChatStartResult struct {
 	Accepted bool `json:"accepted"`
 }
 
+// ChatCancelParams identifies which chat to cancel by file path.
+type ChatCancelParams struct {
+	FilePath string `json:"filePath"`
+}
+
+// ChatCancelResult reports whether the process was killed.
+type ChatCancelResult struct {
+	Killed bool `json:"killed"`
+}
+
+// ChatStatusParams is intentionally empty — the daemon checks the
+// globally configured LLM toolchain and reports its health.
+type ChatStatusParams struct{}
+
+// ChatToolStatus describes one configured LLM tool.
+type ChatToolStatus struct {
+	// Tool is the binary name or path (e.g. "opencode", "ollama").
+	Tool string `json:"tool"`
+	// Command is the resolved absolute path to the binary.
+	Command string `json:"command,omitempty"`
+	// Running is true when the tool's server (if applicable) is reachable.
+	Running bool `json:"running"`
+	// Available is true when the binary exists and is executable.
+	Available bool `json:"available"`
+	// ArgRules describes the arguments the tool accepts (from capabilities.json).
+	ArgRules []ExtensionArgRule `json:"argRules,omitempty"`
+	// Error describes any issue discovered during the check.
+	Error string `json:"error,omitempty"`
+}
+
+// ChatStatusResult reports the health of the LLM toolchain.
+type ChatStatusResult struct {
+	// Tools lists every configured LLM tool and its health.
+	Tools []ChatToolStatus `json:"tools"`
+	// DefaultTool is the name of the primary LLM tool.
+	DefaultTool string `json:"defaultTool"`
+	// ServerPort is the port the opencode serve (if any) is listening on.
+	ServerPort int `json:"serverPort,omitempty"`
+	// Healthy is true when at least one tool is available and running.
+	Healthy bool `json:"healthy"`
+}
+
 // ─── server-push notifications ──────────────────────────────────────────────
 
 // FsChangeEvent is the kind of change the server observed on a watched path.
