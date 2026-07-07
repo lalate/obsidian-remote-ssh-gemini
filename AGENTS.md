@@ -94,16 +94,34 @@ release/ios  ───┬── plugin/manifest.json  ← version source of trut
                  └── plugin/src/           ← TypeScript source
 ```
 
-BRAT on iOS watches `release/ios` branch. Every commit with updated `main.js`,
-`manifest.json`, and `versions.json` triggers an update in BRAT.
+BRAT v1.1.0+ requires **GitHub Releases** — pushing to a branch alone is not
+sufficient. BRAT fetches the plugin assets (`main.js`, `manifest.json`,
+`styles.css`) from release assets, not from the branch.
+
+The release tag, release name, and version in the released `manifest.json`
+must all match (e.g. `1.1.6-ios.40`).
 
 ### Manual steps (or use `./scripts/release-ios.sh`):
 
 1. Bump version in `plugin/manifest.json` (e.g. `1.1.6-ios.39` → `1.1.6-ios.40`)
 2. Add entry to `plugin/versions.json`: `"1.1.6-ios.40": "1.5.0"`
 3. Build iOS: `node esbuild.ios.mjs production`
-4. Commit: `git add plugin/manifest.json plugin/versions.json plugin/main.js && git commit -m "chore: bump version to X.Y.Z-ios.N"`
-5. Push: `git push origin release/ios`
+4. Commit + tag + push:
+   ```bash
+   git add plugin/manifest.json plugin/versions.json plugin/main.js
+   git commit -m "chore: bump version to 1.1.6-ios.40"
+   git push origin release/ios
+   git tag 1.1.6-ios.40
+   git push origin 1.1.6-ios.40
+   ```
+5. Create GitHub Release:
+   ```bash
+   gh release create 1.1.6-ios.40 \
+     --title "1.1.6-ios.40" \
+     --notes "iOS release notes" \
+     --target release/ios \
+     plugin/main.js plugin/manifest.json plugin/styles.css
+   ```
 
 ### Scripted version:
 
@@ -117,14 +135,17 @@ The script:
 - Runs `esbuild.ios.mjs production`
 - Verifies the build contains chat commands
 - Commits and pushes to `release/ios`
+- Creates git tag + GitHub Release with plugin assets (main.js, manifest.json, styles.css)
 
 ### Notes
 
-- BRAT does NOT use GitHub Releases — it watches the git branch directly.
+- BRAT v1.1.0+ requires GitHub Releases. The old `manifest-beta.json`
+  approach is deprecated and ignored by BRAT ≥ v1.1.0.
 - iOS build uses `ios-entry.ts` (static imports) not `main.ts` (dynamic `import()`).
 - Daemon binary lives at `~/.obsidian-remote/server` on the remote host; update separately.
 - The remote daemon must also be updated (Go build + restart) for new server-side features.
 - Root-level `main.js` / `manifest.json` are desktop builds; do NOT touch for iOS releases.
+- `gh` (GitHub CLI) must be authenticated for release creation.
 
 ## NOTES
 

@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
 # ─── iOS Release Script ───────────────────────────────────────────────
-# Bumps the iOS version, rebuilds main.js, commits, and pushes to
-# release/ios so BRAT picks up the update.
+# Bumps the iOS version, rebuilds main.js, creates a GitHub Release, and
+# pushes to release/ios so BRAT picks up the update.
+#
+# BRAT v1.1.0+ requires GitHub Releases — pushing to a branch is not
+# sufficient. This script automates the full release workflow.
 #
 # Usage:
-#   ./scripts/release-ios.sh          # auto bump ios.NN (default)
-#   ./scripts/release-ios.sh patch    # Same as default
-#   ./scripts/release-ios.sh 1.1.7-ios.0  # Explicit version
+#   ./scripts/release-ios.sh                     # auto bump ios.NN
+#   ./scripts/release-ios.sh patch               # same as default
+#   ./scripts/release-ios.sh 1.1.7-ios.0         # explicit version
+#
+# Prerequisites:
+#   - gh (GitHub CLI) authenticated with repo scope
+#   - jq
+#   - npm dependencies installed (esbuild)
 #
 # Run from plugin/ directory.
 # ────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  sed -n '3,13p' "$0"
+  sed -n '3,16p' "$0"
   exit 0
 fi
 
@@ -27,6 +35,7 @@ cd "$PLUGIN"
 # ── 1. Read current version ──────────────────────────────────────────
 MANIFEST="$PLUGIN/manifest.json"
 VERSIONS="$PLUGIN/versions.json"
+STYLES="$PLUGIN/styles.css"
 
 current_ver="$(jq -r '.version' "$MANIFEST")"
 echo "Current version: $current_ver"
@@ -67,7 +76,7 @@ if ! grep -q 'check-llm-status\|send-last-chat-section\|cancel-current-chat' "$P
 fi
 echo "✓ iOS main.js built and verified."
 
-# ── 6. Commit & push ─────────────────────────────────────────────────
+# ── 6. Commit & push to branch ───────────────────────────────────────
 echo ""
 echo "── Committing and pushing to $BRANCH ──"
 cd "$REPO"
@@ -75,6 +84,24 @@ git add "$PLUGIN/manifest.json" "$PLUGIN/versions.json" "$PLUGIN/main.js"
 git commit -m "chore: bump version to $new_ver"
 git push origin "$BRANCH"
 
+# ── 7. Create GitHub Release ─────────────────────────────────────────
 echo ""
-echo "✓ Released $new_ver → pushed to $BRANCH"
+echo "── Creating GitHub Release $new_ver ──"
+git tag "$new_ver"
+git push origin "$new_ver"
+
+# Create release with plugin assets
+# BRAT fetches manifest.json, main.js, styles.css from release assets.
+gh release create "$new_ver" \
+  --title "$new_ver" \
+  --notes "iOS release $new_ver — LLM provider system, chat cancel, JSON event parsing" \
+  --target "$BRANCH" \
+  "$PLUGIN/main.js" "$PLUGIN/manifest.json" "$STYLES"
+
+echo ""
+echo "✓ Released $new_ver"
+echo "  Branch: $BRANCH (commit pushed)"
+echo "  Tag:    $new_ver (GitHub Release created)"
 echo "  BRAT will pick it up on next update check."
+echo ""
+echo "  iOS test: update via BRAT, reconnect, then run 'Remote SSH: Check LLM status'"
