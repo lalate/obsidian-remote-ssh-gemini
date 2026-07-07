@@ -69,17 +69,67 @@ npm run test:integration   # Integration tests (Docker SSH daemon required)
 npm run test:e2e           # Playwright E2E tests
 npm run lint               # ESLint
 
+# iOS build (from plugin/)
+node esbuild.ios.mjs production   # Build main.js for iOS (JSC, no dynamic import)
+
+# iOS release (from plugin/)
+./scripts/release-ios.sh          # Auto bump ios.NN, build, commit, push to release/ios
+./scripts/release-ios.sh patch    # Same as above
+./scripts/release-ios.sh 1.1.7-ios.0  # Explicit version
+
 # Server (from server/)
 make build                 # Build Go binary
-make test                  # Run Go tests
+make test                  # Go tests
 
 # Docker test env
 docker compose up -d       # Start test SSH daemon
 ```
+
+## iOS RELEASE FLOW (fork: `lalate/obsidian-remote-ssh-gemini`)
+
+```
+release/ios  ───┬── plugin/manifest.json  ← version source of truth
+                 ├── plugin/versions.json  ← minAppVersion compatibility map
+                 ├── plugin/main.js        ← iOS build (esbuild.ios.mjs)
+                 └── plugin/src/           ← TypeScript source
+```
+
+BRAT on iOS watches `release/ios` branch. Every commit with updated `main.js`,
+`manifest.json`, and `versions.json` triggers an update in BRAT.
+
+### Manual steps (or use `./scripts/release-ios.sh`):
+
+1. Bump version in `plugin/manifest.json` (e.g. `1.1.6-ios.39` → `1.1.6-ios.40`)
+2. Add entry to `plugin/versions.json`: `"1.1.6-ios.40": "1.5.0"`
+3. Build iOS: `node esbuild.ios.mjs production`
+4. Commit: `git add plugin/manifest.json plugin/versions.json plugin/main.js && git commit -m "chore: bump version to X.Y.Z-ios.N"`
+5. Push: `git push origin release/ios`
+
+### Scripted version:
+
+```bash
+cd plugin && ./scripts/release-ios.sh
+```
+
+The script:
+- Auto-increments `ios.NN`
+- Updates `manifest.json` and `versions.json`
+- Runs `esbuild.ios.mjs production`
+- Verifies the build contains chat commands
+- Commits and pushes to `release/ios`
+
+### Notes
+
+- BRAT does NOT use GitHub Releases — it watches the git branch directly.
+- iOS build uses `ios-entry.ts` (static imports) not `main.ts` (dynamic `import()`).
+- Daemon binary lives at `~/.obsidian-remote/server` on the remote host; update separately.
+- The remote daemon must also be updated (Go build + restart) for new server-side features.
+- Root-level `main.js` / `manifest.json` are desktop builds; do NOT touch for iOS releases.
 
 ## NOTES
 
 - Shadow vault window = separate Obsidian window with patched `app.vault.adapter`
 - Two transports: `RPC` (recommended, Go daemon) and `SFTP` (direct ssh2, no daemon)
 - Mobile WebSocket relay bridges mobile clients through a relay server
-- The user wants to build AI conversation via shared text file on iOS Obsidian — this would extend the mobile transport layer
+- AI Chat: server writes response via opencode CLI; plugin polls vault file (1.5s)
+- Plugin dynamically discovers LLM tool config via `chat.status` RPC (`ChatToolStatus`)
