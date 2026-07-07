@@ -80,9 +80,10 @@ func (p *OpenCodeProvider) serveHTTPAddr() string {
 	return ""
 }
 
-// Execute runs `opencode run --attach <http-addr> --format json --pure <prompt>`
-// and parses the JSON event stream for the response text.
-func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string) (*LlmResponse, error) {
+// Execute runs `opencode run --attach <http-addr> --format json --pure` with
+// optional `--session` for continuing a prior conversation, and parses the
+// JSON event stream for the response text and session ID.
+func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error) {
 	binary := p.Command()
 	if binary == "" {
 		return &LlmResponse{Error: "opencode binary not found"}, nil
@@ -94,6 +95,9 @@ func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []st
 	}
 
 	fullArgs := []string{"run", "--attach", addr, "--format", "json", "--pure"}
+	if sessionID != "" {
+		fullArgs = append(fullArgs, "--session", sessionID)
+	}
 	fullArgs = append(fullArgs, args...)
 	fullArgs = append(fullArgs, prompt)
 
@@ -121,6 +125,7 @@ func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []st
 	return &LlmResponse{
 		Text:      resp.Text,
 		CostCents: resp.CostCents,
+		SessionID: resp.SessionID,
 	}, nil
 }
 

@@ -13,10 +13,11 @@ import (
 // openCodeEvent is the top-level discriminator for opencode's JSON event stream
 // (--format json). Each line is a JSON object with at least a "type" field.
 type openCodeEvent struct {
-	Type string          `json:"type"`
-	Text *openCodePart   `json:"part,omitempty"`
-	Step *openCodeStep   `json:"step,omitempty"`
-	Err  *openCodeErr    `json:"error,omitempty"`
+	Type      string        `json:"type"`
+	SessionID string        `json:"sessionID,omitempty"`
+	Text      *openCodePart `json:"part,omitempty"`
+	Step      *openCodeStep `json:"step,omitempty"`
+	Err       *openCodeErr  `json:"error,omitempty"`
 
 	// Raw holds the original line (used for unknown event types).
 	Raw json.RawMessage `json:"-"`
@@ -50,6 +51,7 @@ type openCodeResp struct {
 	CostCents int
 	Model     string
 	Err       string
+	SessionID string
 }
 
 // parseOpenCodeStream reads a newline-delimited JSON stream from r and
@@ -112,7 +114,13 @@ func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
 				}
 			}
 
-		case "step_start", "tool_use", "tool_result":
+		case "step_start":
+			// First step_start carries the session ID; capture it.
+			if resp.SessionID == "" && ev.SessionID != "" {
+				resp.SessionID = ev.SessionID
+			}
+
+		case "tool_use", "tool_result":
 			// Ignored — these carry no response text.
 
 		default:

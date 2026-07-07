@@ -21,7 +21,9 @@ type LlmProvider interface {
 
 	// Execute runs the LLM with the given prompt. args are additional
 	// provider-specific CLI flags supplied by the user (e.g. model name).
-	Execute(ctx context.Context, prompt string, args []string) (*LlmResponse, error)
+	// sessionID is an optional opencode session ID for continuing a previous
+	// conversation; providers that don't support session continuation ignore it.
+	Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error)
 
 	// Healthy probes whether the provider is installed and (if applicable)
 	// its server process is reachable.
@@ -34,6 +36,7 @@ type LlmResponse struct {
 	CostCents int    `json:"costCents,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Error     string `json:"error,omitempty"`
+	SessionID string `json:"sessionID,omitempty"`
 }
 
 // LlmHealth describes the current availability of a provider.

@@ -89,7 +89,8 @@ func (r *ChatStarter) Cancel() rpc.Handler {
 }
 
 func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.AiSessionMeta) {
-	// Phase 1 — lock, read prompt, unlock.
+	// Phase 1 — lock, read file, extract prompt + existing opencode session ID, unlock.
+	var opencodeSessionID string
 	prompt, err := func() (string, error) {
 		f, err := os.Open(absPath)
 		if err != nil {
@@ -105,7 +106,21 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		if _, err := buf.ReadFrom(f); err != nil {
 			return "", fmt.Errorf("read: %w", err)
 		}
-		prompt := extractLastUserSection(buf.String())
+		content := buf.String()
+		// Extract the opencode session ID from frontmatter if it exists.
+		_, _, fm := parseFrontmatter(content)
+		if s, ok := fm["ai_opencode_session"]; ok && s != "" {
+			opencodeSessionID = s
+		}
+		// When continuing an opencode session, send only the latest user
+		// message — the session already holds the conversation history.
+		// For a new session, send the full conversation body as context.
+		var prompt string
+		if opencodeSessionID != "" {
+			prompt = extractLastUserSection(content)
+		} else {
+			prompt = buildConversationPrompt(content)
+		}
 		if prompt == "" {
 			return "", fmt.Errorf("no ## User section found")
 		}
@@ -118,6 +133,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 
 	// Phase 2 — run the LLM tool.
 	response := ""
+	var newSessionID string
 	provider := r.registry.Get(tool)
 	if provider != nil {
 		// Use the registered provider (opencode, ollama, etc.).
@@ -126,7 +142,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		r.cancelFn = cancel
 		r.mu.Unlock()
 
-		resp, execErr := provider.Execute(ctx, prompt, args)
+		resp, execErr := provider.Execute(ctx, prompt, args, opencodeSessionID)
 
 		r.mu.Lock()
 		r.cancelFn = nil
@@ -140,6 +156,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		} else {
 			response = resp.Text
 		}
+		newSessionID = resp.SessionID
 	} else {
 		// Fallback: raw exec.Command for unknown / custom tools.
 		fullArgs := append(args, prompt)
@@ -163,7 +180,7 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		r.mu.Unlock()
 	}
 
-	// Phase 3 — lock again, merge frontmatter, write assistant response, unlock.
+	// Phase 3 — lock again, merge frontmatter (include opencode session), write assistant response, unlock.
 	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
 	if err != nil {
 		return
@@ -179,7 +196,26 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		return
 	}
 	currentContent := buf.String()
-	updatedContent := replaceAssistantContent(currentContent, response, meta)
+
+	// Embed the opencode session ID in the frontmatter updates.
+	updates := make(map[string]string)
+	if meta != nil {
+		if meta.Session != "" {
+			updates["ai_session"] = meta.Session
+		}
+		if meta.Agent != "" {
+			updates["ai_agent"] = meta.Agent
+		}
+		if meta.Model != "" {
+			updates["ai_model"] = meta.Model
+		}
+	}
+	if newSessionID != "" {
+		updates["ai_opencode_session"] = newSessionID
+	}
+	updates["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
+
+	updatedContent := replaceAssistantContent(currentContent, response, updates)
 	if updatedContent == currentContent {
 		return
 	}
@@ -332,19 +368,24 @@ func extractLastUserSection(content string) string {
 	return strings.TrimSpace(strings.Join(promptLines, "\n"))
 }
 
-func replaceAssistantContent(content, response string, meta *proto.AiSessionMeta) string {
-	updates := make(map[string]string)
-	if meta != nil {
-		if meta.Session != "" {
-			updates["ai_session"] = meta.Session
-		}
-		if meta.Agent != "" {
-			updates["ai_agent"] = meta.Agent
-		}
-		if meta.Model != "" {
-			updates["ai_model"] = meta.Model
-		}
+// buildConversationPrompt returns the full chat conversation body
+// (frontmatter stripped) so the LLM sees the complete history.
+func buildConversationPrompt(content string) string {
+	body := content
+	// Strip YAML frontmatter so the LLM only sees the conversation.
+	if hasFrontmatter(content) {
+		_, body, _ = parseFrontmatter(content)
 	}
+	body = strings.TrimSpace(body)
+	// Verify there is at least one ## User section.
+	headingRe := regexp.MustCompile(`(?im)^##\s+(User|Assistant)\s*$`)
+	if !headingRe.MatchString(body) {
+		return ""
+	}
+	return body
+}
+
+func replaceAssistantContent(content, response string, updates map[string]string) string {
 	updates["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
 
 	if hasFrontmatter(content) {

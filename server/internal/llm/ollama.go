@@ -36,8 +36,9 @@ func (p *OllamaProvider) Command() string {
 }
 
 // Execute runs `ollama run <model> <prompt>` where the model name is
-// expected to be the first element of args.
-func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []string) (*LlmResponse, error) {
+// expected to be the first element of args. sessionID is ignored — ollama
+// does not support session continuation.
+func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []string, _ string) (*LlmResponse, error) {
 	binary := p.Command()
 	if binary == "" {
 		return &LlmResponse{Error: "ollama binary not found"}, nil
