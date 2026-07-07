@@ -332,6 +332,9 @@ export default class RemoteSshMobilePlugin extends Plugin {
         () => this.settings,
         this.transferTracker,
       );
+      // On mobile, conflict modals are impractical — auto-resolve by
+      // keeping the server version and backing up local changes.
+      this.adapterMgr.enableMobileConflictBehavior();
 
       this.installSettingsTab();
 

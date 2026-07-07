@@ -2,6 +2,7 @@ import type { App, PluginManifest } from 'obsidian';
 import { FileSystemAdapter, Notice, TFile, TFolder } from 'obsidian';
 import { VaultModelBuilder } from '../vault/VaultModelBuilder';
 import { LocalOpRegistry } from './LocalOpRegistry';
+import type { RemoteFsClient } from './RemoteFsClient';
 import type { PluginSettings } from '../types';
 import { ReadCache } from '../cache/ReadCache';
 import { DirCache } from '../cache/DirCache';
@@ -11,7 +12,7 @@ import { ResourceBridge } from './ResourceBridge';
 import { WriteConflictModal } from '../ui/WriteConflictModal';
 import { ThreeWayMergeModal } from '../ui/ThreeWayMergeModal';
 import { AncestorTracker } from '../conflict/AncestorTracker';
-import { ConflictResolver } from '../conflict/ConflictResolver';
+import { ConflictResolver, type TextConflictDecision, type ThreeWayPanes } from '../conflict/ConflictResolver';
 import { OfflineQueue } from '../offline/OfflineQueue';
 import { QueueReplayer } from '../offline/QueueReplayer';
 import { PendingEditsBar } from '../ui/PendingEditsBar';
@@ -68,6 +69,12 @@ export class AdapterManager {
   private ancestorTracker: AncestorTracker | null = null;
   private offlineQueue: OfflineQueue | null = null;
   private resourceBridge: ResourceBridge | null = null;
+  /**
+   * When true, conflicts are auto-resolved by keeping the server version
+   * and backing up the local version to a `.conflicts/` folder. Intended
+   * for mobile where modal-based conflict resolution is impractical.
+   */
+  private _mobileConflictBehavior = false;
 
   constructor(
     private readonly app: App,
@@ -78,6 +85,15 @@ export class AdapterManager {
     private readonly getSettings: () => PluginSettings,
     private readonly transferTracker: TransferTracker | null = null,
   ) {}
+
+  /**
+   * Enable mobile-friendly conflict resolution: auto-resolve by keeping
+   * the server version and backing up local changes to `.conflicts/`.
+   * Must be called before `patch()` to take effect.
+   */
+  enableMobileConflictBehavior(): void {
+    this._mobileConflictBehavior = true;
+  }
 
   get dataAdapter(): SftpDataAdapter | null {
     return this._dataAdapter;
@@ -210,13 +226,9 @@ export class AdapterManager {
         this.offlineQueue = null;
       }
     }
-    const conflictResolver = new ConflictResolver(
-      fsClient,
-      this.readCache,
-      this.ancestorTracker,
-      (vaultPath, panes) => new ThreeWayMergeModal(this.app, { path: vaultPath, ...panes }).prompt(),
-      (vaultPath) => new WriteConflictModal(this.app, vaultPath).prompt(),
-    );
+    const conflictResolver = this._mobileConflictBehavior
+      ? this.buildMobileConflictResolver(fsClient)
+      : this.buildDesktopConflictResolver(fsClient);
     this._dataAdapter = new SftpDataAdapter(
       fsClient,
       adapterRemoteBase,
@@ -503,5 +515,65 @@ export class AdapterManager {
     } catch (e) {
       logger.warn(`ResourceBridge: stop failed: ${errorMessage(e)}`);
     }
+  }
+
+  /**
+   * Build a ConflictResolver that shows modal-based conflict UI (desktop).
+   */
+  private buildDesktopConflictResolver(fsClient: RemoteFsClient): ConflictResolver {
+    return new ConflictResolver(
+      fsClient,
+      this.readCache!,
+      this.ancestorTracker,
+      (vaultPath, panes) => new ThreeWayMergeModal(this.app, { path: vaultPath, ...panes }).prompt(),
+      (vaultPath) => new WriteConflictModal(this.app, vaultPath).prompt(),
+    );
+  }
+
+  /**
+   * Build a ConflictResolver for mobile that auto-resolves by keeping the
+   * server version and backing up local changes, avoiding modals.
+   */
+  private buildMobileConflictResolver(fsClient: RemoteFsClient): ConflictResolver {
+    return new ConflictResolver(
+      fsClient,
+      this.readCache!,
+      this.ancestorTracker,
+      (vaultPath, panes) => this.handleMobileTextConflict(vaultPath, panes),
+      (vaultPath) => this.handleMobileWriteConflict(vaultPath),
+    );
+  }
+
+  /**
+   * Mobile text-conflict handler: back up the local version then keep theirs.
+   */
+  private async handleMobileTextConflict(
+    vaultPath: string,
+    panes: ThreeWayPanes,
+  ): Promise<TextConflictDecision> {
+    await this.saveConflictBackup(vaultPath, panes.mine).catch(e =>
+      logger.warn(`Mobile conflict: backup failed for ${vaultPath}: ${errorMessage(e)}`),
+    );
+    new Notice(`Conflict resolved: server version kept for ${vaultPath}; local backed up to .conflicts/`);
+    return { decision: 'keep-theirs' };
+  }
+
+  /**
+   * Mobile write-conflict handler (binary / no-ancestor): keep theirs.
+   */
+  private async handleMobileWriteConflict(vaultPath: string): Promise<boolean> {
+    new Notice(`Write conflict on ${vaultPath}: overwritten by server version`);
+    return false; // false = keep theirs (overwrite=false → skip retry)
+  }
+
+  /**
+   * Save the local (mine) content as a backup to `.conflicts/<slug>.<timestamp>`.
+   */
+  private async saveConflictBackup(vaultPath: string, content: string): Promise<void> {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const slug = vaultPath.replace(/[/\\]/g, '_');
+    const backupPath = `.conflicts/${slug}.${ts}`;
+    await this.app.vault.adapter.write(backupPath, content);
+    logger.info(`Mobile conflict: backed up local version to ${backupPath}`);
   }
 }
