@@ -60,8 +60,12 @@ export interface BootstrapResult {
    * surfaces the one-time "restart Obsidian" notice.
    */
   migrated: boolean;
-  /** How the plugin source landed in the shadow vault. */
-  pluginInstallMethod: 'symlink' | 'copy';
+  /**
+   * How the plugin source landed in the shadow vault. `in-place` means
+   * source and target were the same directory (bootstrap re-run from
+   * inside the shadow window) so nothing needed installing.
+   */
+  pluginInstallMethod: 'symlink' | 'copy' | 'in-place';
 }
 
 /**
@@ -1164,7 +1168,7 @@ export class ShadowVaultBootstrap {
    * writes the per-vault data.json into pluginDir as a real file,
    * leaving the source vault's data.json untouched.
    */
-  private installPlugin(pluginDir: string): 'symlink' | 'copy' {
+  private installPlugin(pluginDir: string): 'symlink' | 'copy' | 'in-place' {
     // If pluginDir is a stale whole-dir symlink from an older build
     // (or a previous run of this same code on an older version),
     // unlink it — DO NOT rmSync, that would follow the link and
@@ -1176,6 +1180,23 @@ export class ShadowVaultBootstrap {
       }
     } catch {
       // Doesn't exist yet, fine.
+    }
+
+    // Self-install guard: when the bootstrap runs from INSIDE the
+    // shadow window it targets, sourcePluginDir IS pluginDir. The
+    // rm+symlink cycle below would then delete each real plugin file
+    // and replace it with a symlink pointing at its own path — a
+    // self-referential link Obsidian can't resolve, so the plugin
+    // "disappears" on the next start. The bundle is already here;
+    // there is nothing to install.
+    try {
+      if (fs.realpathSync(this.sourcePluginDir) === fs.realpathSync(pluginDir)) {
+        return 'in-place';
+      }
+    } catch {
+      // Either side unresolvable (e.g. pluginDir doesn't exist yet, or
+      // the stale whole-dir symlink was just unlinked) → not the same
+      // dir; proceed with a normal install.
     }
 
     fs.mkdirSync(pluginDir, { recursive: true });
