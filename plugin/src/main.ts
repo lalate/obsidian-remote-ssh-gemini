@@ -1043,6 +1043,18 @@ export default class RemoteSshPlugin extends Plugin {
    * shadow window (Phase 4).
    */
   async openShadowVaultFor(profile: SshProfile): Promise<void> {
+    // Connect clicked from INSIDE the shadow window for this same
+    // profile (Settings row button / connect modal). This vault IS the
+    // shadow — there is no second window to spawn, and re-running the
+    // bootstrap from here would make installPlugin's rm+symlink cycle
+    // target its own files (src == dst), turning main.js/manifest.json
+    // into self-referential symlinks that brick the install on the
+    // next start. Reconnect in place instead.
+    if (this.settings.autoConnectProfileId === profile.id) {
+      await this.runAutoConnect('reconnect');
+      return;
+    }
+
     // Source dir: where this running plugin lives, so the shadow
     // vault's plugin install symlinks the same bundle.
     const sourcePluginDir = this.pluginDir();
