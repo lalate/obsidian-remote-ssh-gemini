@@ -9,6 +9,14 @@ import {
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
 import { RemoteVerifier } from './helpers/remote-verifier';
 import { makeFakePlugin, seedPluginOnRemote } from './helpers/remote-fixtures';
+import {
+  COMMUNITY_PLUGINS_REL,
+  captureCommunityPlugins,
+  preCleanRemoteFixtures,
+  resetRemoteFixtures,
+  type CommunityPluginsSnapshot,
+  type FixtureFootprint,
+} from './helpers/remote-reset';
 import { assertSshdReachable } from './helpers/sshd';
 import { logPathFor } from './helpers/log-oracle';
 import * as fs from 'node:fs';
@@ -71,6 +79,25 @@ import * as path from 'node:path';
  * had it" from "this device deleted it"), NOT in weakening this test. Test 6
  * asserts the user-facing behaviour — an uninstall sticks — and is left red.
  *
+ * …which is exactly WHY the fixtures must be force-purged in `afterAll`
+ * ---------------------------------------------------------------------
+ * The defect test 6 pins is the reason this spec cannot rely on the product to
+ * tidy up after it. The remote enabled list is MONOTONIC: once `e2e-probe` /
+ * `e2e-probe2` are in it, nothing this spec does — including deleting them
+ * locally, which is literally what test 6 does — will take them out again. And
+ * the docker test vault is SHARED and PERSISTS across specs within a run, so a
+ * fixture left enabled there is pulled into the shadow vault of every LATER
+ * spec at connect (`src/main.ts:632-670`), staged, and loaded. That is not
+ * hypothetical: it is what turned the previously-passing
+ * `sync.spec.ts › create — new note appears on remote` red.
+ *
+ * So `afterAll` restores the remote's `community-plugins.json` to its captured
+ * bytes and rmrf's every fixture plugin dir (shared AND per-device),
+ * unconditionally, wrapped step-by-step so a red test still cleans up. That
+ * cleanup is the HARNESS's job, not the product's — it must not, and does not,
+ * touch test 6's assertions. If anything, having to hand-revert the remote is
+ * itself evidence of the defect's blast radius: a real user has no `afterAll`.
+ *
  * State is CHAINED across the tests in this file (each builds on the shadow
  * vault the previous one left behind), hence `mode: 'serial'` and the generous
  * per-test timeout: several of them quit and relaunch Obsidian.
@@ -89,9 +116,11 @@ const PROBE2_V = '2.0.0';
 const PROBE2_V_BUMPED = '2.0.1';
 
 const SELF_ID = 'remote-ssh';
-const COMMUNITY_PLUGINS_REL = '.obsidian/community-plugins.json';
 
 const BINARY_FILES = ['manifest.json', 'main.js', 'styles.css'] as const;
+
+/** Everything this spec puts on the SHARED remote — and therefore owes back. */
+const FOOTPRINT: FixtureFootprint = { pluginIds: [PROBE_ID, PROBE2_ID] };
 
 /**
  * A probe whose `onload()` records its VERSION as well as the fact that it ran.
@@ -126,6 +155,12 @@ let remote: RemoteVerifier;
  * reuses this exact path.
  */
 let shadowVaultPath: string;
+/**
+ * The remote's `community-plugins.json` as it was BEFORE this spec seeded
+ * anything (null = it did not exist). Captured after the pre-clean, so it is a
+ * clean baseline, and put back byte-for-byte in `afterAll`.
+ */
+let communityPluginsSnapshot: CommunityPluginsSnapshot = { raw: null };
 
 /** A path inside the shadow vault's `.obsidian` config dir. */
 function localPath(...segments: string[]): string {
@@ -178,13 +213,22 @@ test.beforeAll(async () => {
     );
   }
 
-  // Start from a known remote: leftovers from an earlier run (or an earlier
-  // retry of this one) would make the version-ordering assertions meaningless.
-  await remote.rmrf(`.obsidian/plugins/${PROBE_ID}`);
-  await remote.rmrf(`.obsidian/plugins/${PROBE2_ID}`);
-  await remote.removeFile(COMMUNITY_PLUGINS_REL);
+  // DEFENSIVE PRE-CLEAN. A previous run that crashed (or was killed) leaves its
+  // fixture plugins on the shared docker vault — in `.obsidian/plugins/`, in the
+  // per-device `.obsidian/user/<clientId>/plugins/`, and named in the remote
+  // enabled list, which the monotonic union can never have removed. Inheriting
+  // any of that would make the version-ordering assertions below meaningless.
+  await preCleanRemoteFixtures(remote, FOOTPRINT);
+
+  // The clean baseline `afterAll` restores byte-for-byte. Captured AFTER the
+  // pre-clean, so a leftover fixture id can never be baked into the "original".
+  communityPluginsSnapshot = await captureCommunityPlugins(remote);
 
   // ── DEVICE B: the plugin exists ONLY on the remote, before we ever connect ──
+  // The list is written to EXACTLY `[PROBE_ID]` (not merged): test 1 asserts the
+  // connect MERGES rather than copies it — that `remote-ssh` survives a remote
+  // list that omits it — and a merged seed would not exercise that at all.
+  await remote.removeFile(COMMUNITY_PLUGINS_REL);
   await seedPluginOnRemote(remote, PROBE_ID, probeFiles(PROBE_ID, PROBE_V1));
   await remote.writeFile(COMMUNITY_PLUGINS_REL, `${JSON.stringify([PROBE_ID])}\n`);
 
@@ -205,11 +249,14 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await obsidian?.cleanup();
+  // Runs even when a test FAILED — and one of them (test 6) is expected to. The
+  // product cannot revert this itself: the enabled list only ever grows, so a
+  // fixture left there is loaded by every later spec's shadow vault at connect.
+  // Each step is guarded inside `resetRemoteFixtures`, so a failure in one
+  // cannot skip the others.
+  await obsidian?.cleanup().catch(() => {});
   if (remote) {
-    await remote.rmrf(`.obsidian/plugins/${PROBE_ID}`).catch(() => {});
-    await remote.rmrf(`.obsidian/plugins/${PROBE2_ID}`).catch(() => {});
-    await remote.removeFile(COMMUNITY_PLUGINS_REL).catch(() => {});
+    await resetRemoteFixtures(remote, FOOTPRINT, communityPluginsSnapshot);
     await remote.disconnect();
   }
   scaffold?.cleanup();

@@ -5,7 +5,6 @@ import {
   findShadowVaultPath,
   waitForShadowVaultLoaded,
   runCommandViaPalette,
-  expandFolderInExplorer,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -73,6 +72,30 @@ import { logPathFor } from './helpers/log-oracle';
  * re-runs link resolution after a lazy insert, and fix (b) alone is not enough
  * — the maintainer needs (a), or (a) + (b).
  *
+ * ── TWO FIXTURE SUBFOLDERS, NOT ONE ──────────────────────────────────────────
+ *
+ * These tests share ONE Obsidian session and run in declaration order, so state
+ * LEAKS FORWARD: test 6 expands `<S>-sub`, which permanently inserts
+ * `<S>-sub/Deep.md` into `fileMap` for every test after it. Test 8 ("a note in
+ * an UNEXPANDED subfolder is reachable from the Quick Switcher") therefore
+ * cannot use `<S>-sub` — it would be asserting against a folder that test 6 has
+ * already expanded, and any green it reported would be an artefact of test
+ * ORDER rather than a fact about the product. So test 8 gets its own fixture,
+ * `<S>-sub2/Deep2.md`, seeded before connect and expanded by NOBODY.
+ *
+ * ── WHY EVERY GESTURE CARRIES AN EXPLICIT TIMEOUT ────────────────────────────
+ *
+ * `playwright.config.ts` sets no `actionTimeout`, so Playwright's default of `0`
+ * (= wait forever) applies: a bare `locator.click()` on an element that never
+ * becomes actionable does not FAIL, it BLOCKS until the 180 s test timeout, and
+ * the report then says only "Test timeout exceeded" — no locator, no DOM, no
+ * vault model. `page.evaluate` has the same property (a wedged renderer never
+ * answers, and an `expect.poll` cannot time out while its own probe is stuck).
+ * That is how tests 4 and 6 each burned three minutes and told the maintainer
+ * nothing. Every click, wait and `evaluate` below is bounded well under the test
+ * timeout and dumps the DOM + vault model on failure. The BOUNDS are what
+ * changed; not one assertion is weaker.
+ *
  * HARD-FAILS, never skips.
  */
 
@@ -87,10 +110,39 @@ const SUB = `${STAMP}-sub`;          // subfolder — never walked at connect
 const DEEP = `${SUB}/Deep.md`;       // the note the whole defect is about
 const DEEP_LINKTEXT = `${SUB}/Deep`; // exactly what the `[[...]]` in C contains
 
+// A SECOND subfolder, reserved for test 8 and expanded by nobody — see "TWO
+// FIXTURE SUBFOLDERS" above. Test 6 expands SUB, so SUB can no longer stand for
+// "a folder the user has never opened" once test 6 has run.
+const SUB2 = `${STAMP}-sub2`;
+const DEEP2 = `${SUB2}/Deep2.md`;
+
 // Indexing is asynchronous (Obsidian re-resolves links off its own queue), so
 // every metadata assertion polls. 20 s is far past the observed settle time on a
 // warm connection; it exists so a RED is a real defect, not a slow machine.
 const META_TIMEOUT_MS = 20_000;
+
+/**
+ * Budget for ONE UI gesture (a click; waiting for a row to paint). Explicit
+ * because the config leaves `actionTimeout` at Playwright's default of 0 —
+ * "wait forever" — which turns any un-actionable element into a silent
+ * three-minute hang instead of a failure with a locator in it.
+ */
+const ACTION_TIMEOUT_MS = 15_000;
+
+/**
+ * Budget for ONE `page.evaluate`. `page.evaluate` has no timeout of its own: if
+ * the renderer's main thread is wedged (say, a lazy folder load blocking on
+ * SSH), a probe inside an `expect.poll` never returns and the poll's own timeout
+ * can never fire — the hang wins. Bounding the evaluate makes "the renderer
+ * stopped answering" a fast, named failure.
+ */
+const EVAL_TIMEOUT_MS = 10_000;
+
+/** Test 6's expand + the post-insert settle of the vault model. */
+const EXPAND_TIMEOUT_MS = 30_000;
+
+/** Test 6's two polls. Short enough that BOTH verdicts fit inside the test. */
+const DISCRIMINATOR_TIMEOUT_MS = 25_000;
 
 let obsidian: ObsidianHandle;
 let scaffold: ScaffoldResult;
@@ -121,6 +173,8 @@ test.beforeAll(async () => {
   await remote.mkdirp(SUB);
   await remote.writeFile(DEEP, '# Deep\n');
   await remote.writeFile(C, `# C\n\n[[${DEEP_LINKTEXT}]]\n`);
+  await remote.mkdirp(SUB2);
+  await remote.writeFile(DEEP2, '# Deep2\n');
 
   scaffold = scaffoldTestVault();
   obsidian = await launchObsidian(scaffold.vaultPath);
@@ -149,6 +203,7 @@ test.afterAll(async () => {
       remote.removeFile(D),
     ]);
     await remote.rmrf(SUB).catch(() => { /* best effort */ });
+    await remote.rmrf(SUB2).catch(() => { /* best effort */ });
     await remote.disconnect();
   }
   scaffold?.cleanup();
@@ -210,30 +265,66 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
       .toContain(A);
   });
 
+  /**
+   * The end-to-end user GESTURE, not just the index: open A, switch to Reading
+   * view (Obsidian's default is LIVE PREVIEW — a CodeMirror mode in which
+   * `.markdown-preview-view` does not exist; see reflect.spec.ts test 5), then
+   * click the rendered anchor and assert the workspace actually navigated.
+   *
+   * Each step is bounded and each failure dumps the reading-view state: does a
+   * preview pane exist, how many `a.internal-link` are inside it and what do they
+   * point at, what mode is the leaf in, what is `getActiveFile()`. The previous
+   * version's bare `.click()` calls inherited `actionTimeout: 0` and simply hung
+   * for the full 180 s when the anchor never became clickable — a timeout with no
+   * evidence in it. The ASSERTION is untouched: clicking a link MUST open its
+   * target.
+   */
   test('4 — clicking a wiki link opens the target note', async () => {
-    // The end-to-end user gesture, not just the index: open A, switch to Reading
-    // view (Obsidian's default is LIVE PREVIEW — a CodeMirror mode in which
-    // `.markdown-preview-view` does not exist; see reflect.spec.ts test 5), then
-    // click the rendered anchor and assert the workspace actually navigated.
-    await fileLocator(obsidian.page, A).click();
-    await runCommandViaPalette(obsidian.page, 'Toggle reading view');
+    await openNote(obsidian.page, A);
+    await ensureReadingView(obsidian.page, A);
 
     const link = obsidian.page.locator('.markdown-preview-view a.internal-link').first();
-    await expect(
-      link,
-      `no rendered a.internal-link in the reading view of "${A}" — the wiki link was ` +
-      'not even turned into a clickable anchor',
-    ).toBeVisible({ timeout: META_TIMEOUT_MS });
-    await link.click();
+    const rendered = await link
+      .waitFor({ state: 'visible', timeout: META_TIMEOUT_MS })
+      .then(() => true)
+      .catch(() => false);
+    if (!rendered) {
+      throw new Error(
+        `no rendered a.internal-link in the reading view of "${A}" within ` +
+        `${META_TIMEOUT_MS}ms — the wiki link was not even turned into a clickable ` +
+        `anchor.\n${await dumpReadingView(obsidian.page)}`,
+      );
+    }
 
-    await expect
-      .poll(() => activeFilePath(obsidian.page), {
-        message:
-          `clicking the [[${STAMP}-B]] anchor in "${A}" did not navigate to "${B}" — ` +
-          'the link renders but does not open its target.',
-        timeout: META_TIMEOUT_MS,
-      })
-      .toBe(B);
+    // Bounded on purpose: an anchor that is present but never actionable (covered
+    // by Obsidian's hover page-preview popover, zero-sized under Xvfb, …) makes an
+    // unbounded click wait forever. 15 s of Playwright's actionability retries,
+    // then the truth.
+    const clickErr = await link
+      .click({ timeout: ACTION_TIMEOUT_MS })
+      .then(() => null)
+      .catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+    if (clickErr) {
+      throw new Error(
+        `the a.internal-link in "${A}" is rendered but could not be CLICKED within ` +
+        `${ACTION_TIMEOUT_MS}ms: ${clickErr}\n${await dumpReadingView(obsidian.page)}`,
+      );
+    }
+
+    try {
+      await expect
+        .poll(() => activeFilePath(obsidian.page), {
+          message:
+            `clicking the [[${STAMP}-B]] anchor in "${A}" did not navigate to "${B}" — ` +
+            'the link renders and accepts the click, but does not open its target.',
+          timeout: META_TIMEOUT_MS,
+        })
+        .toBe(B);
+    } catch (e) {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)}\n${await dumpReadingView(obsidian.page)}`,
+      );
+    }
   });
 
   /**
@@ -315,35 +406,56 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
    *
    * 6a green + 6b red ⇒ "invalidate metadata on lazy insert" is REQUIRED, and even
    * then every unexpanded folder stays invisible — i.e. the real fix is a
-   * background full index.
+   * background full index. That verdict IS the deliverable of this test, and it
+   * only exists if the test FINISHES: the expand (30 s) and both polls (25 s each)
+   * are bounded, so 6b's message — "the file IS in fileMap and the link STILL did
+   * not resolve" — actually gets printed, instead of being swallowed by a
+   * three-minute test timeout that says nothing at all.
    */
   test('6 — expanding the folder in File Explorer makes the subfolder link resolve', async () => {
-    await expandFolderInExplorer(obsidian.page, SUB, META_TIMEOUT_MS);
+    await expandFolder(obsidian.page, SUB, EXPAND_TIMEOUT_MS);
 
     // 6a — the lazy load itself landed.
-    await expect
-      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).inFileMap, {
-        message:
-          `after clicking the "${SUB}" folder title, "${DEEP}" is STILL not in ` +
-          'vault.fileMap — LazyFolderLoader.loadFolder did not materialise the folder\'s ' +
-          'children, so the one escape hatch from the lazy walk is broken too.',
-        timeout: META_TIMEOUT_MS,
-      })
-      .toBe(true);
+    try {
+      await expect
+        .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).inFileMap, {
+          message:
+            `after clicking the "${SUB}" folder title, "${DEEP}" is STILL not in ` +
+            "vault.fileMap — LazyFolderLoader.loadFolder did not materialise the folder's " +
+            'children, so the one escape hatch from the lazy walk is broken too.',
+          timeout: DISCRIMINATOR_TIMEOUT_MS,
+        })
+        .toBe(true);
+    } catch (e) {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)}\n${await dumpVaultModel(obsidian.page, SUB)}`,
+      );
+    }
 
-    // 6b — and the metadata cache noticed.
-    await expect
-      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).resolved, {
-        message:
-          `"${DEEP}" is now in vault.fileMap (6a passed) but ` +
-          `metadataCache.resolvedLinks["${C}"] still does not contain it. The lazy ` +
-          'insert enlarged the vault WITHOUT making Obsidian re-resolve the links of ' +
-          'notes that were already indexed — so even a user who dutifully expands every ' +
-          'folder keeps broken links. This is the "invalidate metadata on lazy insert" ' +
-          'half of the fix.',
-        timeout: META_TIMEOUT_MS,
-      })
-      .toContain(DEEP);
+    // 6b — and the metadata cache noticed. 6a has just proven the file IS in
+    // fileMap, so a red here can only mean the lazy insert re-resolved nothing.
+    try {
+      await expect
+        .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).resolved, {
+          message:
+            `"${DEEP}" IS now in vault.fileMap (6a passed) but ` +
+            `metadataCache.resolvedLinks["${C}"] still does not contain it. The lazy ` +
+            'insert enlarged the vault WITHOUT making Obsidian re-resolve the links of ' +
+            'notes that were already indexed — so even a user who dutifully expands every ' +
+            'folder keeps broken links. This is the "invalidate metadata on lazy insert" ' +
+            'half of the fix, and it is needed ON TOP OF a fuller walk.',
+          timeout: DISCRIMINATOR_TIMEOUT_MS,
+        })
+        .toContain(DEEP);
+    } catch (e) {
+      const probe = await probeLinks(obsidian.page, C, DEEP);
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)}\n` +
+        `  fileMap has "${DEEP}": ${probe.inFileMap}\n` +
+        `  resolvedLinks["${C}"]: ${JSON.stringify(probe.resolved)}\n` +
+        `  unresolvedLinks["${C}"]: ${JSON.stringify(probe.unresolved)}`,
+      );
+    }
   });
 
   /**
@@ -389,8 +501,24 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
    * the graph) enumerate `fileMap`, so a note in an unexpanded subfolder is not
    * merely unlinkable, it is UNREACHABLE: the user types its name and Obsidian
    * tells them it does not exist. This is what the bug actually feels like.
+   *
+   * ISOLATION — this test used to search for `Deep`, which lives in `<S>-sub`:
+   * the very folder test 6 EXPANDS, in the same Obsidian session, two tests
+   * earlier. A pass would then have been unfalsifiable — indistinguishable from
+   * "test 6 already loaded that folder into fileMap for me". It now targets
+   * `<S>-sub2/Deep2.md`, a fixture seeded before connect that NOTHING in this
+   * session expands, so the scenario in the title is the scenario under test.
+   *
+   * The "was it really unexpanded?" fact is captured as a DIAGNOSTIC and folded
+   * into the failure message rather than asserted. An `expect(inFileMap).toBe(false)`
+   * would encode today's bug as the requirement and would go red the day the
+   * product starts indexing the whole vault — the exact inversion this file
+   * exists to prevent. The real assertion is unchanged and unweakened: a note
+   * that exists on the remote MUST be reachable from the Quick Switcher.
    */
   test('8 — Quick Switcher can reach a note in an unexpanded subfolder', async () => {
+    const before = await probeLinks(obsidian.page, C, DEEP2);
+
     await runCommandViaPalette(obsidian.page, 'Open quick switcher');
 
     const input = obsidian.page
@@ -398,26 +526,62 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
       .first();
     await expect(input, 'the Quick Switcher never opened').toBeVisible({ timeout: 10_000 });
     await input.fill('');
-    await obsidian.page.keyboard.type('Deep', { delay: 20 });
+    await obsidian.page.keyboard.type('Deep2', { delay: 20 });
 
-    await expect(
-      obsidian.page.locator('.prompt .suggestion-item', { hasText: 'Deep' }).first(),
-      `the Quick Switcher offers no suggestion for "Deep" — "${DEEP}" exists on the ` +
-      'remote but lives in a subfolder the lazy connect walk never descended into ' +
-      '(src/main.ts:972-973), so it is absent from vault.fileMap and the switcher ' +
-      'cannot enumerate it. To the user, the note simply does not exist.',
-    ).toBeVisible({ timeout: META_TIMEOUT_MS });
+    try {
+      await expect(
+        obsidian.page.locator('.prompt .suggestion-item', { hasText: 'Deep2' }).first(),
+        `the Quick Switcher offers no suggestion for "Deep2" — "${DEEP2}" exists on the ` +
+        'remote, but it lives in a subfolder that NOTHING in this session has expanded, ' +
+        'so the lazy connect walk (src/main.ts:972-973) never descended into it. To the ' +
+        'user, the note simply does not exist.\n' +
+        `  DIAGNOSTIC — when the search was typed, app.vault.getAbstractFileByPath(` +
+        `"${DEEP2}") was ${before.inFileMap ? 'a TFile' : 'null'}. If it was null, the ` +
+        'switcher cannot enumerate what is not in vault.fileMap and the fix belongs in ' +
+        'the vault model (a background/eager walk); if it WAS a TFile, the model is fine ' +
+        'and the switcher/search index is the layer at fault.',
+      ).toBeVisible({ timeout: META_TIMEOUT_MS });
+    } catch (e) {
+      throw new Error(
+        `${e instanceof Error ? e.message : String(e)}\n` +
+        `  suggestions on screen: ${JSON.stringify(await switcherSuggestions(obsidian.page))}\n` +
+        `${await dumpVaultModel(obsidian.page, SUB2)}`,
+      );
+    }
   });
 });
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Locate a File Explorer entry by filename. Obsidian sets `data-path` on every
- * `.nav-file-title`, so the selector is stable across themes / language packs.
+ * Fail `work` at `ms` instead of letting it run to the test timeout.
+ *
+ * Needed because two things in this stack have NO timeout of their own:
+ * `page.evaluate` (a wedged renderer simply never answers — and an `expect.poll`
+ * cannot time out while its own probe is stuck inside one), and, since
+ * `playwright.config.ts` leaves `actionTimeout` at its default of `0`, anything
+ * that waits for actionability. Both previously produced a bare "Test timeout of
+ * 180000ms exceeded" with nothing in it. A late rejection from `work` is absorbed
+ * so it cannot resurface as an unhandled rejection after the race is over.
  */
-function fileLocator(page: Page, fileName: string) {
-  return page.locator(`.nav-file-title[data-path$="${fileName}"]`);
+async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  void work.catch(() => { /* the race below already reports it */ });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const guard = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(
+        `${what} did not settle within ${ms}ms — the Obsidian renderer stopped ` +
+        'answering. Bounded deliberately: an unbounded wait here would eat the whole ' +
+        'test timeout and report no evidence at all.',
+      )),
+      ms,
+    );
+  });
+  try {
+    return await Promise.race([work, guard]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 interface LinkProbe {
@@ -438,29 +602,33 @@ interface LinkProbe {
  * that never actually existed.
  */
 async function probeLinks(page: Page, src: string, target: string): Promise<LinkProbe> {
-  return page.evaluate(
-    ({ src, target }) => {
-      const app = (window as unknown as {
-        app?: {
-          vault?: {
-            fileMap?: Record<string, unknown>;
-            getAbstractFileByPath?: (p: string) => unknown;
+  return withDeadline(
+    page.evaluate(
+      ({ src, target }) => {
+        const app = (window as unknown as {
+          app?: {
+            vault?: {
+              fileMap?: Record<string, unknown>;
+              getAbstractFileByPath?: (p: string) => unknown;
+            };
+            metadataCache?: {
+              resolvedLinks?: Record<string, Record<string, number>>;
+              unresolvedLinks?: Record<string, Record<string, number>>;
+            };
           };
-          metadataCache?: {
-            resolvedLinks?: Record<string, Record<string, number>>;
-            unresolvedLinks?: Record<string, Record<string, number>>;
-          };
+        }).app;
+        const mc = app?.metadataCache;
+        return {
+          inFileMap: app?.vault?.getAbstractFileByPath?.(target) != null,
+          resolved: Object.keys(mc?.resolvedLinks?.[src] ?? {}),
+          unresolved: Object.keys(mc?.unresolvedLinks?.[src] ?? {}),
+          fileMapSample: Object.keys(app?.vault?.fileMap ?? {}).slice(0, 30),
         };
-      }).app;
-      const mc = app?.metadataCache;
-      return {
-        inFileMap: app?.vault?.getAbstractFileByPath?.(target) != null,
-        resolved: Object.keys(mc?.resolvedLinks?.[src] ?? {}),
-        unresolved: Object.keys(mc?.unresolvedLinks?.[src] ?? {}),
-        fileMapSample: Object.keys(app?.vault?.fileMap ?? {}).slice(0, 30),
-      };
-    },
-    { src, target },
+      },
+      { src, target },
+    ),
+    EVAL_TIMEOUT_MS,
+    `probeLinks("${src}" → "${target}")`,
   );
 }
 
@@ -476,31 +644,274 @@ async function probeLinks(page: Page, src: string, target: string): Promise<Link
  * assertion then correctly reports as "no backlinks".
  */
 async function backlinkSourcesFor(page: Page, targetPath: string): Promise<string[]> {
-  return page.evaluate((p) => {
-    const app = (window as unknown as {
-      app?: {
-        vault?: { getAbstractFileByPath?: (path: string) => unknown };
-        metadataCache?: {
-          getBacklinksForFile?: (file: unknown) => { data?: unknown } | undefined;
+  return withDeadline(
+    page.evaluate((p) => {
+      const app = (window as unknown as {
+        app?: {
+          vault?: { getAbstractFileByPath?: (path: string) => unknown };
+          metadataCache?: {
+            getBacklinksForFile?: (file: unknown) => { data?: unknown } | undefined;
+          };
         };
-      };
-    }).app;
-    const tfile = app?.vault?.getAbstractFileByPath?.(p);
-    if (!tfile) return [];
-    const data = app?.metadataCache?.getBacklinksForFile?.(tfile)?.data;
-    if (!data) return [];
-    const asMap = data as { keys?: () => Iterable<string> };
-    if (typeof asMap.keys === 'function') return Array.from(asMap.keys());
-    return Object.keys(data as Record<string, unknown>);
-  }, targetPath);
+      }).app;
+      const tfile = app?.vault?.getAbstractFileByPath?.(p);
+      if (!tfile) return [];
+      const data = app?.metadataCache?.getBacklinksForFile?.(tfile)?.data;
+      if (!data) return [];
+      const asMap = data as { keys?: () => Iterable<string> };
+      if (typeof asMap.keys === 'function') return Array.from(asMap.keys());
+      return Object.keys(data as Record<string, unknown>);
+    }, targetPath),
+    EVAL_TIMEOUT_MS,
+    `backlinkSourcesFor("${targetPath}")`,
+  );
 }
 
 /** `app.workspace.getActiveFile()?.path` — what the user is actually looking at. */
 async function activeFilePath(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    const app = (window as unknown as {
-      app?: { workspace?: { getActiveFile?: () => { path?: string } | null } };
-    }).app;
-    return app?.workspace?.getActiveFile?.()?.path ?? null;
-  });
+  return withDeadline(
+    page.evaluate(() => {
+      const app = (window as unknown as {
+        app?: { workspace?: { getActiveFile?: () => { path?: string } | null } };
+      }).app;
+      return app?.workspace?.getActiveFile?.()?.path ?? null;
+    }),
+    EVAL_TIMEOUT_MS,
+    'activeFilePath()',
+  );
+}
+
+/**
+ * Open a note by clicking its File Explorer row — the user's own gesture — and
+ * wait until the workspace agrees that note is active.
+ *
+ * The wait and the click both carry explicit timeouts: under `actionTimeout: 0`,
+ * a row that is attached but never becomes actionable (headless Obsidian's File
+ * Explorer paint is lazy/virtualised under Xvfb) makes `click()` block forever.
+ */
+async function openNote(page: Page, notePath: string): Promise<void> {
+  const nav = page.locator(`.nav-file-title[data-path$="${notePath}"]`).first();
+  const visible = await nav
+    .waitFor({ state: 'visible', timeout: ACTION_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) {
+    throw new Error(
+      `openNote: no visible .nav-file-title for "${notePath}" within ` +
+      `${ACTION_TIMEOUT_MS}ms — the connect walk never materialised it (or the File ` +
+      `Explorer never painted it), so there is nothing to click.\n` +
+      `${await dumpVaultModel(page, notePath)}`,
+    );
+  }
+
+  const clickErr = await nav
+    .click({ timeout: ACTION_TIMEOUT_MS })
+    .then(() => null)
+    .catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+  if (clickErr) {
+    throw new Error(
+      `openNote: the File Explorer row for "${notePath}" could not be clicked within ` +
+      `${ACTION_TIMEOUT_MS}ms: ${clickErr}\n${await dumpVaultModel(page, notePath)}`,
+    );
+  }
+
+  await expect
+    .poll(() => activeFilePath(page), {
+      message:
+        `openNote: clicking the File Explorer row for "${notePath}" did not make it the ` +
+        'active file — the note could not even be opened, so nothing downstream of this ' +
+        'would mean anything.',
+      timeout: ACTION_TIMEOUT_MS,
+    })
+    .toBe(notePath);
+}
+
+/**
+ * Make sure the READING view is what is on screen for the note that is open.
+ *
+ * Obsidian's default is Live Preview, a CodeMirror mode in which
+ * `.markdown-preview-view` does not exist at all. `Toggle reading view` is a
+ * TOGGLE and the mode sticks to the leaf, so firing it unconditionally would
+ * flip a note that is ALREADY in reading view straight back into editing — hence
+ * the guard. (Same idiom as `images.spec.ts`'s `openInReadingView`, whose
+ * root-embed test passes in CI, so reading view itself is known to work here.)
+ */
+async function ensureReadingView(page: Page, notePath: string): Promise<void> {
+  const preview = page.locator('.markdown-preview-view').first();
+  const already = await preview.isVisible({ timeout: 2_000 }).catch(() => false);
+  if (!already) {
+    await runCommandViaPalette(page, 'Toggle reading view');
+  }
+
+  const showing = await preview
+    .waitFor({ state: 'visible', timeout: META_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  if (!showing) {
+    throw new Error(
+      `"${notePath}" never entered reading view — no .markdown-preview-view appeared ` +
+      `within ${META_TIMEOUT_MS}ms of "Toggle reading view".\n${await dumpReadingView(page)}`,
+    );
+  }
+}
+
+/**
+ * Expand a folder in the File Explorer, then wait until its children are
+ * actually IN the vault model.
+ *
+ * Deliberately NOT `helpers/obsidian.ts:expandFolderInExplorer`: that helper
+ * waits for the folder title to be merely `attached` and then issues a bare
+ * `title.click()`, which — under the config's default `actionTimeout: 0` — waits
+ * forever on a row that is attached but not actionable. That is precisely the
+ * three-minute hang this test used to die of, and a hang reports nothing. Same
+ * PRODUCT gesture (a real click on `.nav-folder-title[data-path=…]`, which is what
+ * the delegated listener at `src/main.ts:919-928` hooks), bounded, and loud on
+ * failure. The shared helper is used by other specs and is not this spec's to
+ * change.
+ *
+ * Waits on `vault.fileMap` rather than on rendered `.nav-file-title` nodes: the
+ * model is what the load actually produces, and the File Explorer's paint races
+ * under Xvfb.
+ */
+async function expandFolder(page: Page, folderPath: string, timeoutMs: number): Promise<void> {
+  const title = page.locator(`.nav-folder-title[data-path="${folderPath}"]`).first();
+  const visible = await title
+    .waitFor({ state: 'visible', timeout: ACTION_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  if (!visible) {
+    throw new Error(
+      `expandFolder: no visible .nav-folder-title[data-path="${folderPath}"] within ` +
+      `${ACTION_TIMEOUT_MS}ms — the folder was never materialised by the connect ` +
+      `populate, so there is nothing to expand.\n${await dumpVaultModel(page, folderPath)}`,
+    );
+  }
+
+  const clickErr = await title
+    .click({ timeout: ACTION_TIMEOUT_MS })
+    .then(() => null)
+    .catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+  if (clickErr) {
+    throw new Error(
+      `expandFolder: the "${folderPath}" folder title is rendered but could not be ` +
+      `CLICKED within ${ACTION_TIMEOUT_MS}ms: ${clickErr}\n` +
+      `${await dumpVaultModel(page, folderPath)}`,
+    );
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await childrenInFileMap(page, folderPath)) >= 1) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  throw new Error(
+    `expandFolder: "${folderPath}" still had no children in vault.fileMap within ` +
+    `${timeoutMs}ms of clicking its .nav-folder-title — LazyFolderLoader.loadFolder ` +
+    'never landed, so the one escape hatch from the lazy walk is broken too.\n' +
+    `${await dumpVaultModel(page, folderPath)}`,
+  );
+}
+
+/** How many `fileMap` keys sit under `folderPath/`. */
+async function childrenInFileMap(page: Page, folderPath: string): Promise<number> {
+  return withDeadline(
+    page.evaluate((prefix) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      return Object.keys(app?.vault?.fileMap ?? {})
+        .filter((k) => k.startsWith(`${prefix}/`)).length;
+    }, folderPath),
+    EVAL_TIMEOUT_MS,
+    `childrenInFileMap("${folderPath}")`,
+  ).catch(() => 0);
+}
+
+/**
+ * What the vault model and the File Explorer actually contain around
+ * `aroundPath`. A bare "element not found" cannot separate "the populate never
+ * inserted it" from "it IS in the model but the explorer has not painted it";
+ * this can, in one CI round.
+ */
+async function dumpVaultModel(page: Page, aroundPath: string): Promise<string> {
+  const state = await withDeadline(
+    page.evaluate((needle) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      const keys = Object.keys(app?.vault?.fileMap ?? {});
+      return {
+        fileMapKeys: keys.length,
+        hasExactPath: keys.includes(needle),
+        under: keys.filter((k) => k.startsWith(`${needle}/`)).slice(0, 20),
+        sample: keys.slice(0, 30),
+        navFileTitles: Array.from(document.querySelectorAll('.nav-file-title'))
+          .map((el) => el.getAttribute('data-path'))
+          .slice(0, 30),
+        navFolderTitles: Array.from(document.querySelectorAll('.nav-folder-title'))
+          .map((el) => el.getAttribute('data-path'))
+          .slice(0, 20),
+      };
+    }, aroundPath),
+    EVAL_TIMEOUT_MS,
+    `dumpVaultModel("${aroundPath}")`,
+  ).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+
+  return `vault model around "${aroundPath}": ${JSON.stringify(state)}`;
+}
+
+/**
+ * Everything test 4 needs in order to explain itself: is there a preview pane at
+ * all, how many `a.internal-link` are inside it and what do they point at, are
+ * there any anywhere else (i.e. did the leaf stay in Live Preview), what mode is
+ * the active leaf in, and which file is actually open.
+ */
+async function dumpReadingView(page: Page): Promise<string> {
+  const state = await withDeadline(
+    page.evaluate(() => {
+      const app = (window as unknown as {
+        app?: {
+          workspace?: {
+            getActiveFile?: () => { path?: string } | null;
+            activeLeaf?: { getViewState?: () => { state?: { mode?: string } } } | null;
+          };
+        };
+      }).app;
+      const anchors = Array.from(
+        document.querySelectorAll('.markdown-preview-view a.internal-link'),
+      ).map((el) => ({
+        href: el.getAttribute('href'),
+        dataHref: el.getAttribute('data-href'),
+        text: (el.textContent ?? '').trim(),
+        className: el.className,
+        painted: (el as HTMLElement).offsetParent !== null,
+      }));
+      return {
+        previewPanes: document.querySelectorAll('.markdown-preview-view').length,
+        internalLinksInPreview: anchors.length,
+        anchors: anchors.slice(0, 10),
+        internalLinksAnywhere: document.querySelectorAll('a.internal-link').length,
+        editorPanes: document.querySelectorAll('.markdown-source-view').length,
+        leafMode: app?.workspace?.activeLeaf?.getViewState?.()?.state?.mode ?? null,
+        activeFile: app?.workspace?.getActiveFile?.()?.path ?? null,
+      };
+    }),
+    EVAL_TIMEOUT_MS,
+    'dumpReadingView()',
+  ).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+
+  return `reading-view state: ${JSON.stringify(state)}`;
+}
+
+/** The suggestion rows the Quick Switcher is currently showing. */
+async function switcherSuggestions(page: Page): Promise<string[]> {
+  return withDeadline(
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('.prompt .suggestion-item'))
+        .map((el) => (el.textContent ?? '').trim())
+        .slice(0, 20)),
+    EVAL_TIMEOUT_MS,
+    'switcherSuggestions()',
+  ).catch(() => []);
 }

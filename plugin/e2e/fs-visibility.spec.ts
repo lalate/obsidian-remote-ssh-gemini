@@ -10,6 +10,15 @@ import {
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
 import { RemoteVerifier } from './helpers/remote-verifier';
 import { makeFakePlugin, seedPluginOnRemote } from './helpers/remote-fixtures';
+import {
+  COMMUNITY_PLUGINS_REL,
+  captureCommunityPlugins,
+  parseIdList,
+  preCleanRemoteFixtures,
+  resetRemoteFixtures,
+  type CommunityPluginsSnapshot,
+  type FixtureFootprint,
+} from './helpers/remote-reset';
 import { assertSshdReachable } from './helpers/sshd';
 import { logPathFor } from './helpers/log-oracle';
 import * as fs from 'node:fs';
@@ -90,11 +99,19 @@ import { fileURLToPath } from 'node:url';
 
 const STAMP = Date.now().toString(36);
 
+/**
+ * The family prefix every note this spec seeds shares. Cleanup matches on THIS,
+ * not on the four stamped names below: a run that crashed took its stamp with
+ * it, and the only way to sweep its leftovers off the shared docker vault is to
+ * recognise them by family.
+ */
+const NOTE_PREFIX = 'e2e-fs-';
+
 /** Vault-relative note paths, unique to this run. */
-const CONTROL_NOTE = `e2e-fs-${STAMP}-control.md`;
-const PLUGIN_NOTE = `e2e-fs-${STAMP}-plugin.md`;
-const REMOTE_ONLY_NOTE = `e2e-fs-${STAMP}-remote-only.md`;
-const REAL_PLUGIN_NOTE = `e2e-fs-${STAMP}-claudian.md`;
+const CONTROL_NOTE = `${NOTE_PREFIX}${STAMP}-control.md`;
+const PLUGIN_NOTE = `${NOTE_PREFIX}${STAMP}-plugin.md`;
+const REMOTE_ONLY_NOTE = `${NOTE_PREFIX}${STAMP}-remote-only.md`;
+const REAL_PLUGIN_NOTE = `${NOTE_PREFIX}${STAMP}-claudian.md`;
 
 const CONTROL_BODY = `# control ${STAMP}\n\nwritten through app.vault.adapter.write()\n`;
 const PLUGIN_BODY = `# plugin ${STAMP}\n\nwritten with raw fs under adapter.basePath\n`;
@@ -106,7 +123,19 @@ const FIXTURE_NOTE = 'remote_demo1.md';
 
 /** The #429 reproduction plugin (vehicle b). */
 const FS_PLUGIN_ID = 'e2e-fs-probe';
-const REMOTE_COMMUNITY_PLUGINS = '.obsidian/community-plugins.json';
+
+/**
+ * Everything this spec puts on the SHARED, PERSISTENT docker vault — and
+ * therefore owes back. A fixture plugin left enabled in the remote's
+ * `community-plugins.json` is pulled into the shadow vault of every LATER spec
+ * at connect (`src/main.ts:632-670`), so leaving one behind reddens tests this
+ * file has nothing to do with. The product cannot undo it either: the enabled
+ * list is a monotonic union (`ShadowVaultBootstrap.ts:698-702`).
+ */
+const FOOTPRINT: FixtureFootprint = {
+  pluginIds: [FS_PLUGIN_ID],
+  notePrefixes: [NOTE_PREFIX],
+};
 
 /**
  * `onload()` body of the reproduction plugin: literally the code from the
@@ -149,8 +178,13 @@ let obsidian: ObsidianHandle;
 let scaffold: ScaffoldResult;
 let remote: RemoteVerifier;
 let shadowVaultPath: string;
-/** The remote's community-plugins.json before this spec touched it (null = absent). */
-let remoteCommunityPluginsBefore: string | null = null;
+/**
+ * The remote's community-plugins.json before this spec touched it (raw === null
+ * means it did not exist, and restoring must DELETE it rather than write `[]`).
+ * Captured after the pre-clean, so a leftover fixture id from a crashed run can
+ * never be baked into what we call "original".
+ */
+let communityPluginsSnapshot: CommunityPluginsSnapshot = { raw: null };
 
 test.beforeAll(async () => {
   await assertSshdReachable();
@@ -162,6 +196,15 @@ test.beforeAll(async () => {
       'the port is open. This spec hard-fails rather than skipping.',
     );
   }
+
+  // ── Defensive PRE-CLEAN, before anything is seeded ───────────────────────
+  // The docker vault is shared and persists across specs. A previous run that
+  // crashed leaves `e2e-fs-*` notes at the root, `e2e-fs-probe` under
+  // `.obsidian/plugins/` (and under the per-device `.obsidian/user/<clientId>/`),
+  // and its id still named in the remote enabled list — which the product's
+  // monotonic union can never have removed. Purge all of it, so this spec never
+  // inherits another run's garbage.
+  await preCleanRemoteFixtures(remote, FOOTPRINT);
 
   // ── Seed the REMOTE before anything connects ─────────────────────────────
   // Both fixtures must exist on the remote before the shadow window's connect,
@@ -180,10 +223,10 @@ test.beforeAll(async () => {
   // connect-time pull merges into the shadow vault and what decides which
   // binaries get staged. Merged rather than overwritten (so a concurrent
   // fixture's id survives) and remembered, so `afterAll` can restore it.
-  remoteCommunityPluginsBefore = await remote.readFile(REMOTE_COMMUNITY_PLUGINS);
-  const enabledIds = new Set<string>(parseIdList(remoteCommunityPluginsBefore));
+  communityPluginsSnapshot = await captureCommunityPlugins(remote);
+  const enabledIds = new Set<string>(parseIdList(communityPluginsSnapshot.raw));
   enabledIds.add(FS_PLUGIN_ID);
-  await remote.writeFile(REMOTE_COMMUNITY_PLUGINS, JSON.stringify([...enabledIds]));
+  await remote.writeFile(COMMUNITY_PLUGINS_REL, JSON.stringify([...enabledIds]));
 
   scaffold = scaffoldTestVault();
   obsidian = await launchObsidian(scaffold.vaultPath);
@@ -204,36 +247,20 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await obsidian?.cleanup();
+  // MOST OF THIS SPEC IS EXPECTED TO FAIL, so cleanup lives here — `afterAll`
+  // runs whatever the tests did — and every step inside `resetRemoteFixtures` is
+  // independently guarded, so one failure cannot skip the rest. Reverting the
+  // remote is unavoidably the harness's job: the product's enabled list is a
+  // monotonic union and will never drop `e2e-fs-probe` on its own, and a fixture
+  // plugin still named there is pulled in, staged and LOADED by the shadow vault
+  // of every spec that runs after this one.
+  await obsidian?.cleanup().catch(() => {});
   if (remote) {
-    for (const note of [CONTROL_NOTE, PLUGIN_NOTE, REMOTE_ONLY_NOTE, REAL_PLUGIN_NOTE]) {
-      await remote.removeFile(note).catch(() => {});
-    }
-    await remote.rmrf(`.obsidian/plugins/${FS_PLUGIN_ID}`).catch(() => {});
-    // Restore the remote's plugin list so this spec leaves no fixture plugin
-    // enabled for whatever runs next.
-    if (remoteCommunityPluginsBefore === null) {
-      await remote.removeFile(REMOTE_COMMUNITY_PLUGINS).catch(() => {});
-    } else {
-      await remote
-        .writeFile(REMOTE_COMMUNITY_PLUGINS, remoteCommunityPluginsBefore)
-        .catch(() => {});
-    }
+    await resetRemoteFixtures(remote, FOOTPRINT, communityPluginsSnapshot);
     await remote.disconnect();
   }
   scaffold?.cleanup();
 });
-
-/** Tolerant read of a `community-plugins.json` body: absent / junk → no ids. */
-function parseIdList(raw: string | null): string[] {
-  if (raw === null) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}
 
 /** `app.vault.adapter.basePath`, as the renderer sees it. */
 function readBasePath(page: Page): Promise<unknown> {

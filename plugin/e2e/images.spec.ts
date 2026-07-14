@@ -38,12 +38,43 @@ import { logPathFor } from './helpers/log-oracle';
  * is a real, decodable file of a known size (`helpers/remote-fixtures.ts`), so
  * the assertions are about the artefact itself, not about a byte count.
  *
+ * WHERE EACH ASSERTION IS MADE (and why)
+ * --------------------------------------
+ * Obsidian's renderer runs under a Content-Security-Policy whose `connect-src`
+ * does NOT cover `http://127.0.0.1:<port>`, so page-JS `fetch()` at the bridge
+ * dies with a bare `TypeError: Failed to fetch` before a socket is ever opened.
+ * `img-src` IS allowed — which is why `<img src="http://127.0.0.1:…/r/…">` loads
+ * perfectly (test 4 proves it, in the same run in which every in-page `fetch()`
+ * of the SAME URL failed). A renderer-side `fetch` therefore measures the CSP,
+ * not ResourceBridge, and it is the wrong vehicle for a bytes-and-headers test.
+ *
+ * So the two surfaces are probed where each one actually lives:
+ *
+ *   • BYTES + HEADERS (tests 2, 3, 7, 8, 9) — from the NODE test process, using
+ *     Node's global `fetch` (Node 20 in CI; `page.request` was the alternative,
+ *     but it drags in a Playwright APIRequestContext and buys nothing here — the
+ *     bridge does no cookie/origin handling, see `ResourceBridge.handleRequest`).
+ *     The bridge listens on `127.0.0.1` and CI runs Obsidian on the same host, so
+ *     Node reaches it directly with no CSP in the way. `page.evaluate` is still
+ *     used, but ONLY to mint the URL via `app.vault.adapter.getResourcePath(p)`:
+ *     the port and the token are per-session secrets that only the patched
+ *     adapter knows, so the URL under test is the very one the webview would use.
+ *     Status, `content-type` and `content-range` then come straight off the
+ *     `Response` — strictly more faithful than the in-page version.
+ *     Node has no `createImageBitmap`, so dimensions come from `pngSize()` below,
+ *     which validates the PNG signature and reads the IHDR: still a decode of the
+ *     served artefact, not a byte count.
+ *
+ *   • RENDERING (tests 4, 5, 6) — in the page, against real `<img>` elements and
+ *     their `naturalWidth`. That IS the user's path, it is unaffected by
+ *     `connect-src`, and it stays exactly where it was.
+ *
  * Ordering
  * --------
- * The bridge-level `fetch` tests (2, 3, 7, 8) run BEFORE any preview-rendering
- * test on purpose: if Obsidian's markdown renderer falls over under Xvfb, the
- * run still tells the maintainer whether ResourceBridge served the right bytes
- * with the right headers — the two failure surfaces stay separable.
+ * The bridge-level tests (2, 3, 7, 8) run BEFORE any preview-rendering test on
+ * purpose: if Obsidian's markdown renderer falls over under Xvfb, the run still
+ * tells the maintainer whether ResourceBridge served the right bytes with the
+ * right headers — the two failure surfaces stay separable.
  *
  * PREDICTIONS (a red test here is a real defect, not a broken test — nothing
  * below is weakened, skipped or `fixme`'d):
@@ -74,6 +105,13 @@ import { logPathFor } from './helpers/log-oracle';
  *      we control. Whatever this test does IS the finding, and it tells the
  *      maintainer whether the fix for (5) is "walk deeper on connect" or
  *      "invalidate metadata after a lazy insert".
+ *      Every step of it is under an explicit `withDeadline`, because the config
+ *      sets no `actionTimeout` (so Playwright's default is 0 = WAIT FOREVER) and
+ *      `expandFolderInExplorer` clicks a `.nav-folder-title` it has only waited
+ *      for as *attached* — under Xvfb's virtualised File Explorer that click can
+ *      block indefinitely, which is exactly how this test ate the full 180 s test
+ *      timeout and reported nothing. An unknown verdict is only useful if it gets
+ *      REPORTED, so each step now fails fast with a `fileMap`/`<img>` dump.
  *   7. SVG via the full-binary path ....... PASS (svg is not in
  *      THUMBNAIL_EXTENSIONS → no `thumb=`, so it takes `serveFullBinary` and
  *      gets its MIME from `guessMimeType`).
@@ -109,6 +147,23 @@ const THUMB_MAX_DIM = 1024;
 const BRIDGE_TIMEOUT_MS = 60_000;
 /** Renderer-side: File Explorer paint + reading-view switch under Xvfb. */
 const RENDER_TIMEOUT_MS = 30_000;
+
+/**
+ * Hard ceilings on the two UI steps that can WEDGE rather than fail.
+ *
+ * `playwright.config.ts` sets no `actionTimeout`, so Playwright's default of
+ * `0` — wait forever — applies to every `click()`. `expandFolderInExplorer`
+ * waits for its `.nav-folder-title` to be *attached* and then clicks it; under
+ * Xvfb the File Explorer is virtualised, so an attached-but-never-actionable
+ * node makes that click hang until the TEST timeout kills the whole run with no
+ * diagnostic at all. These deadlines convert that into a fast, explained red.
+ * They are bounds on WAITING, not on any assertion.
+ */
+const EXPAND_DEADLINE_MS = 45_000;
+const READING_VIEW_DEADLINE_MS = 60_000;
+
+/** The 8 bytes every PNG starts with (`\x89PNG\r\n\x1a\n`). */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 let obsidian: ObsidianHandle;
 let scaffold: ScaffoldResult;
@@ -226,33 +281,38 @@ test.describe('remote images & binaries: getResourcePath → ResourceBridge → 
   });
 
   test('bridge serves a decodable PNG with the right Content-Type', async () => {
-    const probe = await bridgeFetch(obsidian.page, SMALL_PNG, { decode: true });
+    const probe = await bridgeFetch(obsidian.page, SMALL_PNG);
 
     expect(probe.error, `bridge fetch threw for ${SMALL_PNG}`).toBeNull();
     expect(probe.status, `bridge returned ${probe.status} for ${SMALL_PNG}`).toBe(200);
     expect(probe.contentType).toBe('image/png');
     expect(probe.byteLength, 'bridge served an empty body').toBeGreaterThan(0);
 
-    // The real assertion: the bytes are a PNG a browser can DECODE. A bridge
-    // that serves truncated / mis-sliced / mis-typed content still yields a
-    // 200 with a plausible byte count; only a decode proves the payload.
-    expect(probe.width, 'served PNG did not decode').toBeGreaterThan(0);
-    expect(probe.height, 'served PNG did not decode').toBeGreaterThan(0);
+    // The real assertion: the bytes ARE a PNG — signature, IHDR, and a size a
+    // decoder would honour. A bridge that serves truncated / mis-sliced /
+    // mis-typed content still yields a 200 with a plausible byte count and the
+    // right Content-Type; only reading the artefact itself proves the payload.
+    // `pngSize` throws (with the leading bytes in the message) if it is not one.
+    const { width, height } = pngSize(probe.body, SMALL_PNG);
+    expect(width, 'served PNG did not decode').toBeGreaterThan(0);
+    expect(height, 'served PNG did not decode').toBeGreaterThan(0);
   });
 
   test('a 2048px source is downscaled to the 1024px cap, not sent whole', async () => {
     const onRemote = await remote.stat(BIG_PNG);
     expect(onRemote, `${BIG_PNG} is missing from the remote`).not.toBeNull();
 
-    const probe = await bridgeFetch(obsidian.page, BIG_PNG, { decode: true });
+    const probe = await bridgeFetch(obsidian.page, BIG_PNG);
     expect(probe.error, `bridge fetch threw for ${BIG_PNG}`).toBeNull();
     expect(probe.status).toBe(200);
 
+    const { width, height } = pngSize(probe.body, BIG_PNG);
+
     // (a) The daemon actually resized: longer side lands exactly on the cap.
     expect(
-      Math.max(probe.width, probe.height),
+      Math.max(width, height),
       `${BIG_PNG} is 2048x1536 on the remote; the bridge served ` +
-      `${probe.width}x${probe.height}. getResourcePath asked for ` +
+      `${width}x${height}. getResourcePath asked for ` +
       `thumb=${THUMB_MAX_DIM}, so the longer side must come back at ` +
       `exactly ${THUMB_MAX_DIM}`,
     ).toBe(THUMB_MAX_DIM);
@@ -402,7 +462,20 @@ test.describe('remote images & binaries: getResourcePath → ResourceBridge → 
     // already parsed the note and does not re-resolve on a late insert, so the
     // fix must also invalidate metadata after a lazy load. Either way the run
     // reports something the code does not currently tell us.
-    await expandFolderInExplorer(obsidian.page, SUB_DIR, RENDER_TIMEOUT_MS);
+    //
+    // Budget: the steps below are each individually deadlined (45s + 30s + 60s
+    // + 60s + 30s worst case = 225s), and every deadline emits a diagnostic. The
+    // per-test timeout is raised above that sum on purpose: a step that blows its
+    // own bound must be the thing that fails, so the report survives. Under the
+    // inherited 180s the harness killed the test first and we learned nothing.
+    test.setTimeout(300_000);
+
+    await withDeadline(
+      obsidian.page,
+      `expandFolderInExplorer("${SUB_DIR}")`,
+      EXPAND_DEADLINE_MS,
+      () => expandFolderInExplorer(obsidian.page, SUB_DIR, RENDER_TIMEOUT_MS),
+    );
 
     await expect
       .poll(() => inVaultModel(obsidian.page, NESTED_PNG), {
@@ -447,15 +520,17 @@ test.describe('remote images & binaries: getResourcePath → ResourceBridge → 
   test('a remotely-REPLACED image is not served from a stale generation', async () => {
     // Warm every cache in the chain (adapter ReadCache, bridge mtime cache,
     // daemon thumbnail path) on the ORIGINAL 640x480 bytes.
-    const before = await bridgeFetch(obsidian.page, SMALL_PNG, { decode: true });
+    const before = await bridgeFetch(obsidian.page, SMALL_PNG);
     expect(before.error, `bridge fetch threw for ${SMALL_PNG}`).toBeNull();
     expect(before.status).toBe(200);
+
+    const first = pngSize(before.body, SMALL_PNG);
     expect(
-      before.width,
+      first.width,
       'the 640x480 fixture did not come back at its own size — it is under the ' +
       `${THUMB_MAX_DIM} cap, so the resize must be a no-op`,
     ).toBe(640);
-    expect(before.height).toBe(480);
+    expect(first.height).toBe(480);
 
     // Replace it out-of-band, at a DIFFERENT size. Different dimensions —
     // rather than different pixels at the same size — make staleness provable
@@ -466,8 +541,18 @@ test.describe('remote images & binaries: getResourcePath → ResourceBridge → 
     await expect
       .poll(
         async () => {
-          const p = await bridgeFetch(obsidian.page, SMALL_PNG, { decode: true });
-          return `${p.width}x${p.height}`;
+          const p = await bridgeFetch(obsidian.page, SMALL_PNG);
+          if (p.error) return `fetch failed: ${p.error}`;
+          // Not an `expect` — a poll callback that THROWS aborts the poll, and a
+          // transient non-PNG body (a half-written file mid-replace) must be
+          // retried, not treated as the verdict. A non-PNG that never resolves
+          // still fails the poll, and its bytes land in the failure message.
+          try {
+            const { width, height } = pngSize(p.body, SMALL_PNG);
+            return `${width}x${height}`;
+          } catch (e) {
+            return errorText(e);
+          }
         },
         {
           message:
@@ -492,10 +577,51 @@ interface BridgeProbe {
   contentType: string | null;
   contentRange: string | null;
   byteLength: number;
-  /** Decoded bitmap size; -1 when `decode` was not requested or the fetch failed. */
-  width: number;
-  height: number;
+  /** The served bytes. Empty when the fetch failed. */
+  body: Buffer;
   error: string | null;
+}
+
+/** `String(e)` for an `unknown`, with an Error's message preferred. */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Width/height of a PNG, read out of its IHDR.
+ *
+ * This is the Node-side replacement for `createImageBitmap` (which does not
+ * exist outside a browser). It is NOT a weaker check: the PNG signature and the
+ * IHDR chunk type are both verified, so truncated, empty, JPEG-instead-of-PNG,
+ * or HTML-error-page bodies all throw here — with their leading bytes in the
+ * message — rather than silently reporting a dimension. The daemon's thumbnail
+ * of a PNG source is itself a PNG (`ResourceBridge.serveThumbnail` maps
+ * `format` to `image/png` / `image/jpeg`), so a JPEG body would mean the daemon
+ * changed format under us, and that must be loud.
+ */
+function pngSize(body: Buffer, what: string): { width: number; height: number } {
+  const head = body.subarray(0, 32).toString('hex');
+
+  if (body.length < 24) {
+    throw new Error(
+      `${what}: the bridge served ${body.length} B — too short to even be a PNG ` +
+      `header (need >= 24). Bytes: ${head || '<empty>'}`,
+    );
+  }
+  if (!body.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error(
+      `${what}: the bridge did not serve a PNG — the 8-byte signature is wrong. ` +
+      `${body.length} B, first 32 bytes: ${head}`,
+    );
+  }
+  if (body.subarray(12, 16).toString('ascii') !== 'IHDR') {
+    throw new Error(
+      `${what}: PNG signature is present but the first chunk is not IHDR — the ` +
+      `payload is malformed or truncated. ${body.length} B, first 32 bytes: ${head}`,
+    );
+  }
+
+  return { width: body.readUInt32BE(16), height: body.readUInt32BE(20) };
 }
 
 /** `app.vault.adapter.getResourcePath(p)` as the webview would call it. */
@@ -515,77 +641,183 @@ async function resourcePath(page: Page, vaultPath: string): Promise<string> {
 }
 
 /**
- * Fetch a vault asset THROUGH the bridge, from inside the Obsidian renderer —
- * i.e. exactly the request an `<img>` / `<iframe>` makes. Done in-page rather
- * than from Node on purpose: the port and the token are per-session secrets
- * that only `getResourcePath` knows, and a Node-side fetch would bypass the
- * webview's own origin handling and prove less.
+ * Fetch a vault asset THROUGH the bridge — the URL is minted in the renderer,
+ * the request is made from NODE.
  *
- * `decode: true` additionally runs the body through `createImageBitmap`, which
- * is the only way to assert on what the user actually SEES (dimensions) as
- * opposed to what the server claimed to send.
+ * The URL has to come from the page: the port and the token are per-session
+ * secrets that only the patched `getResourcePath` knows, so this is the exact
+ * URL Obsidian itself would put on an `<img>`.
+ *
+ * The REQUEST cannot come from the page. Obsidian's renderer CSP has no
+ * `connect-src` entry for `http://127.0.0.1:<port>`, so an in-page `fetch()` of
+ * that URL is refused by the browser with a contentless `TypeError: Failed to
+ * fetch` — no request is ever sent, and the probe measures Chromium's CSP rather
+ * than ResourceBridge. (`img-src` is permitted, which is why the `<img>` tests
+ * pass against the same URL.) The bridge binds `127.0.0.1` and CI runs Obsidian
+ * on the same host as the test process, so Node's global `fetch` reaches it with
+ * no CSP and hands back the real `Response`: status, `content-type`,
+ * `content-range` and the bytes, all first-hand.
  */
 async function bridgeFetch(
   page: Page,
   vaultPath: string,
-  opts: { range?: string; decode?: boolean } = {},
+  opts: { range?: string } = {},
 ): Promise<BridgeProbe> {
-  return page.evaluate(
-    async ({ p, range, decode }) => {
-      const fail = (failedUrl: string, error: string) => ({
-        url: failedUrl,
-        status: -1,
-        contentType: null as string | null,
-        contentRange: null as string | null,
-        byteLength: -1,
-        width: -1,
-        height: -1,
-        error,
-      });
+  const fail = (url: string, error: string): BridgeProbe => ({
+    url,
+    status: -1,
+    contentType: null,
+    contentRange: null,
+    byteLength: -1,
+    body: Buffer.alloc(0),
+    error,
+  });
 
-      const adapter = (window as unknown as {
-        app?: { vault?: { adapter?: { getResourcePath?: (path: string) => string } } };
-      }).app?.vault?.adapter;
-      if (!adapter?.getResourcePath) {
-        return fail('', 'app.vault.adapter.getResourcePath is missing');
-      }
+  let url: string;
+  try {
+    url = await resourcePath(page, vaultPath);
+  } catch (e) {
+    return fail('', errorText(e));
+  }
 
-      const url = adapter.getResourcePath(p);
-      if (url.startsWith('data:')) {
-        return fail(
-          url,
-          'getResourcePath returned a data: URL — the ResourceBridge is not running',
-        );
-      }
+  // `SftpDataAdapter.getResourcePath`'s "the bridge never bound" fallback. It
+  // is not fetchable, and reporting it as a fetch error would misattribute the
+  // failure to the transport.
+  if (url.startsWith('data:')) {
+    return fail(
+      url,
+      'getResourcePath returned a data: URL — the ResourceBridge is not running',
+    );
+  }
 
-      try {
-        const res = await fetch(url, range ? { headers: { Range: range } } : undefined);
-        const body = await res.arrayBuffer();
-        let width = -1;
-        let height = -1;
-        if (decode && res.ok) {
-          const type = res.headers.get('content-type') ?? '';
-          const bitmap = await createImageBitmap(new Blob([body], { type }));
-          width = bitmap.width;
-          height = bitmap.height;
-          bitmap.close();
-        }
-        return {
-          url,
-          status: res.status,
-          contentType: res.headers.get('content-type'),
-          contentRange: res.headers.get('content-range'),
-          byteLength: body.byteLength,
-          width,
-          height,
-          error: null as string | null,
-        };
-      } catch (e) {
-        return fail(url, String(e));
-      }
-    },
-    { p: vaultPath, range: opts.range ?? null, decode: opts.decode ?? false },
+  try {
+    const res = await fetch(url, {
+      headers: opts.range ? { Range: opts.range } : undefined,
+      // The bridge streams multi-MB bodies over SSH; without this a wedged
+      // daemon would hang the fetch until the TEST timeout, with no diagnostic.
+      signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS),
+    });
+    const body = Buffer.from(await res.arrayBuffer());
+    return {
+      url,
+      status: res.status,
+      contentType: res.headers.get('content-type'),
+      contentRange: res.headers.get('content-range'),
+      byteLength: body.byteLength,
+      body,
+      error: null,
+    };
+  } catch (e) {
+    return fail(url, errorText(e));
+  }
+}
+
+/**
+ * Run `work()` under a hard deadline, and on expiry raise an EXPLAINED failure
+ * instead of letting the test timeout swallow it.
+ *
+ * Needed because Playwright's `actionTimeout` defaults to 0 (wait forever) and
+ * this config does not override it: a `click()` on an attached-but-unactionable
+ * node — routine in Xvfb's virtualised File Explorer — never settles, so the
+ * whole test dies at the 180s harness timeout with no stack, no message and no
+ * state. Whatever the deadline catches, the maintainer gets the vault model and
+ * the DOM alongside it.
+ *
+ * `work()` is left running (with its rejection swallowed) rather than cancelled:
+ * there is nothing to cancel a pending Playwright action with, and an
+ * un-awaited rejection after the race would surface as an unhandled rejection.
+ */
+async function withDeadline<T>(
+  page: Page,
+  label: string,
+  ms: number,
+  work: () => Promise<T>,
+): Promise<T> {
+  const running = work();
+  running.catch(() => { /* the race below owns the outcome */ });
+
+  let timer: NodeJS.Timeout | undefined;
+  const expired = Symbol('deadline');
+  const deadline = new Promise<typeof expired>((resolve) => {
+    timer = setTimeout(() => resolve(expired), ms);
+  });
+
+  try {
+    const outcome = await Promise.race([running, deadline]);
+    if (outcome === expired) {
+      throw new Error(
+        `${label} did not settle within ${ms}ms and was still waiting — it would ` +
+        'otherwise have hung until the test timeout with no diagnostic. Playwright ' +
+        "has no actionTimeout in this config, so a click on a node that never " +
+        'becomes actionable waits forever.\n' +
+        (await explorerDiagnostic(page)),
+      );
+    }
+    return outcome as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * What the vault model and the DOM actually look like right now, for a deadline
+ * message. Answers the two questions a hang leaves open: is the file in
+ * `vault.fileMap` at all, and did an `<img>` ever make it into the preview?
+ *
+ * Bounded itself — a wedged renderer must not make the diagnostic hang too.
+ */
+async function explorerDiagnostic(page: Page): Promise<string> {
+  interface Snapshot {
+    underPrefix: string[];
+    fileMapSize: number;
+    folderTitles: (string | null)[];
+    previewImgs: string[];
+    anyImgOnPage: number;
+  }
+
+  const probe = page
+    .evaluate((prefix): Snapshot => {
+      const vault = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app?.vault;
+      const keys = Object.keys(vault?.fileMap ?? {});
+      return {
+        underPrefix: keys.filter((k) => k === prefix || k.startsWith(`${prefix}/`)),
+        fileMapSize: keys.length,
+        folderTitles: Array.from(document.querySelectorAll('.nav-folder-title')).map(
+          (el) => el.getAttribute('data-path'),
+        ),
+        previewImgs: Array.from(
+          document.querySelectorAll('.markdown-preview-view img'),
+        ).map((el) => (el as HTMLImageElement).src),
+        anyImgOnPage: document.querySelectorAll('img').length,
+      };
+    }, SUB_DIR)
+    .catch((e: unknown) => errorText(e));
+
+  const timeout = new Promise<string>((resolve) =>
+    setTimeout(() => resolve('the renderer did not answer within 5000ms'), 5_000),
   );
+
+  const snapshot = await Promise.race([probe, timeout]);
+  if (typeof snapshot === 'string') {
+    return `DIAGNOSTIC — the vault-model probe itself failed: ${snapshot}`;
+  }
+
+  return [
+    'DIAGNOSTIC (vault model + DOM at the moment of the deadline):',
+    `  vault.fileMap keys under "${SUB_DIR}/": ` +
+    (snapshot.underPrefix.length > 0
+      ? JSON.stringify(snapshot.underPrefix)
+      : 'NONE — the lazy folder load never inserted the folder contents'),
+    `  vault.fileMap total keys: ${snapshot.fileMapSize}`,
+    `  .nav-folder-title[data-path] rendered: ${JSON.stringify(snapshot.folderTitles)}`,
+    `  <img> in .markdown-preview-view: ` +
+    (snapshot.previewImgs.length > 0
+      ? JSON.stringify(snapshot.previewImgs)
+      : 'NONE — the embed never resolved to an element'),
+    `  <img> anywhere in the document: ${snapshot.anyImgOnPage}`,
+  ].join('\n');
 }
 
 /** Is `vaultPath` a real entry in Obsidian's vault model? */
@@ -611,26 +843,37 @@ async function inVaultModel(page: Page, vaultPath: string): Promise<boolean> {
  * running it on every open would flip a note that is already in reading view
  * straight back to editing. So the command only fires when the preview pane is
  * not already up.
+ *
+ * The whole sequence sits under a `withDeadline`: each inner wait is bounded,
+ * but the `click()`s are not (no `actionTimeout` in the config), so this is the
+ * other place a test could wedge instead of failing.
  */
 async function openInReadingView(page: Page, notePath: string): Promise<void> {
-  const nav = page.locator(`.nav-file-title[data-path="${notePath}"]`);
-  await expect(
-    nav,
-    `${notePath} is not in the File Explorer — the connect walk never ` +
-    'materialised it, so there is nothing to open',
-  ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
-  await nav.click();
+  await withDeadline(
+    page,
+    `openInReadingView("${notePath}")`,
+    READING_VIEW_DEADLINE_MS,
+    async () => {
+      const nav = page.locator(`.nav-file-title[data-path="${notePath}"]`);
+      await expect(
+        nav,
+        `${notePath} is not in the File Explorer — the connect walk never ` +
+        'materialised it, so there is nothing to open',
+      ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
+      await nav.click();
 
-  const preview = page.locator('.markdown-preview-view').first();
-  const alreadyReading = await preview
-    .isVisible({ timeout: 2_000 })
-    .catch(() => false);
-  if (!alreadyReading) {
-    await runCommandViaPalette(page, 'Toggle reading view');
-  }
+      const preview = page.locator('.markdown-preview-view').first();
+      const alreadyReading = await preview
+        .isVisible({ timeout: 2_000 })
+        .catch(() => false);
+      if (!alreadyReading) {
+        await runCommandViaPalette(page, 'Toggle reading view');
+      }
 
-  await expect(
-    preview,
-    `${notePath} never entered reading view — no .markdown-preview-view appeared`,
-  ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
+      await expect(
+        preview,
+        `${notePath} never entered reading view — no .markdown-preview-view appeared`,
+      ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
+    },
+  );
 }
