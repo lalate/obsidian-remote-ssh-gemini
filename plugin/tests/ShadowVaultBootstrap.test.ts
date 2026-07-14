@@ -438,6 +438,28 @@ describe('ShadowVaultBootstrap.bootstrap', () => {
     expect(stat.isDirectory()).toBe(true);
   });
 
+  it('regression: re-bootstrap from INSIDE the shadow window (source == target plugin dir) must not self-symlink the plugin files', async () => {
+    // First bootstrap from a normal source vault.
+    const r1 = new ShadowVaultBootstrap(scratch.baseDir, scratch.sourceDir, new ObsidianRegistry(scratch.configPath));
+    const profile = makeProfile({ id: 'p1', name: 'P', remotePath: '/p1' });
+    const first = await r1.bootstrap(profile, [profile]);
+
+    // Simulate the plugin now RUNNING inside that shadow window with
+    // the user clicking Connect again: the running plugin's own dir
+    // (the bootstrap source) IS the shadow's plugin dir. Before the
+    // self-install guard, installPlugin rm'd each real file and left a
+    // symlink pointing at its own path — the plugin then failed to
+    // load ("disappeared") on the next Obsidian start.
+    const r2 = new ShadowVaultBootstrap(scratch.baseDir, first.layout.pluginDir, new ObsidianRegistry(scratch.configPath));
+    const second = await r2.bootstrap(profile, [profile]);
+
+    expect(second.layout.pluginDir).toBe(first.layout.pluginDir);
+    expect(second.pluginInstallMethod).toBe('in-place');
+    // main.js must still resolve to the staged bundle content.
+    const mainJs = path.join(second.layout.pluginDir, 'main.js');
+    expect(fs.readFileSync(mainJs, 'utf-8')).toContain('fake bundled plugin');
+  });
+
   it('writes [remote-ssh] only into shadow community-plugins.json on first bootstrap (does not auto-install source plugins)', async () => {
     fs.writeFileSync(
       path.join(scratch.sourceConfigDir, 'community-plugins.json'),
