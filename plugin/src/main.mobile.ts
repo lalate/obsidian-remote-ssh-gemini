@@ -289,6 +289,7 @@ export default class RemoteSshMobilePlugin extends Plugin {
   private suppressRpcCloseNotice = false;
   private autoReconnectInFlight = false;
   private lastResumeReconnectAt = 0;
+  private lastActiveFilePath: string | null = null;
 
   // ─── VaultLogger integration ──────────────────────────────────────────────────
 
@@ -634,7 +635,9 @@ export default class RemoteSshMobilePlugin extends Plugin {
       this.pruneHiddenEntriesFromVaultModel();
       this.forcePruneHiddenEntriesFromVaultModel();
 
-      // Populate vault file tree
+      const activeFile = this.app.workspace.getActiveFile();
+      this.lastActiveFilePath = activeFile?.path ?? this.lastActiveFilePath;
+
       try {
         this.clearVaultModelWithEvents();
         this.vaultLogger?.log('INFO', 'Populating vault from remote...');
@@ -646,6 +649,8 @@ export default class RemoteSshMobilePlugin extends Plugin {
         this.pushMobilePreviewLog(`Vault populate error: ${errorMessage(popErr)}`);
         logger.warn('Vault population failed, continuing with empty file tree');
       }
+
+      await this.restoreLastActiveFile();
 
       this.state = SyncState.CONNECTED;
       const userLabel = MobileConnectionManager.formatUserLabel(this.settings);
@@ -909,6 +914,21 @@ export default class RemoteSshMobilePlugin extends Plugin {
 
   private isHiddenVaultPath(path: string): boolean {
     return path.split('/').some((seg) => seg.startsWith('.'));
+  }
+
+  private async restoreLastActiveFile(): Promise<void> {
+    const filePath = this.lastActiveFilePath;
+    if (!filePath) return;
+
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (!file || !(file instanceof TFile)) return;
+
+    try {
+      await this.app.workspace.openLinkText(filePath, '', { active: true });
+      this.vaultLogger?.log('INFO', 'Restored active file after reconnect', { path: filePath });
+    } catch (e) {
+      this.vaultLogger?.log('WARN', 'Failed to restore active file', { path: filePath, error: errorMessage(e) });
+    }
   }
 
   // ─── Vault population ───────────────────────────────────────────────────────
