@@ -593,6 +593,102 @@ export async function runCommandViaPalette(
 }
 
 /**
+ * Expand a folder in the File Explorer and wait until its children are
+ * actually IN the vault model.
+ *
+ * The remote tree is loaded lazily, one level per expand: connect only
+ * materialises the root's immediate children, and every folder below
+ * that is an initially-childless `TFolder` until it is opened
+ * (`LazyFolderLoader`). The product's hook for that is a delegated
+ * capture-phase click listener that reads
+ * `target.closest('.nav-folder-title')` and its `data-path`
+ * (`src/main.ts:923-924`) — so clicking exactly that element is not a UI
+ * convenience here, it IS the trigger. Dispatching to any other node (or
+ * calling an internal API) would test something the user cannot do.
+ *
+ * Waits on `vault.fileMap` rather than on rendered `.nav-file-title`
+ * nodes, for the same reason `waitForShadowVaultLoaded` does: headless
+ * Obsidian's File Explorer paint is lazy/virtualised under Xvfb and
+ * races, while the model is what the load actually produces.
+ */
+export async function expandFolderInExplorer(
+  page: Page,
+  folderPath: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const title = page.locator(`.nav-folder-title[data-path="${folderPath}"]`).first();
+  await title
+    .waitFor({ state: 'attached', timeout: Math.min(timeoutMs, 10_000) })
+    .catch(() => { /* absent title IS the finding — reported below */ });
+
+  if (await title.count() === 0) {
+    throw new Error(
+      `expandFolderInExplorer: no .nav-folder-title[data-path="${folderPath}"] in the ` +
+      'File Explorer — the folder was never materialised by the connect populate, ' +
+      `so there is nothing to expand.\n${await dumpFolderState(page, folderPath)}`,
+    );
+  }
+
+  await title.click();
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await countChildrenInFileMap(page, folderPath) >= 1) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  throw new Error(
+    `expandFolderInExplorer: "${folderPath}" still had no children in vault.fileMap ` +
+    `within ${timeoutMs}ms of clicking its .nav-folder-title — the lazy folder ` +
+    'load never landed.\n' +
+    (await dumpFolderState(page, folderPath)),
+  );
+}
+
+/** How many `fileMap` keys sit under `folderPath/`. */
+async function countChildrenInFileMap(page: Page, folderPath: string): Promise<number> {
+  return page
+    .evaluate((prefix) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      const keys = Object.keys(app?.vault?.fileMap ?? {});
+      return keys.filter((k) => k.startsWith(`${prefix}/`)).length;
+    }, folderPath)
+    .catch(() => 0);
+}
+
+/**
+ * What IS in `fileMap` around `folderPath`, for the timeout message. A
+ * bare "0 children" is ambiguous between "the folder isn't in the model
+ * at all" (populate bug) and "it's there but the expand didn't load it"
+ * (lazy-load bug); listing the folder itself, everything under its
+ * prefix, and the `data-path`s the explorer is actually rendering
+ * separates the two in one CI round.
+ */
+async function dumpFolderState(page: Page, folderPath: string): Promise<string> {
+  const state = await page
+    .evaluate((prefix) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      const keys = Object.keys(app?.vault?.fileMap ?? {});
+      return {
+        fileMapKeys: keys.length,
+        folderItself: keys.includes(prefix),
+        under: keys.filter((k) => k.startsWith(`${prefix}/`)).slice(0, 20),
+        sample: keys.slice(0, 20),
+        navFolderTitles: Array.from(document.querySelectorAll('.nav-folder-title'))
+          .map((el) => el.getAttribute('data-path'))
+          .slice(0, 20),
+      };
+    }, folderPath)
+    .catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+
+  return `vault.fileMap around "${folderPath}": ${JSON.stringify(state)}`;
+}
+
+/**
  * Diagnostic snapshot for the "File Explorer empty after a successful
  * SFTP connect+populate" failure. The bare Playwright "element(s) not
  * found" can't distinguish three very different root causes:

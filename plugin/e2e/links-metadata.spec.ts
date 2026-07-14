@@ -1,0 +1,506 @@
+import { test, expect, type Page } from '@playwright/test';
+import {
+  launchObsidian,
+  driveConnectFlow,
+  findShadowVaultPath,
+  waitForShadowVaultLoaded,
+  runCommandViaPalette,
+  expandFolderInExplorer,
+  type ObsidianHandle,
+} from './helpers/obsidian';
+import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
+import { RemoteVerifier } from './helpers/remote-verifier';
+import { assertSshdReachable } from './helpers/sshd';
+import { logPathFor } from './helpers/log-oracle';
+
+/**
+ * Wiki links, backlinks, and the metadata cache over a remote vault.
+ *
+ * Nothing in the suite covers Obsidian's METADATA layer today. Every existing
+ * spec stops at "the bytes are on the remote" / "the row is in the File
+ * Explorer". But a vault whose files exist and whose links do not resolve is
+ * not a working Obsidian — links, backlinks, graph, and Quick Switcher are the
+ * product. This file asserts that layer end-to-end, against a real remote.
+ *
+ * ── THE DEFECT THESE TESTS ENCODE ────────────────────────────────────────────
+ *
+ * `src/main.ts:972-973` (`populateVaultFromRemote`):
+ *
+ *     const lazy = this.settings.lazyFolderLoad !== false;
+ *     const walk = await walker.walk('', !lazy);
+ *
+ * `lazyFolderLoad` DEFAULTS TO TRUE (`src/constants.ts:51`), so the connect-time
+ * walk is NON-RECURSIVE: only the ROOT's immediate children are walked, and
+ * `VaultModelBuilder.insertFile` is therefore never called for anything living
+ * in a subfolder. Those files are absent from `app.vault.fileMap` ENTIRELY —
+ * not "present but unloaded", simply not there.
+ *
+ * Obsidian's `metadataCache` resolves `[[wiki links]]` against `fileMap` and
+ * nothing else. A link whose target is missing from `fileMap` cannot resolve;
+ * it lands in `unresolvedLinks` instead, produces no backlink, no graph edge,
+ * and its target cannot be reached from the Quick Switcher. So on a stock
+ * (default-settings) connection, EVERY note in EVERY subfolder is invisible to
+ * Obsidian's whole knowledge layer until the user happens to CLICK that folder
+ * in the File Explorer — the only thing that deepens the tree is the delegated
+ * `.nav-folder-title` click hook at `src/main.ts:919-928`, which calls
+ * `LazyFolderLoader.loadFolder`.
+ *
+ * That is the trade the lazy walk made — a fast connect on a huge vault — and
+ * it silently bought it by starving the metadata cache.
+ *
+ * ── WHICH TESTS ARE EXPECTED RED, AND WHAT THE FIX IS ────────────────────────
+ *
+ * Tests 1-4 and 7 (root-level links) should PASS: the root IS walked.
+ * Tests 5, 6b and 8 (anything below the root) are PREDICTED RED. They are
+ * written at FULL STRENGTH on purpose. They are not flaky, not aspirational,
+ * and MUST NOT be weakened, quarantined, or `.fixme`d to get the suite green —
+ * a green suite here would mean the suite is lying about a user-facing data
+ * defect ("my links are broken", "my note is not findable").
+ *
+ * The fix belongs in the PRODUCT, and there are exactly two shapes of it:
+ *
+ *   (a) EAGER / BACKGROUND FULL INDEX — keep the fast lazy first paint, then
+ *       walk the rest of the tree in the background and feed it to
+ *       `VaultModelBuilder`, so `fileMap` eventually holds the whole vault; or
+ *   (b) METADATA INVALIDATION ON LAZY INSERT — if the tree stays lazy, a late
+ *       `LazyFolderLoader` insert must tell Obsidian to re-resolve links against
+ *       the enlarged `fileMap`.
+ *
+ * Test 6 is the discriminator between those two and is written as two strict
+ * halves: (a) expanding the folder DOES get the file into `fileMap` (the lazy
+ * loader itself works), and (b) after that late insert, the link in a note that
+ * was already indexed resolves. If 6a goes green and 6b stays red, nothing
+ * re-runs link resolution after a lazy insert, and fix (b) alone is not enough
+ * — the maintainer needs (a), or (a) + (b).
+ *
+ * HARD-FAILS, never skips.
+ */
+
+const STAMP = Date.now().toString(36);
+
+// ── remote fixtures (seeded BEFORE connect, so the connect walk sees them) ────
+const A = `${STAMP}-A.md`;           // root note that links to B (root)
+const B = `${STAMP}-B.md`;           // root link target
+const C = `${STAMP}-C.md`;           // root note that links INTO the subfolder
+const D = `${STAMP}-D.md`;           // created LIVE, after connect (test 7)
+const SUB = `${STAMP}-sub`;          // subfolder — never walked at connect
+const DEEP = `${SUB}/Deep.md`;       // the note the whole defect is about
+const DEEP_LINKTEXT = `${SUB}/Deep`; // exactly what the `[[...]]` in C contains
+
+// Indexing is asynchronous (Obsidian re-resolves links off its own queue), so
+// every metadata assertion polls. 20 s is far past the observed settle time on a
+// warm connection; it exists so a RED is a real defect, not a slow machine.
+const META_TIMEOUT_MS = 20_000;
+
+let obsidian: ObsidianHandle;
+let scaffold: ScaffoldResult;
+let remote: RemoteVerifier;
+let shadowVaultPath: string;
+
+test.beforeAll(async () => {
+  test.setTimeout(180_000);
+
+  // HARD-FAIL, never skip: a down sshd is a broken harness and a broken connect
+  // is a broken plugin. Both must be red, not green-by-skipping.
+  await assertSshdReachable();
+
+  remote = new RemoteVerifier();
+  if (!(await remote.connect())) {
+    throw new Error(
+      'RemoteVerifier could not connect to the docker test sshd even though the ' +
+      'port is open. This spec hard-fails rather than skipping.',
+    );
+  }
+
+  // Seed BEFORE the connect. The whole point is what the connect-time walk does
+  // (and does not) put into `vault.fileMap`; a fixture written after connect
+  // would arrive via the live `fs.watch` → ChangeListener path instead and would
+  // not exercise the walk at all. (Test 7 deliberately uses that other path.)
+  await remote.writeFile(A, `# A\n\n[[${STAMP}-B]]\n`);
+  await remote.writeFile(B, '# B\n');
+  await remote.mkdirp(SUB);
+  await remote.writeFile(DEEP, '# Deep\n');
+  await remote.writeFile(C, `# C\n\n[[${DEEP_LINKTEXT}]]\n`);
+
+  scaffold = scaffoldTestVault();
+  obsidian = await launchObsidian(scaffold.vaultPath);
+
+  // Building blocks rather than `connectAndOpenShadow`, so we keep hold of the
+  // shadow vault PATH — `waitForShadowVaultLoaded` needs its log path.
+  await driveConnectFlow(obsidian.page);
+  shadowVaultPath = await findShadowVaultPath(scaffold.vaultPath, 15_000);
+  await obsidian.cleanup();
+  obsidian = await launchObsidian(shadowVaultPath);
+
+  // `launchObsidian` returns once the PLUGIN has loaded; the SSH connect, the
+  // adapter patch and `populateVaultFromRemote` all land later, at layout-ready.
+  // Every assertion below is about what that populate produced, so we must not
+  // race it.
+  await waitForShadowVaultLoaded(obsidian.page, logPathFor(shadowVaultPath), 30_000);
+});
+
+test.afterAll(async () => {
+  await obsidian?.cleanup();
+  if (remote) {
+    await Promise.allSettled([
+      remote.removeFile(A),
+      remote.removeFile(B),
+      remote.removeFile(C),
+      remote.removeFile(D),
+    ]);
+    await remote.rmrf(SUB).catch(() => { /* best effort */ });
+    await remote.disconnect();
+  }
+  scaffold?.cleanup();
+});
+
+test.beforeEach(() => {
+  // A remote round-trip plus asynchronous re-indexing; the config's default
+  // 120 s gets tight once several polls stack up inside one test.
+  test.setTimeout(180_000);
+});
+
+test.describe('wiki links, backlinks + metadata cache over a remote vault', () => {
+  /**
+   * FIRST for a reason: if the metadata cache never indexes the virtual vault
+   * AT ALL, that is a much larger finding than the lazy-folder defect and it
+   * makes every other test in this file moot. This is the canary.
+   */
+  test('1 — a root-level wiki link to an existing remote note RESOLVES', async () => {
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, A, B)).resolved, {
+        message:
+          `metadataCache.resolvedLinks["${A}"] never contained "${B}". Both notes are ` +
+          'at the ROOT of the remote vault, which the connect walk DOES cover — so if ' +
+          'this is red, the metadata cache is not indexing the virtual vault at all ' +
+          '(a bigger defect than the lazy-folder one the rest of this file is about).',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toContain(B);
+  });
+
+  test('2 — unresolved-link count is 0 for a link whose target EXISTS on the remote', async () => {
+    // The mirror image of test 1, and not redundant with it: a link can be BOTH
+    // resolved and (stale-ly) listed as unresolved, and a note rendering a
+    // dangling-link style is broken to the user even if `resolvedLinks` is right.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, A, B)).unresolved, {
+        message:
+          `metadataCache.unresolvedLinks["${A}"] is not empty — Obsidian still thinks ` +
+          `the link to "${B}" is dangling even though that note exists on the remote.`,
+        timeout: META_TIMEOUT_MS,
+      })
+      .toEqual([]);
+  });
+
+  test('3 — the backlink appears on the target note', async () => {
+    // The MODEL assertion is the primary one: `getBacklinksForFile` is what the
+    // backlinks pane, the graph and the outgoing-links pane all read. Asserting
+    // the model (not the pane's DOM) keeps this immune to headless Obsidian's
+    // lazy/virtualised sidebar paint under Xvfb — the same reason
+    // `waitForShadowVaultLoaded` asserts on the model rather than on nav rows.
+    await expect
+      .poll(() => backlinkSourcesFor(obsidian.page, B), {
+        message:
+          `metadataCache.getBacklinksForFile("${B}") never listed "${A}" as a source. ` +
+          'The forward link resolves (test 1) but the reverse index is empty — the ' +
+          'backlinks pane and the graph would both be blank for this note.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toContain(A);
+  });
+
+  test('4 — clicking a wiki link opens the target note', async () => {
+    // The end-to-end user gesture, not just the index: open A, switch to Reading
+    // view (Obsidian's default is LIVE PREVIEW — a CodeMirror mode in which
+    // `.markdown-preview-view` does not exist; see reflect.spec.ts test 5), then
+    // click the rendered anchor and assert the workspace actually navigated.
+    await fileLocator(obsidian.page, A).click();
+    await runCommandViaPalette(obsidian.page, 'Toggle reading view');
+
+    const link = obsidian.page.locator('.markdown-preview-view a.internal-link').first();
+    await expect(
+      link,
+      `no rendered a.internal-link in the reading view of "${A}" — the wiki link was ` +
+      'not even turned into a clickable anchor',
+    ).toBeVisible({ timeout: META_TIMEOUT_MS });
+    await link.click();
+
+    await expect
+      .poll(() => activeFilePath(obsidian.page), {
+        message:
+          `clicking the [[${STAMP}-B]] anchor in "${A}" did not navigate to "${B}" — ` +
+          'the link renders but does not open its target.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toBe(B);
+  });
+
+  /**
+   * THE HEADLINE DEFECT. PREDICTED RED.
+   *
+   * `C` sits at the root (so it IS walked and IS indexed) and links into
+   * `<STAMP>-sub/`, which the lazy connect walk never descends into. `Deep.md` is
+   * therefore not in `fileMap`, so the link cannot resolve.
+   *
+   * The two assertions before the headline one are DIAGNOSTIC — they narrow the
+   * cause to a specific layer so one CI round is conclusive instead of
+   * speculative. Note their DIRECTION: they assert what a CORRECT build does
+   * (`Deep.md` IS in the vault model; the link is NOT dangling), not what the
+   * current build does. Asserting that `getAbstractFileByPath(...)` *is null*
+   * would pin today's bug as the expectation and would go red the day someone
+   * fixes it — a test that defends a defect. These fail today for the same root
+   * cause as the headline assertion, and each names the layer that broke:
+   *
+   *   5a red  → the file never reached `vault.fileMap`     (the walk starved it)
+   *   5b red  → Obsidian classified the link as dangling   (the consequence)
+   *   5c red  → the link does not resolve                  (the user-visible harm)
+   */
+  test('5 — a wiki link into a SUBFOLDER resolves', async () => {
+    const probe = await probeLinks(obsidian.page, C, DEEP);
+    const diag =
+      `\n  fileMap has "${DEEP}": ${probe.inFileMap}` +
+      `\n  resolvedLinks["${C}"]: ${JSON.stringify(probe.resolved)}` +
+      `\n  unresolvedLinks["${C}"]: ${JSON.stringify(probe.unresolved)}` +
+      `\n  fileMap sample: ${JSON.stringify(probe.fileMapSample)}`;
+
+    // 5a — the vault model must contain the note at all.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).inFileMap, {
+        message:
+          `app.vault.getAbstractFileByPath("${DEEP}") is null: the note is not in the ` +
+          'vault model AT ALL. The connect walk is non-recursive while `lazyFolderLoad` ' +
+          'is on (its default — src/main.ts:972-973, src/constants.ts:51), so ' +
+          'VaultModelBuilder.insertFile was never called for anything under a ' +
+          'subfolder. Nothing downstream — links, backlinks, graph, Quick Switcher — ' +
+          `can see this file.${diag}`,
+        timeout: META_TIMEOUT_MS,
+      })
+      .toBe(true);
+
+    // 5b — and therefore Obsidian must not be treating the link as dangling.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).unresolved, {
+        message:
+          `metadataCache.unresolvedLinks["${C}"] lists "${DEEP_LINKTEXT}" as dangling, ` +
+          `but "${DEEP}" exists on the remote. Obsidian resolves links against ` +
+          'vault.fileMap and the lazy walk never put the target there, so the user sees ' +
+          `a broken link to a note that is plainly there in their own vault.${diag}`,
+        timeout: META_TIMEOUT_MS,
+      })
+      .toEqual([]);
+
+    // 5c — the headline.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).resolved, {
+        message:
+          `metadataCache.resolvedLinks["${C}"] never contained "${DEEP}". Links into ` +
+          'subfolders do not resolve on a default connection. Fix this in the PRODUCT ' +
+          '— a background/eager full walk, or metadata invalidation on lazy insert — ' +
+          `NOT by weakening this assertion.${diag}`,
+        timeout: META_TIMEOUT_MS,
+      })
+      .toContain(DEEP);
+  });
+
+  /**
+   * The DISCRIMINATOR between the two candidate fixes. Both halves strict.
+   *
+   *   6a — expanding the folder in the File Explorer (the ONLY user gesture that
+   *        deepens the tree: `src/main.ts:919-928` → `LazyFolderLoader.loadFolder`)
+   *        gets `Deep.md` into `fileMap`. Expected GREEN — the lazy loader works.
+   *   6b — after that late insert, C's link resolves. UNKNOWN, leaning RED:
+   *        nothing in the product obviously re-runs link resolution for notes
+   *        already indexed when their target arrives late.
+   *
+   * 6a green + 6b red ⇒ "invalidate metadata on lazy insert" is REQUIRED, and even
+   * then every unexpanded folder stays invisible — i.e. the real fix is a
+   * background full index.
+   */
+  test('6 — expanding the folder in File Explorer makes the subfolder link resolve', async () => {
+    await expandFolderInExplorer(obsidian.page, SUB, META_TIMEOUT_MS);
+
+    // 6a — the lazy load itself landed.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).inFileMap, {
+        message:
+          `after clicking the "${SUB}" folder title, "${DEEP}" is STILL not in ` +
+          'vault.fileMap — LazyFolderLoader.loadFolder did not materialise the folder\'s ' +
+          'children, so the one escape hatch from the lazy walk is broken too.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toBe(true);
+
+    // 6b — and the metadata cache noticed.
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, C, DEEP)).resolved, {
+        message:
+          `"${DEEP}" is now in vault.fileMap (6a passed) but ` +
+          `metadataCache.resolvedLinks["${C}"] still does not contain it. The lazy ` +
+          'insert enlarged the vault WITHOUT making Obsidian re-resolve the links of ' +
+          'notes that were already indexed — so even a user who dutifully expands every ' +
+          'folder keeps broken links. This is the "invalidate metadata on lazy insert" ' +
+          'half of the fix.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toContain(DEEP);
+  });
+
+  /**
+   * Guards the LIVE-CHANGE → metadata chain, which nothing currently covers:
+   * `reflect.spec.ts` proves a remote write reaches the File Explorer, but not
+   * that it reaches the metadata cache. A note you can see but cannot link to is
+   * still broken. Root-level throughout, so the lazy walk is not implicated —
+   * this one is expected GREEN, and exists to stay that way.
+   */
+  test('7 — a note created remotely at root is linkable immediately', async () => {
+    await remote.writeFile(D, '# D\n');
+
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, A, D)).inFileMap, {
+        message:
+          `"${D}" was written on the remote but never reached vault.fileMap — the ` +
+          'fs.watch → RPC push → ChangeListener → vault-model chain did not deliver the ' +
+          'create.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toBe(true);
+
+    // Now make an ALREADY-INDEXED note point at the newly arrived one. This is the
+    // ordinary "I just made a note and linked to it" flow.
+    await remote.writeFile(A, `# A\n\n[[${STAMP}-B]]\n\n[[${STAMP}-D]]\n`);
+
+    await expect
+      .poll(async () => (await probeLinks(obsidian.page, A, D)).resolved, {
+        message:
+          `metadataCache.resolvedLinks["${A}"] never contained "${D}" after "${A}" was ` +
+          `rewritten on the remote to link to it. "${D}" IS in the vault model, so the ` +
+          'file itself landed — but the modify did not make Obsidian re-parse the source ' +
+          'note, so a live remote edit does not update the link index.',
+        timeout: META_TIMEOUT_MS,
+      })
+      .toContain(D);
+  });
+
+  /**
+   * PREDICTED RED — same root cause as test 5, different user-visible cost.
+   *
+   * Broken links are only half the damage. The Quick Switcher (and Search, and
+   * the graph) enumerate `fileMap`, so a note in an unexpanded subfolder is not
+   * merely unlinkable, it is UNREACHABLE: the user types its name and Obsidian
+   * tells them it does not exist. This is what the bug actually feels like.
+   */
+  test('8 — Quick Switcher can reach a note in an unexpanded subfolder', async () => {
+    await runCommandViaPalette(obsidian.page, 'Open quick switcher');
+
+    const input = obsidian.page
+      .locator('.prompt input, input.prompt-input, .suggestion-container input')
+      .first();
+    await expect(input, 'the Quick Switcher never opened').toBeVisible({ timeout: 10_000 });
+    await input.fill('');
+    await obsidian.page.keyboard.type('Deep', { delay: 20 });
+
+    await expect(
+      obsidian.page.locator('.prompt .suggestion-item', { hasText: 'Deep' }).first(),
+      `the Quick Switcher offers no suggestion for "Deep" — "${DEEP}" exists on the ` +
+      'remote but lives in a subfolder the lazy connect walk never descended into ' +
+      '(src/main.ts:972-973), so it is absent from vault.fileMap and the switcher ' +
+      'cannot enumerate it. To the user, the note simply does not exist.',
+    ).toBeVisible({ timeout: META_TIMEOUT_MS });
+  });
+});
+
+// ─── helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Locate a File Explorer entry by filename. Obsidian sets `data-path` on every
+ * `.nav-file-title`, so the selector is stable across themes / language packs.
+ */
+function fileLocator(page: Page, fileName: string) {
+  return page.locator(`.nav-file-title[data-path$="${fileName}"]`);
+}
+
+interface LinkProbe {
+  /** Is `target` in `vault.fileMap` at all? The precondition for ANY resolution. */
+  inFileMap: boolean;
+  /** `Object.keys(metadataCache.resolvedLinks[src])` — target PATHS. */
+  resolved: string[];
+  /** `Object.keys(metadataCache.unresolvedLinks[src])` — dangling LINK TEXTS. */
+  unresolved: string[];
+  /** First 30 `fileMap` keys, so a failure message is conclusive on its own. */
+  fileMapSample: string[];
+}
+
+/**
+ * One round-trip snapshot of everything a link assertion needs. Read inside a
+ * single `evaluate` so the three facts are mutually consistent — a poll that
+ * fetched them separately could catch the cache mid-update and report a state
+ * that never actually existed.
+ */
+async function probeLinks(page: Page, src: string, target: string): Promise<LinkProbe> {
+  return page.evaluate(
+    ({ src, target }) => {
+      const app = (window as unknown as {
+        app?: {
+          vault?: {
+            fileMap?: Record<string, unknown>;
+            getAbstractFileByPath?: (p: string) => unknown;
+          };
+          metadataCache?: {
+            resolvedLinks?: Record<string, Record<string, number>>;
+            unresolvedLinks?: Record<string, Record<string, number>>;
+          };
+        };
+      }).app;
+      const mc = app?.metadataCache;
+      return {
+        inFileMap: app?.vault?.getAbstractFileByPath?.(target) != null,
+        resolved: Object.keys(mc?.resolvedLinks?.[src] ?? {}),
+        unresolved: Object.keys(mc?.unresolvedLinks?.[src] ?? {}),
+        fileMapSample: Object.keys(app?.vault?.fileMap ?? {}).slice(0, 30),
+      };
+    },
+    { src, target },
+  );
+}
+
+/**
+ * Source paths that link INTO `targetPath`, straight from
+ * `metadataCache.getBacklinksForFile(tfile).data` — the same structure the
+ * backlinks pane renders.
+ *
+ * `.data` is a `Map` on current Obsidian and a plain object on older builds;
+ * both shapes are handled rather than pinned, because which one we get is an
+ * Obsidian-version detail with no bearing on the behaviour under test. Returns
+ * `[]` when the target is not in the vault model at all — which the caller's
+ * assertion then correctly reports as "no backlinks".
+ */
+async function backlinkSourcesFor(page: Page, targetPath: string): Promise<string[]> {
+  return page.evaluate((p) => {
+    const app = (window as unknown as {
+      app?: {
+        vault?: { getAbstractFileByPath?: (path: string) => unknown };
+        metadataCache?: {
+          getBacklinksForFile?: (file: unknown) => { data?: unknown } | undefined;
+        };
+      };
+    }).app;
+    const tfile = app?.vault?.getAbstractFileByPath?.(p);
+    if (!tfile) return [];
+    const data = app?.metadataCache?.getBacklinksForFile?.(tfile)?.data;
+    if (!data) return [];
+    const asMap = data as { keys?: () => Iterable<string> };
+    if (typeof asMap.keys === 'function') return Array.from(asMap.keys());
+    return Object.keys(data as Record<string, unknown>);
+  }, targetPath);
+}
+
+/** `app.workspace.getActiveFile()?.path` — what the user is actually looking at. */
+async function activeFilePath(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const app = (window as unknown as {
+      app?: { workspace?: { getActiveFile?: () => { path?: string } | null } };
+    }).app;
+    return app?.workspace?.getActiveFile?.()?.path ?? null;
+  });
+}
