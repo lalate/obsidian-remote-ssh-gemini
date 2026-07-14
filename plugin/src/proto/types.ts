@@ -76,7 +76,8 @@ export type MethodName =
   | 'fs.unwatch'
   | 'chat.start'
   | 'chat.cancel'
-  | 'chat.status';
+  | 'chat.status'
+  | 'provider.info';
 
 export interface MethodMap {
   'auth':            { params: AuthParams;                     result: AuthResult };
@@ -111,6 +112,7 @@ export interface MethodMap {
   'chat.start':      { params: ChatStartParams;       result: ChatStartResult };
   'chat.cancel':     { params: ChatCancelParams;       result: ChatCancelResult };
   'chat.status':     { params: Record<string, never>; result: ChatStatusResult };
+  'provider.info':   { params: ProviderInfoParams;     result: ProviderInfoResult };
 }
 
 export type Params<M extends MethodName> = MethodMap[M]['params'];
@@ -258,14 +260,13 @@ export interface AiSessionMeta {
 }
 
 export interface ChatStartParams {
-  /** Vault-relative path to the chat markdown file. */
   filePath: string;
-  /** LLM CLI binary to execute (e.g. "opencode"). */
   tool: string;
-  /** Args passed to the tool binary before the prompt. */
   args: string[];
-  /** Session metadata to embed in the file frontmatter. */
   sessionMeta?: AiSessionMeta;
+  /** Remote absolute path used as working directory for the LLM tool.
+   *  Falls back to the vault root when empty. */
+  codebase?: string;
 }
 
 export interface ChatStartResult {
@@ -326,6 +327,17 @@ export interface ChatStatusResult {
   models?: LlmModel[];
   /** Available agents (from opencode agent list). */
   agents?: LlmAgent[];
+}
+
+export interface ProviderInfoParams {
+  tool: string;
+}
+
+export interface ProviderInfoResult {
+  tool: string;
+  name: string;
+  info?: Record<string, unknown>;
+  error?: string;
 }
 
 // ─── server-push notifications ───────────────────────────────────────────────

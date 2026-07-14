@@ -176,6 +176,7 @@ func run(args []string) (int, error) {
 	disp.Handle("chat.start", handlers.RequireAuth(chatStarter.Start()))
 	disp.Handle("chat.cancel", handlers.RequireAuth(chatStarter.Cancel()))
 	disp.Handle("chat.status", handlers.RequireAuth(handlers.NewChatStatusHandler(capManager, llmRegistry).Status()))
+	disp.Handle("provider.info", handlers.RequireAuth(handlers.NewProviderInfoHandler(llmRegistry).Handle()))
 	// fs.* handlers are gated behind session auth.
 	// Read side.
 	disp.Handle("fs.stat", handlers.RequireAuth(handlers.FsStat(absRoot)))

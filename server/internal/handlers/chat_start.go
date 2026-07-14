@@ -134,7 +134,7 @@ func (r *ChatStarter) Start() rpc.Handler {
 		if strings.TrimSpace(p.Tool) == "" {
 			return nil, rpc.ErrInvalidParams("chat.start: tool is required")
 		}
-		go r.runChat(absPath, p.Tool, p.Args, p.SessionMeta)
+		go r.runChat(absPath, p.Tool, p.Args, p.SessionMeta, p.Codebase)
 		return proto.ChatStartResult{Accepted: true}, nil
 	}
 }
@@ -166,7 +166,7 @@ func (r *ChatStarter) Cancel() rpc.Handler {
 	}
 }
 
-func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.AiSessionMeta) {
+func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.AiSessionMeta, codebase string) {
 	// Look up provider first to get session field name.
 	provider := r.registry.Get(tool)
 	sessionFieldName := ""
@@ -242,11 +242,9 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 				}
 				if chunk != "" {
 					accumulated += chunk
-					// Write incremental update to the chat file.
-					// The plugin's 1.5s polling picks up these changes in real time.
 					r.writeStreamingChunk(absPath, accumulated)
 				}
-			})
+			}, codebase)
 
 		r.mu.Lock()
 		r.cancelFn = nil
@@ -275,6 +273,9 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		// Fallback: raw exec.Command for unknown / custom tools.
 		fullArgs := append(args, prompt)
 		cmd := exec.Command(tool, fullArgs...)
+		if codebase != "" {
+			cmd.Dir = codebase
+		}
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr

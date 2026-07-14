@@ -335,6 +335,9 @@ type ChatStartParams struct {
 	Args []string `json:"args,omitempty"`
 	// SessionMeta carries metadata to embed in the file frontmatter.
 	SessionMeta *AiSessionMeta `json:"sessionMeta,omitempty"`
+	// Codebase is the remote absolute path to use as working directory
+	// for the LLM tool. When empty, the vault root is used.
+	Codebase string `json:"codebase,omitempty"`
 }
 
 // ChatStartResult is returned synchronously — the actual work runs async.
@@ -404,6 +407,19 @@ type ChatStatusResult struct {
 	Models []LlmModel `json:"models,omitempty"`
 	// Agents lists available agents (from opencode agent list).
 	Agents []LlmAgent `json:"agents,omitempty"`
+}
+
+// ProviderInfoParams requests provider-specific metadata.
+type ProviderInfoParams struct {
+	Tool string `json:"tool"`
+}
+
+// ProviderInfoResult carries provider-specific metadata as raw JSON.
+type ProviderInfoResult struct {
+	Tool     string          `json:"tool"`
+	Name     string          `json:"name"`
+	Info     json.RawMessage `json:"info,omitempty"`
+	Error    string          `json:"error,omitempty"`
 }
 
 // ─── server-push notifications ──────────────────────────────────────────────

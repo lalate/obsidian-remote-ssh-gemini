@@ -41,7 +41,7 @@ func (p *OllamaProvider) Command() string {
 // Execute runs `ollama run <model> <prompt>` where the model name is
 // expected to be the first element of args. sessionID is ignored — ollama
 // does not support session continuation.
-func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []string, _ string) (*LlmResponse, error) {
+func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []string, _ string, workDir string) (*LlmResponse, error) {
 	binary := p.Command()
 	if binary == "" {
 		return &LlmResponse{Error: "ollama binary not found"}, nil
@@ -60,6 +60,9 @@ func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []stri
 	ollamaArgs = append(ollamaArgs, prompt)
 
 	cmd := exec.CommandContext(ctx, binary, ollamaArgs...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -78,8 +81,8 @@ func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []stri
 
 // ExecuteStream runs ollama and calls cb with the full response as a single
 // chunk. Ollama does not support incremental streaming via the CLI.
-func (p *OllamaProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback) (*LlmResponse, error) {
-	resp, err := p.Execute(ctx, prompt, args, sessionID)
+func (p *OllamaProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback, workDir string) (*LlmResponse, error) {
+	resp, err := p.Execute(ctx, prompt, args, sessionID, workDir)
 	if err != nil {
 		return resp, err
 	}

@@ -13,6 +13,20 @@ function assertRpcClient(c: RemoteFsClient): asserts c is RpcRemoteFsClient {
 
 const POLL_INTERVAL_MS = 1500;
 
+/**
+ * Replace editor content via CM6 transaction without triggering vault.modify().
+ * This avoids the race where editor.setValue() → auto-save → fs_write
+ * overwrites streaming content from the server (which holds flock).
+ */
+function setEditorContentSilent(editor: Editor, content: string): void {
+  const cm = (editor as unknown as { cm?: { dispatch: (spec: { changes: { from: number; to: number; insert: string } }) => void } }).cm;
+  if (cm?.dispatch) {
+    cm.dispatch({ changes: { from: 0, to: editor.getValue().length, insert: content } });
+  } else {
+    editor.setValue(content);
+  }
+}
+
 export class ChatController {
   private isProcessing = false;
   /** Tool name from settings (override) — empty means use server-discovered default. */
@@ -142,6 +156,7 @@ export class ChatController {
         tool,
         args: argsList,
         sessionMeta,
+        codebase: this.getVaultRoot(),
       });
       logger.info('Chat chatStart result', { result });
       if (!result.accepted) {
@@ -180,21 +195,18 @@ export class ChatController {
         logger.info('Chat poll content changed', { pollCount, oldLines, newLines, textLen: content.length });
         this.lastPollContent = content;
 
-        // Check if editor has unsaved user input — if so, skip overwriting
         const currentEditorValue = editor.getValue();
         if (currentEditorValue === content || currentEditorValue.length < content.length) {
-          // Editor is in-sync or has less content (no pending user input) — safe to update
-          editor.setValue(content);
+          setEditorContentSilent(editor, content);
           const editorLineCount = editor.lineCount();
           const cursorAfterSet = editor.getCursor();
-          logger.info('Chat poll editor.setValue done', { pollCount, editorLineCount, cursor: cursorAfterSet });
+          logger.info('Chat poll editor.setContent done', { pollCount, editorLineCount, cursor: cursorAfterSet });
           editor.setCursor(editor.lastLine(), 0);
           editor.scrollIntoView(
             { from: { line: editor.lastLine(), ch: 0 }, to: { line: editor.lastLine(), ch: 0 } },
             true,
           );
         } else {
-          // Editor has MORE content than server — user is typing, don't overwrite
           logger.info('Chat poll editor has pending input, skipping setValue', {
             pollCount,
             editorLen: currentEditorValue.length,

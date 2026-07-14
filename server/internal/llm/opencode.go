@@ -106,13 +106,16 @@ func (p *OpenCodeProvider) buildArgs(sessionID string, args []string, prompt str
 // Execute runs `opencode run --attach <http-addr> --format json --pure` with
 // optional `--session` for continuing a prior conversation, and parses the
 // JSON event stream for the response text and session ID.
-func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error) {
+func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string, sessionID string, workDir string) (*LlmResponse, error) {
 	binary, fullArgs, err := p.buildArgs(sessionID, args, prompt)
 	if err != nil {
 		return &LlmResponse{Error: err.Error()}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, binary, fullArgs...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -142,13 +145,16 @@ func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []st
 
 // ExecuteStream runs opencode and calls cb incrementally as text chunks
 // arrive from the JSON event stream. Uses StdoutPipe for real-time reading.
-func (p *OpenCodeProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback) (*LlmResponse, error) {
+func (p *OpenCodeProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback, workDir string) (*LlmResponse, error) {
 	binary, fullArgs, err := p.buildArgs(sessionID, args, prompt)
 	if err != nil {
 		return &LlmResponse{Error: err.Error()}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, binary, fullArgs...)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return &LlmResponse{Error: fmt.Sprintf("stdout pipe: %v", err)}, nil

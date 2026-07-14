@@ -30,13 +30,13 @@ type LlmProvider interface {
 	// provider-specific CLI flags supplied by the user (e.g. model name).
 	// sessionID is an optional opencode session ID for continuing a previous
 	// conversation; providers that don't support session continuation ignore it.
-	Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error)
+	Execute(ctx context.Context, prompt string, args []string, sessionID string, workDir string) (*LlmResponse, error)
 
 	// ExecuteStream runs the LLM and calls cb incrementally as text chunks
 	// are generated. The final LlmResponse is returned as with Execute.
 	// Providers that don't support streaming fall back to calling Execute
 	// once and emitting the full response as a single chunk.
-	ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback) (*LlmResponse, error)
+	ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback, workDir string) (*LlmResponse, error)
 
 	// Healthy probes whether the provider is installed and (if applicable)
 	// its server process is reachable.
