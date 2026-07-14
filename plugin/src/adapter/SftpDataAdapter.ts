@@ -21,6 +21,8 @@ function isThumbnailEligible(vaultPath: string): boolean {
   if (dot < 0) return false;
   return THUMBNAIL_EXTENSIONS.has(vaultPath.slice(dot + 1).toLowerCase());
 }
+import * as fs from 'fs';
+import * as nodePath from 'path';
 import type { RemoteFsClient } from './RemoteFsClient';
 import type { WriterReflector } from './WriterReflector';
 import type { LocalOpRegistry } from './LocalOpRegistry';
@@ -869,6 +871,50 @@ export class SftpDataAdapter {
    * than whatever the cache holds now (which is the synthetic
    * mtime from the offline cache update).
    */
+  /**
+   * Mirror a successful `<configDir>/**` write onto the LOCAL shadow disk
+   * (#342 / #429 — "plugin settings are not kept after restarting the vault").
+   *
+   * Why this is load-bearing, and why a pull-on-connect cannot replace it:
+   * Obsidian loads community plugins during startup, and each plugin's
+   * `onload()` calls `Plugin.loadData()` — which reads
+   * `<configDir>/plugins/<id>/data.json` — BEFORE remote-ssh has connected
+   * over SSH and patched the adapter. That read therefore always hits the
+   * real `FileSystemAdapter`, i.e. the local shadow disk. We cannot get in
+   * front of it: the SSH connect is async and happens at layout-ready.
+   *
+   * So the local disk must ALREADY be correct at startup. Previously nothing
+   * ever wrote it: `saveData()` went through the patched adapter straight to
+   * the remote and the local copy stayed empty, so every restart booted the
+   * plugin on DEFAULTS — which the plugin then saved back, destroying the
+   * real settings on the remote too.
+   *
+   * Write-through fixes that at the source: local disk is a warm cache of the
+   * remote, so whichever way the shadow window is launched (Connect from the
+   * source window, or reopening the vault directly) the startup read sees the
+   * settings this device last saved. The remote per-device copy stays the
+   * source of truth and the cross-session backup.
+   *
+   * Scope is deliberately `<configDir>/**` only — the vault's NOTE tree stays
+   * virtual (served from the remote, never mirrored to disk); mirroring it
+   * would defeat the whole shadow-vault design. Best-effort: a failure here
+   * must never fail the write that already landed on the remote.
+   */
+  private writeThroughConfig(normalizedPath: string, data: Buffer): void {
+    if (!this.shadowBasePath || !this.pathMapper) return;
+    const rel = normalizedPath.startsWith('/') ? normalizedPath.slice(1) : normalizedPath;
+    if (!rel.startsWith(`${this.pathMapper.configDir}/`)) return;
+    try {
+      const abs = nodePath.join(this.shadowBasePath, ...rel.split('/'));
+      fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, data);
+    } catch (e) {
+      // The remote write already succeeded — the session is correct either
+      // way; only the next restart's warm start is degraded.
+      logger.warn(`writeThroughConfig: "${rel}" not mirrored locally (${errorMessage(e)})`);
+    }
+  }
+
   private async writeBuffer(
     normalizedPath: string,
     data: Buffer,
@@ -899,6 +945,10 @@ export class SftpDataAdapter {
     } finally {
       this.transferTracker?.end(txId);
     }
+
+    // The remote now holds `writtenData`. Mirror it onto the local shadow
+    // disk too, so the next Obsidian start reads the real settings (#342/#429).
+    this.writeThroughConfig(normalizedPath, writtenData);
 
     let mtime = 0;
     try {

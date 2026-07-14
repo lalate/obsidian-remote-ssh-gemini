@@ -1496,3 +1496,103 @@ describe('SftpDataAdapter — writer reflect (#341)', () => {
     expect(fake.files['/v/a.md']).toBeUndefined();
   });
 });
+
+// ─── config write-through (#342 / #429) ─────────────────────────────────────
+//
+// Obsidian loads community plugins at startup and each `onload()` calls
+// `Plugin.loadData()` — reading `.obsidian/plugins/<id>/data.json` off the
+// LOCAL shadow disk — BEFORE remote-ssh has connected over SSH and patched the
+// adapter. Nothing used to write that local copy (saveData() went straight to
+// the remote), so every restart booted plugins on DEFAULTS, which they then
+// saved back, destroying the real settings on the remote too.
+//
+// The adapter must therefore mirror `<configDir>/**` writes to local disk.
+describe('SftpDataAdapter — config write-through to the local shadow disk (#342/#429)', () => {
+  let readCache: ReadCache;
+  let dirCache: DirCache;
+  let shadow: string;
+
+  beforeEach(async () => {
+    readCache = new ReadCache({ maxBytes: 4096 });
+    dirCache = new DirCache({ ttlMs: 10_000 });
+    shadow = await fs.mkdtemp(path.join(os.tmpdir(), 'shadow-wt-'));
+  });
+
+  it('mirrors a plugin data.json write onto local disk, and sends it to the per-device remote path', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      shadow,
+    );
+
+    await adapter.write('.obsidian/plugins/claudian/data.json', '{"model":"x"}');
+
+    // Local: the exact path Obsidian reads at the next startup.
+    const local = path.join(shadow, '.obsidian', 'plugins', 'claudian', 'data.json');
+    expect(await fs.readFile(local, 'utf-8')).toBe('{"model":"x"}');
+
+    // Remote: redirected into THIS device's private subtree, so a second
+    // device never collides on the same file.
+    expect(fake.files['/srv/vault/.obsidian/user/host-a/plugins/claudian/data.json']).toBeDefined();
+    expect(fake.files['/srv/vault/.obsidian/plugins/claudian/data.json']).toBeUndefined();
+  });
+
+  it('mirrors the core per-device config files too', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      shadow,
+    );
+
+    await adapter.write('.obsidian/app.json', '{"promptDelete":false}');
+
+    expect(await fs.readFile(path.join(shadow, '.obsidian', 'app.json'), 'utf-8'))
+      .toBe('{"promptDelete":false}');
+  });
+
+  it('does NOT mirror ordinary vault notes — the note tree stays virtual', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      shadow,
+    );
+
+    await adapter.write('Notes/foo.md', '# hi');
+
+    // The remote got it...
+    expect(fake.files['/srv/vault/Notes/foo.md']).toBeDefined();
+    // ...but nothing was mirrored to the local shadow disk.
+    await expect(fs.stat(path.join(shadow, 'Notes', 'foo.md'))).rejects.toThrow();
+  });
+
+  it('a local mirror failure never fails the write that already landed remotely', async () => {
+    const fake = makeFakeClient();
+    // Shadow root is a FILE, so creating any directory beneath it fails.
+    const bogus = path.join(shadow, 'not-a-dir');
+    await fs.writeFile(bogus, 'x');
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      bogus,
+    );
+
+    await expect(
+      adapter.write('.obsidian/plugins/claudian/data.json', '{"a":1}'),
+    ).resolves.toBeUndefined();
+
+    // The remote write still succeeded — only the warm-start cache is degraded.
+    expect(fake.files['/srv/vault/.obsidian/user/host-a/plugins/claudian/data.json']).toBeDefined();
+  });
+
+  it('is a no-op when no shadow base path is wired (unit-test default)', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'),
+    );
+    await expect(adapter.write('.obsidian/app.json', '{}')).resolves.toBeUndefined();
+  });
+});
