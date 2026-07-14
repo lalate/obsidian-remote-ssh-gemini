@@ -25,6 +25,7 @@ import { VaultModelBuilder } from './vault/VaultModelBuilder';
 import { FsChangeListener } from './vault/FsChangeListener';
 import { BulkWalker } from './vault/BulkWalker';
 import { LazyFolderLoader } from './vault/LazyFolderLoader';
+import { BackgroundIndexer, type IndexProgress } from './vault/BackgroundIndexer';
 import { RenameLeafFollower } from './vault/RenameLeafFollower';
 import { ObsidianRegistry } from './shadow/ObsidianRegistry';
 import { ShadowVaultBootstrap } from './shadow/ShadowVaultBootstrap';
@@ -868,6 +869,12 @@ export default class RemoteSshPlugin extends Plugin {
     // Drop lazy-load state — the walker it captured is now disconnected. A
     // stray File-Explorer click after this finds a null loader and no-ops.
     this.lazyLoader = null;
+    // Same for the background full-index pass: its walker rides the transport
+    // we're about to tear down, so stop it before the socket goes. `cancel()`
+    // makes it bail at its next checkpoint (one folder / one depth level away),
+    // and dropping the reference makes its late progress emits no-ops.
+    this.backgroundIndexer?.cancel();
+    this.backgroundIndexer = null;
     await this.conn.disconnectTransport();
     this.setState(SyncState.IDLE);
     if (this.settings.activeProfileId !== null) {
@@ -912,6 +919,66 @@ export default class RemoteSshPlugin extends Plugin {
   /** Lazy per-folder loader (deepen-on-expand); null until a lazy connect. */
   private lazyLoader: LazyFolderLoader | null = null;
   private lazyExpandHookInstalled = false;
+
+  /** Background full-tree index; null until a lazy connect, dropped on disconnect. */
+  private backgroundIndexer: BackgroundIndexer | null = null;
+
+  /**
+   * Start (or restart) the background full-index pass that completes the vault
+   * model behind the lazy root-level populate.
+   *
+   * Fire-and-forget by design: connect returns immediately and the indexer
+   * trickles the rest of the tree into `vault.fileMap`, yielding to the renderer
+   * between units. Any previous pass (e.g. from the connect before a reconnect)
+   * is cancelled first, so only one indexer is ever live and a stale one can't
+   * write progress over the new one's.
+   */
+  private startBackgroundIndex(): void {
+    this.backgroundIndexer?.cancel();
+    const indexer: BackgroundIndexer = new BackgroundIndexer({
+      makeWalker: () => this.makeWalker(),
+      makeBuilder: () => new VaultModelBuilder(this.app.vault, { TFile, TFolder }),
+      // Folders the indexer has fully materialised don't need re-walking when the
+      // user later expands them in File Explorer.
+      markLoaded: (path) => this.lazyLoader?.markLoaded(path),
+      onProgress: (p) => this.onIndexProgress(indexer, p),
+    });
+    this.backgroundIndexer = indexer;
+    void indexer.start();
+  }
+
+  /**
+   * Surface indexing honestly. Until the pass completes, search / graph /
+   * backlinks really ARE incomplete, so say so in the status bar rather than
+   * letting a vault that has registered 12 of 30 000 files look "ready".
+   *
+   * Non-nagging: status-bar text while it runs (no modal, no toast spam), and a
+   * single Notice when it finishes. A cancelled pass says nothing — the user
+   * disconnected; they don't need a report.
+   */
+  private onIndexProgress(indexer: BackgroundIndexer, p: IndexProgress): void {
+    // A pass superseded by a reconnect, or one still unwinding after disconnect,
+    // must not paint over the live session's status bar.
+    if (this.backgroundIndexer !== indexer) return;
+    if (this.state !== SyncState.CONNECTED) return;
+    if (!p.done) {
+      this.statusBar?.update(
+        SyncState.CONNECTED,
+        `Remote SSH: Indexing… ${p.files} files`,
+      );
+      return;
+    }
+    this.statusBar?.update(SyncState.CONNECTED);
+    if (p.cancelled) return;
+    // Nothing added means the connect populate had already registered the whole
+    // vault (a flat, root-only tree) — there was no gap, so there's nothing to
+    // announce. Announcing "0 files indexed" would be noise on every connect.
+    if (p.files + p.folders === 0) return;
+    new Notice(
+      `Remote SSH: vault index complete — ${p.files} files, ${p.folders} folders. ` +
+      'Search, graph and links now cover the whole vault.',
+    );
+  }
 
   /** A fresh BulkWalker bound to the current session's transport + ignore list. */
   private makeWalker(): BulkWalker {
@@ -1012,7 +1079,16 @@ export default class RemoteSshPlugin extends Plugin {
       );
       this.lazyLoader.markLoaded('');
       this.installLazyExpandHook();
+      // The root level is on screen and connect is done — now index the REST of
+      // the tree in the background. Without this, everything below depth 1 stays
+      // out of `vault.fileMap` until the user happens to click the folder open,
+      // and Obsidian resolves links/embeds/search only against `fileMap` — so a
+      // link into an unexpanded subfolder silently fails to resolve. Deliberately
+      // NOT awaited: connect must stay fast, and the indexer yields between units.
+      this.startBackgroundIndex();
     }
+    // `lazyFolderLoad: false` needs no background pass — the walk above was
+    // already the full recursive tree, so `fileMap` is complete on return.
 
     const summary =
       `${result.filesAdded}f + ${result.foldersAdded}d built, ` +

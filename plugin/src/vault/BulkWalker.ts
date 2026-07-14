@@ -167,6 +167,20 @@ export class BulkWalker {
   }
 
   /**
+   * True when the daemon's paginated `fs.walk` is available, i.e. a full
+   * recursive `walk('', true)` costs one RPC per 50 000-entry page rather than
+   * one `adapter.list` round-trip per directory.
+   *
+   * Callers that must CHOOSE a traversal strategy up-front need this, because
+   * `walk()` only reports which path it took (`BulkWalkResult.source`) after the
+   * expensive part is already done. `BackgroundIndexer` uses it to pick between
+   * one recursive walk and a yielding folder-at-a-time BFS.
+   */
+  hasFastPath(): boolean {
+    return this.canUseFastPath();
+  }
+
+  /**
    * Drop dot-prefixed entries so hidden files/dirs never reach the File
    * Explorer — matching Obsidian's own default of hiding dot-names. An entry
    * is hidden when ANY of its path segments starts with `.`, so a dot-DIR
