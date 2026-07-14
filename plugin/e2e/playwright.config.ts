@@ -27,6 +27,14 @@ export default defineConfig({
   // workflow sets E2E_DEMO=1 to opt it back in.
   testIgnore: process.env.E2E_DEMO ? [] : ['**/demo.spec.ts'],
   timeout: 120_000,
+  // Playwright's DEFAULT actionTimeout is 0 — wait FOREVER. With Obsidian's
+  // virtualised File Explorer under Xvfb a node can be *attached but never
+  // actionable* (hover popovers swallow pointer events, rows paint lazily), so
+  // a bare `.click()` blocked until the whole test timed out: three minutes
+  // burned with NO message, which reads as "the product hung" when in fact the
+  // harness was waiting. Bound it — an unactionable element now fails with
+  // Playwright's own locator diagnostic, well inside the 120 s test budget.
+  actionTimeout: 30_000,
   retries: 1,
   workers: 1, // Obsidian is a single-instance app
   use: {
