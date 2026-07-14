@@ -152,6 +152,8 @@ func run(args []string) (int, error) {
 	extRunner := handlers.NewExtensionRunner(capManager, logStore, absRoot)
 	disp.Handle("extension.schema", handlers.RequireAuth(extRunner.Schema()))
 	disp.Handle("extension.invoke", handlers.RequireAuth(extRunner.Invoke()))
+	disp.Handle("extension.kill", handlers.RequireAuth(extRunner.Kill()))
+	disp.Handle("cli.kill", handlers.RequireAuth(extRunner.KillCompat()))
 	// fs.* handlers are gated behind session auth.
 	// Read side.
 	disp.Handle("fs.stat", handlers.RequireAuth(handlers.FsStat(absRoot)))
