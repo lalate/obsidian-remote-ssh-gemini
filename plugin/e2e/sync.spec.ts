@@ -7,6 +7,7 @@ import {
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
 import { RemoteVerifier } from './helpers/remote-verifier';
+import { assertSshdReachable } from './helpers/sshd';
 
 /**
  * E2E sync tests — verify that local Obsidian operations (create,
@@ -22,13 +23,17 @@ import { RemoteVerifier } from './helpers/remote-verifier';
  * via a separate SFTP connection (RemoteVerifier) to confirm the
  * changes landed.
  *
- * The entire suite is skipped if Docker sshd is unreachable.
+ * This suite HARD-FAILS — it never skips. It used to `test.skip` both
+ * when sshd was down and when `connectAndOpenShadow` THREW, so a
+ * genuinely broken connect reported CI green: exactly the failure mode
+ * `helpers/sshd.ts` exists to stop ("that is how 1.0.49 shipped
+ * broken"). The connect-* specs were migrated to `assertSshdReachable`;
+ * this spec and `reflect.spec.ts` were left behind. Not any more.
  */
 
 let obsidian: ObsidianHandle;
 let scaffold: ScaffoldResult;
 let remote: RemoteVerifier;
-let connected = false;
 
 const STAMP = Date.now().toString(36);
 const TEST_NOTE = `e2e-test-${STAMP}.md`;
@@ -36,12 +41,18 @@ const TEST_CONTENT_INITIAL = `# E2E Test Note\n\nCreated by sync.spec.ts at ${ST
 const TEST_CONTENT_EDITED = `# E2E Test Note (edited)\n\nEdited by sync.spec.ts at ${STAMP}\n`;
 
 test.beforeAll(async () => {
-  // Check remote connectivity first — skip everything if sshd is down
+  // HARD-FAIL, never skip: a down sshd is a broken harness and a broken
+  // connect is a broken plugin. Both must be red, not green-by-skipping.
+  await assertSshdReachable();
+
   remote = new RemoteVerifier();
   const remoteOk = await remote.connect();
   if (!remoteOk) {
-    test.skip(true, 'Docker test sshd is not running — skipping sync tests');
-    return;
+    throw new Error(
+      'RemoteVerifier could not connect to the docker test sshd even though ' +
+      'the port is open — check the test key / container state. This spec ' +
+      'hard-fails rather than skipping.',
+    );
   }
 
   scaffold = scaffoldTestVault();
@@ -55,12 +66,11 @@ test.beforeAll(async () => {
   // visible). The previous heuristic — `connected = items > 0` —
   // returned true on the scaffold's seeded local_demo*.md even
   // when the connect command was a silent no-op.
-  try {
-    obsidian = await connectAndOpenShadow(obsidian, scaffold.vaultPath);
-    connected = true;
-  } catch (e) {
-    test.skip(true, `connectAndOpenShadow failed: ${String(e)}`);
-  }
+  //
+  // Deliberately NOT wrapped in try/catch: if the connect flow throws,
+  // the plugin is broken and this suite must go RED. Swallowing it into
+  // a `test.skip` is what let a broken connect ship green.
+  obsidian = await connectAndOpenShadow(obsidian, scaffold.vaultPath);
 });
 
 test.afterAll(async () => {
@@ -74,9 +84,9 @@ test.afterAll(async () => {
 });
 
 test.describe('Remote sync verification', () => {
-  test.beforeEach(() => {
-    if (!connected) test.skip(true, 'Not connected to remote');
-  });
+  // No `beforeEach` skip gate: reaching here means `beforeAll` completed,
+  // which means the connect succeeded. If it didn't, beforeAll threw and
+  // the whole suite is already red — which is the point.
 
   test('create — new note appears on remote', async () => {
     const { page } = obsidian;
