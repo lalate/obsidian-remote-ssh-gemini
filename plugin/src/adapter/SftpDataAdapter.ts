@@ -904,9 +904,46 @@ export class SftpDataAdapter {
     if (!this.shadowBasePath || !this.pathMapper) return;
     const rel = normalizedPath.startsWith('/') ? normalizedPath.slice(1) : normalizedPath;
     if (!rel.startsWith(`${this.pathMapper.configDir}/`)) return;
+
+    // Containment must be checked on the RESOLVED path, not the raw string:
+    // the prefix test above is a plain `startsWith`, so `.obsidian/x/../../../
+    // evil` would sail past it and `join` would then resolve the `..` right
+    // out of the shadow root. `resolve` also collapses win32 backslashes,
+    // which would otherwise be a second way to smuggle a separator through.
+    // The vault path reaches us from Obsidian / other plugins — not trusted.
+    const root = nodePath.resolve(this.shadowBasePath);
+    const abs = nodePath.resolve(root, rel);
+    if (abs !== root && !abs.startsWith(root + nodePath.sep)) {
+      logger.warn(`writeThroughConfig: refusing to mirror outside the shadow root: "${rel}"`);
+      return;
+    }
+
     try {
-      const abs = nodePath.join(this.shadowBasePath, ...rel.split('/'));
-      fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
+      // NEVER write through a symlink. `ShadowVaultBootstrap.installPlugin`
+      // symlinks remote-ssh's OWN main.js / manifest.json / styles.css in the
+      // shadow vault back to the SOURCE vault's real files, and
+      // `fs.writeFileSync` follows symlinks — mirroring one would overwrite
+      // the source vault's plugin install and brick it. That is exactly the
+      // bug class #455 just fixed; do not reintroduce it here.
+      //
+      // Skipping costs nothing: the remote write already succeeded, and for
+      // plugin CODE the local copy is owned by the pull/push binary
+      // round-trip (`PLUGIN_BINARY_FILES`), not by this cache.
+      if (fs.lstatSync(abs, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        logger.warn(`writeThroughConfig: "${rel}" is a symlink — not mirrored (would clobber its target)`);
+        return;
+      }
+      // Same hazard one level up: a symlinked ANCESTOR (e.g. a stale
+      // whole-dir plugin symlink from an older build) would redirect the
+      // write out of the shadow root even though `abs` looked contained.
+      const dir = nodePath.dirname(abs);
+      const realDir = fs.existsSync(dir) ? fs.realpathSync(dir) : null;
+      if (realDir && realDir !== root && !realDir.startsWith(root + nodePath.sep)) {
+        logger.warn(`writeThroughConfig: "${rel}" resolves outside the shadow root via a symlinked parent — not mirrored`);
+        return;
+      }
+
+      fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(abs, data);
     } catch (e) {
       // The remote write already succeeded — the session is correct either

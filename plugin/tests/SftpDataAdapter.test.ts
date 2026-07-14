@@ -1595,4 +1595,58 @@ describe('SftpDataAdapter — config write-through to the local shadow disk (#34
     );
     await expect(adapter.write('.obsidian/app.json', '{}')).resolves.toBeUndefined();
   });
+
+  // ShadowVaultBootstrap.installPlugin symlinks remote-ssh's OWN
+  // main.js/manifest.json/styles.css in the shadow vault back to the SOURCE
+  // vault's real files. fs.writeFileSync FOLLOWS symlinks, so mirroring one
+  // would overwrite the source vault's plugin install and brick it — the exact
+  // bug class #455 fixed. The mirror must refuse.
+  it('never writes THROUGH a symlink (would clobber the source vault — #455 regression guard)', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      shadow,
+    );
+
+    // The "source vault" real file, living OUTSIDE the shadow root.
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'source-vault-'));
+    const sourceMain = path.join(sourceDir, 'main.js');
+    await fs.writeFile(sourceMain, 'SOURCE-REAL-FILE');
+
+    // The shadow's plugin dir symlinks main.js at that source file.
+    const shadowPluginDir = path.join(shadow, '.obsidian', 'plugins', 'remote-ssh');
+    await fs.mkdir(shadowPluginDir, { recursive: true });
+    await fs.symlink(sourceMain, path.join(shadowPluginDir, 'main.js'));
+
+    await adapter.write('.obsidian/plugins/remote-ssh/main.js', 'NEW-BUNDLE-BYTES');
+
+    // The remote still got the write...
+    expect(fake.files['/srv/vault/.obsidian/plugins/remote-ssh/main.js']).toBeDefined();
+    // ...but the SOURCE vault's real file is untouched.
+    expect(await fs.readFile(sourceMain, 'utf-8')).toBe('SOURCE-REAL-FILE');
+    // ...and the symlink is still a symlink (not replaced by a real file).
+    expect((await fs.lstat(path.join(shadowPluginDir, 'main.js'))).isSymbolicLink()).toBe(true);
+  });
+
+  // The `startsWith(configDir + '/')` guard runs on the RAW string, before
+  // `..` is resolved — so it must not be the only containment check.
+  it('refuses to mirror a traversal path that escapes the shadow root', async () => {
+    const fake = makeFakeClient();
+    const adapter = new SftpDataAdapter(
+      fake.client, '/srv/vault', readCache, dirCache, 'v',
+      new PathMapper('host-a', '.obsidian'), null, null, null, null,
+      shadow,
+    );
+
+    const victim = path.join(shadow, '..', `escaped-${path.basename(shadow)}.txt`);
+    await expect(fs.stat(victim)).rejects.toThrow(); // not there yet
+
+    // Starts with `.obsidian/` so it passes the raw prefix test, but resolves
+    // out of the shadow root.
+    await adapter.write(`.obsidian/../escaped-${path.basename(shadow)}.txt`, 'pwned');
+
+    // Nothing was written outside the shadow root.
+    await expect(fs.stat(victim)).rejects.toThrow();
+  });
 });
