@@ -3,11 +3,13 @@ import {
   launchObsidian,
   driveConnectFlow,
   findShadowVaultPath,
+  waitForShadowVaultLoaded,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
 import { RemoteVerifier } from './helpers/remote-verifier';
 import { assertSshdReachable } from './helpers/sshd';
+import { logPathFor } from './helpers/log-oracle';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -92,6 +94,14 @@ test.beforeAll(async () => {
   shadowVaultPath = await findShadowVaultPath(scaffold.vaultPath, 15_000);
   await obsidian.cleanup();
   obsidian = await launchObsidian(shadowVaultPath);
+
+  // MUST wait for the shadow window to finish connecting before touching the
+  // adapter. `launchObsidian` only waits for the plugin to LOAD; the SSH
+  // connect + adapter patch land later, at layout-ready. Writing before that
+  // hits the stock FileSystemAdapter and dies with a local-disk ENOENT (it
+  // does not mkdir -p) — which is itself a neat demonstration of the very
+  // window #342/#429 lives in: at startup the adapter is NOT ours yet.
+  await waitForShadowVaultLoaded(obsidian.page, logPathFor(shadowVaultPath), 30_000);
 });
 
 test.afterAll(async () => {
@@ -193,13 +203,17 @@ test.describe('plugin settings survive an Obsidian restart (#342 / #429)', () =>
     obsidian = await launchObsidian(shadowVaultPath);
 
     // ── 5. What a startup loadData() would see is the REAL settings ────────
-    // Read the file straight off disk: that is precisely what Obsidian hands a
-    // plugin's loadData() during onload(), before remote-ssh has connected.
+    // Asserted BEFORE waiting for the connect, deliberately. `launchObsidian`
+    // returns once the plugin has LOADED but before the SSH connect + adapter
+    // patch — i.e. we are standing exactly in the pre-connect window where
+    // Obsidian calls each plugin's `loadData()`. Whatever is on local disk
+    // right now IS what a third-party plugin gets handed. It must be the real
+    // settings, not nothing.
     expect(
       fs.existsSync(localProbePath()),
-      'after restart the local data.json is gone — loadData() would return ' +
-      'defaults, and the plugin would then save those defaults over the real ' +
-      'settings on the remote (#342 / #429)',
+      'after restart the local data.json is gone — in this exact window ' +
+      'loadData() would return defaults, and the plugin would then save those ' +
+      'defaults over the real settings on the remote (#342 / #429)',
     ).toBe(true);
 
     expect(
@@ -207,13 +221,19 @@ test.describe('plugin settings survive an Obsidian restart (#342 / #429)', () =>
       'settings did not survive the restart',
     ).toEqual(PROBE_SETTINGS);
 
-    // ── 6. And the remote copy was NOT clobbered by a defaults re-save ─────
+    // ── 6. Let the session fully reconnect, then check for the data loss ───
+    // This is where the old bug did its damage: the plugin (booted on
+    // defaults) saves them, the adapter gets patched, and the defaults land on
+    // the remote on top of the real settings. Give it the chance to happen.
+    await waitForShadowVaultLoaded(obsidian.page, logPathFor(shadowVaultPath), 30_000);
+
     const after = await readPerDeviceProbe();
     expect(after, 'per-device settings vanished from the remote after restart').not.toBeNull();
     expect(
       JSON.parse(after!.body),
-      'the remote copy was overwritten during restart — this is the data-loss ' +
-      'half of #429 (plugin boots on defaults, saves them back over the remote)',
+      'the remote copy was overwritten during the restart — this is the ' +
+      'data-loss half of #429 (plugin boots on defaults, then saves them back ' +
+      'over the real settings on the remote)',
     ).toEqual(PROBE_SETTINGS);
   });
 });
