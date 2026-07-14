@@ -1,5 +1,6 @@
 import { App, Editor, EditorPosition, EditorSuggest, EditorSuggestContext, EditorSuggestTriggerInfo, MarkdownView, MarkdownFileInfo, Notice, Plugin, TFile, TFolder } from 'obsidian';
 import { ChatController } from './ChatController';
+import { ChatSessionListModal } from './ChatSessionListModal';
 import { DEFAULT_CHAT_TEMPLATE } from './ChatParser';
 import { RpcRemoteFsClient } from '../adapter/RpcRemoteFsClient';
 import { SftpRemoteFsClient } from '../adapter/SftpRemoteFsClient';
@@ -57,6 +58,14 @@ export class ChatUI {
       name: 'Check LLM status',
       callback: () => {
         void this.handleCheckLlmStatus();
+      },
+    });
+
+    this.plugin.addCommand({
+      id: 'open-chat-session-list',
+      name: 'Open chat session list',
+      callback: () => {
+        new ChatSessionListModal(this.app).open();
       },
     });
 
