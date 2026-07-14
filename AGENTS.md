@@ -51,6 +51,37 @@ obsidian-remote-ssh/
 - **Versioning**: `npm version prerelease --preid=beta`, manifests in `plugin/`
 - **Daemon signing**: Sigstore cosign keyless OIDC for release binaries
 
+### iOS Fork Branch Strategy (lalate/obsidian-remote-ssh-gemini)
+
+```
+feat/ios-ai-chat ─── feature source code (TypeScript, Go, tests)
+     │
+     │  rebase onto release/ios
+     │
+release/ios ──────── release artifacts only (plugin/main.js, manifest.json)
+     │
+     │  merged into main for upstream sync
+     │
+main ─────────────── stable releases
+```
+
+| Branch | What goes here | What does NOT go here |
+|--------|---------------|----------------------|
+| `feat/ios-ai-chat` | Source code (.ts, .go), tests, docs, scripts | Built binaries, compiled artifacts |
+| `release/ios` | `plugin/main.js`, `plugin/manifest.json`, `plugin/versions.json` | Source code changes, test files |
+| `main` | Stable releases via promotion from `next` | Feature work, pre-release builds |
+
+**Workflow:**
+1. Feature work commits to `feat/ios-ai-chat` (source + tests)
+2. `feat/ios-ai-chat` is rebased onto `release/ios` to stay current
+3. `release/ios` gets only built artifacts (main.js) after `node esbuild.ios.mjs production`
+4. `release/ios` → GitHub Release → BRAT distribution
+
+**Do NOT commit:**
+- `server/obsidian-remote-server` — compiled Go binary (gitignored)
+- `server/restart-daemon.sh` — local utility script
+- `node_modules/`, `coverage/`, `dist/` — standard ignores
+
 ## ANTI-PATTERNS (THIS PROJECT)
 
 - Do NOT use `any` type in TypeScript — strict mode enforced
