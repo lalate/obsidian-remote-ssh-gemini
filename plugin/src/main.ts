@@ -58,6 +58,18 @@ import { telemetry, telemetryLogPath } from "./util/Telemetry";
 /** GitHub `owner/repo` the daemon binaries are released from. */
 const DAEMON_RELEASE_REPO = 'sotashimozono/obsidian-remote-ssh';
 
+/**
+ * Everything this plugin keeps OUTSIDE any vault, on every OS:
+ * `~/.obsidian-remote/` — the shadow `vaults/` themselves, plus the
+ * per-device, never-synced `state/` (the community-plugins base
+ * snapshots; see `ShadowVaultBootstrap.communityPluginsBasePath`).
+ * `os.homedir()` resolves at runtime — no hardcoded user.
+ */
+const shadowStateRoot = (): string => path.join(os.homedir(), '.obsidian-remote');
+
+/** Where shadow vaults live: `~/.obsidian-remote/vaults/`. */
+const shadowVaultsDir = (): string => path.join(shadowStateRoot(), 'vaults');
+
 export default class RemoteSshPlugin extends Plugin {
   settings: PluginSettings = DEFAULT_SETTINGS;
 
@@ -622,16 +634,23 @@ export default class RemoteSshPlugin extends Plugin {
       // #429 / #342 residual: round-trip the enabled community-plugins
       // list. Pull first so plugins set up on the remote load in the
       // shadow vault (the marketplace installer then fetches any missing
-      // binaries); then push the merged result so a plugin present only
-      // locally reaches the remote for other machines. Pushing *after*
-      // the pull is safe — the local list is now the union, so it can
-      // never drop a plugin the remote already had. Kept out of the
-      // verbatim shared-config set because `remote-ssh` must be
-      // force-preserved through the merge (a verbatim copy of a remote
-      // list omitting it would disable this very plugin).
+      // binaries); then push the converged result so a plugin enabled —
+      // or UNINSTALLED — only here reaches the remote for other machines.
+      // Kept out of the verbatim shared-config set because `remote-ssh`
+      // must be force-preserved through the merge (a verbatim copy of a
+      // remote list omitting it would disable this very plugin).
+      //
+      // Both halves take this device's BASE snapshot: the converged list
+      // as of the last successful round-trip HERE. It is what turns the
+      // old monotonic union into a real 3-way merge, so a local uninstall
+      // propagates instead of being resurrected by the next pull. The
+      // pull only reads it; the push commits it once both sides agree.
+      const cpBasePath = ShadowVaultBootstrap.communityPluginsBasePath(
+        shadowStateRoot(), profile.id,
+      );
       try {
-        await ShadowVaultBootstrap.pullCommunityPlugins(da, remoteConfigDir, localConfigDir);
-        await ShadowVaultBootstrap.pushCommunityPlugins(da, remoteConfigDir, localConfigDir);
+        await ShadowVaultBootstrap.pullCommunityPlugins(da, remoteConfigDir, localConfigDir, cpBasePath);
+        await ShadowVaultBootstrap.pushCommunityPlugins(da, remoteConfigDir, localConfigDir, cpBasePath);
       } catch (e) {
         logger.warn(
           `runAutoConnect(${tag}): community-plugins round-trip failed: ${errorMessage(e)}`,
@@ -1073,12 +1092,12 @@ export default class RemoteSshPlugin extends Plugin {
     }
     this.shadowSpawnInFlight = true;
 
-    // Shadow vaults live under ~/.obsidian-remote/vaults/ on every
-    // OS. os.homedir() resolves at runtime — no hardcoded user.
-    const baseDir = path.join(os.homedir(), '.obsidian-remote', 'vaults');
-
+    // Shadow vaults live under ~/.obsidian-remote/vaults/ on every OS,
+    // alongside ~/.obsidian-remote/state/ (never-synced per-device state).
     const registry = new ObsidianRegistry(ObsidianRegistry.defaultConfigPath());
-    const bootstrap = new ShadowVaultBootstrap(baseDir, sourcePluginDir, registry);
+    const bootstrap = new ShadowVaultBootstrap(
+      shadowVaultsDir(), sourcePluginDir, registry, shadowStateRoot(),
+    );
     const spawner = new WindowSpawner();
     const manager = new ShadowVaultManager(bootstrap, spawner);
 
@@ -1206,7 +1225,18 @@ export default class RemoteSshPlugin extends Plugin {
     const pull = (async () => {
       await client.connect(profile);
       await ShadowVaultBootstrap.pullSharedObsidianConfig(reader, remoteConfigDir, localConfigDir);
-      await ShadowVaultBootstrap.pullCommunityPlugins(reader, remoteConfigDir, localConfigDir);
+      // Same base as the shadow window's own round-trip will use (same
+      // device, same profile), so a removal another machine made is
+      // applied here too and the window boots on the converged list.
+      // `pullCommunityPlugins` never WRITES the base — only the push
+      // does, once both sides hold it — so this pre-spawn pull cannot
+      // make the real connect's push mistake this device's local
+      // additions for remote removals, and re-running the merge over the
+      // same base is idempotent: no removal is ever double-applied.
+      await ShadowVaultBootstrap.pullCommunityPlugins(
+        reader, remoteConfigDir, localConfigDir,
+        ShadowVaultBootstrap.communityPluginsBasePath(shadowStateRoot(), profile.id),
+      );
       const enabledIds = ShadowVaultBootstrap.readEnabledPluginIds(localConfigDir);
       await ShadowVaultBootstrap.pullPluginBinaries(reader, remoteConfigDir, localConfigDir, enabledIds);
     })();
