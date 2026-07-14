@@ -294,6 +294,23 @@ type ExtensionKillResult struct {
 	Killed       bool   `json:"killed"`
 }
 
+// ─── server.update ──────────────────────────────────────────────────────────
+
+// ServerUpdateParams are the inputs to server.update.
+type ServerUpdateParams struct {
+	// Version is the desired release tag to update to.
+	// When empty the daemon fetches the latest from GitHub.
+	Version string `json:"version,omitempty"`
+}
+
+// ServerUpdateResult is returned by server.update on success.
+type ServerUpdateResult struct {
+	// Version is the release tag that was downloaded.
+	Version string `json:"version"`
+	// Restarting is true when the daemon has scheduled a restart.
+	Restarting bool `json:"restarting"`
+}
+
 // ─── chat (server-side AI processing) ───────────────────────────────────────
 
 // AiSessionMeta carries session metadata written into the YAML frontmatter
@@ -355,6 +372,24 @@ type ChatToolStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
+// LlmModel describes one LLM model available via the opencode provider.
+type LlmModel struct {
+	// ID is the model identifier (e.g. "opencode/big-pickle").
+	ID string `json:"id"`
+	// Provider is the provider name (e.g. "opencode").
+	Provider string `json:"provider,omitempty"`
+	// Name is the human-readable name (e.g. "Big Pickle").
+	Name string `json:"name,omitempty"`
+}
+
+// LlmAgent describes one agent available via the opencode provider.
+type LlmAgent struct {
+	// Name is the agent name (e.g. "auto", "architect").
+	Name string `json:"name"`
+	// Role describes the agent's role (e.g. "primary", "subagent").
+	Role string `json:"role,omitempty"`
+}
+
 // ChatStatusResult reports the health of the LLM toolchain.
 type ChatStatusResult struct {
 	// Tools lists every configured LLM tool and its health.
@@ -365,6 +400,10 @@ type ChatStatusResult struct {
 	ServerPort int `json:"serverPort,omitempty"`
 	// Healthy is true when at least one tool is available and running.
 	Healthy bool `json:"healthy"`
+	// Models lists available LLM models (from opencode models).
+	Models []LlmModel `json:"models,omitempty"`
+	// Agents lists available agents (from opencode agent list).
+	Agents []LlmAgent `json:"agents,omitempty"`
 }
 
 // ─── server-push notifications ──────────────────────────────────────────────
@@ -504,4 +543,6 @@ const (
 	ErrorProtocolVersionTooOld = -32021
 	ErrorExtensionDenied       = -32030
 	ErrorBinaryHashMismatch    = -32031
+	ErrorUpdateInProgress      = -32040
+	ErrorUpdateFailed          = -32041
 )

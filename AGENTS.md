@@ -154,3 +154,14 @@ The script:
 - Mobile WebSocket relay bridges mobile clients through a relay server
 - AI Chat: server writes response via opencode CLI; plugin polls vault file (1.5s)
 - Plugin dynamically discovers LLM tool config via `chat.status` RPC (`ChatToolStatus`)
+
+## ACTIVE DECISIONS
+
+See `.omo/decisions/` for full context.
+
+| # | Decision | Status | Phase |
+|---|----------|--------|-------|
+| 001 | AI Chat architecture — layer separation | **Decided** | v1 active, v2/v3 planned |
+
+Current v1 work: streaming + model/agent selection UI + server.update RPC + iOS release script.
+Next (v2): provider_info RPC for provider-specific metadata, codebase path config.

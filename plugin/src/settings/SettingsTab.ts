@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import { telemetry, telemetryLogPath, type TelemetryRecord } from '../util/Telemetry';
 import type RemoteSshPlugin from '../main';
+import type { LlmModel, LlmAgent } from '../proto/types';
 import { ProfileForm } from './ProfileForm';
 import type { SshProfile } from '../types';
 import {
@@ -180,6 +181,87 @@ export class SettingsTab extends PluginSettingTab {
           this.plugin.settings.llmToolName = v.trim() || 'gemini';
           await this.plugin.saveSettings();
         }));
+
+    const modelSetting = new Setting(containerEl)
+      .setName('LLM model')
+      .setDesc(this.plugin.settings.llmModel
+        ? `Using: ${this.plugin.settings.llmModel}`
+        : 'Model identifier passed as --model. Leave empty for default.');
+
+    const modelInput = modelSetting.addDropdown(d => {
+      d.addOption('', 'Default (server-side)');
+      d.setValue(this.plugin.settings.llmModel ?? '');
+      d.onChange(async v => {
+        this.plugin.settings.llmModel = v || undefined;
+        await this.plugin.saveSettings();
+        modelSetting.setDesc(this.plugin.settings.llmModel
+          ? `Using: ${this.plugin.settings.llmModel}`
+          : 'Model identifier passed as --model. Leave empty for default.');
+      });
+    });
+
+    const agentSetting = new Setting(containerEl)
+      .setName('LLM agent')
+      .setDesc(this.plugin.settings.llmAgent
+        ? `Using: ${this.plugin.settings.llmAgent}`
+        : 'Agent name passed as --agent. Leave empty for default.');
+
+    const agentInput = agentSetting.addDropdown(d => {
+      d.addOption('', 'Default (server-side)');
+      d.setValue(this.plugin.settings.llmAgent ?? '');
+      d.onChange(async v => {
+        this.plugin.settings.llmAgent = v || undefined;
+        await this.plugin.saveSettings();
+        agentSetting.setDesc(this.plugin.settings.llmAgent
+          ? `Using: ${this.plugin.settings.llmAgent}`
+          : 'Agent name passed as --agent. Leave empty for default.');
+      });
+    });
+
+    void this.populateModelAgentDropdowns(modelInput, agentInput, modelSetting, agentSetting);
+  }
+
+  /**
+   * Async fetch of model/agent lists from the daemon. Adds server-provided
+   * options to the dropdowns on arrival. Silently no-ops when not connected
+   * or when the RPC call fails — the dropdowns stay with only "Default".
+   */
+  private async populateModelAgentDropdowns(
+    modelDropdown: import('obsidian').DropdownComponent,
+    agentDropdown: import('obsidian').DropdownComponent,
+    modelSetting: import('obsidian').Setting,
+    agentSetting: import('obsidian').Setting,
+  ): Promise<void> {
+    const p = this.plugin as { getChatModelAgents?: () => Promise<{ models?: LlmModel[]; agents?: LlmAgent[] } | null> };
+    if (typeof p.getChatModelAgents !== 'function') return;
+    const result = await p.getChatModelAgents();
+    if (!result) return;
+
+    if (result.models && result.models.length > 0) {
+      const current = this.plugin.settings.llmModel;
+      modelDropdown.addOption('', 'Default (server-side)');
+      for (const m of result.models) {
+        const label = m.name || m.id;
+        modelDropdown.addOption(m.id, label);
+      }
+      // Restore the selected value after re-populating options
+      if (current && result.models.some(m => m.id === current)) {
+        modelDropdown.setValue(current);
+      }
+      modelSetting.setDesc(current ? `Using: ${current}` : `Pick from ${result.models.length} available models`);
+    }
+
+    if (result.agents && result.agents.length > 0) {
+      const current = this.plugin.settings.llmAgent;
+      agentDropdown.addOption('', 'Default (server-side)');
+      for (const a of result.agents) {
+        agentDropdown.addOption(a.name, a.name);
+      }
+      if (current && result.agents.some(a => a.name === current)) {
+        agentDropdown.setValue(current);
+      }
+      agentSetting.setDesc(current ? `Using: ${current}` : `Pick from ${result.agents.length} available agents`);
+    }
   }
 
   private renderTelemetryPanel(containerEl: HTMLElement) {

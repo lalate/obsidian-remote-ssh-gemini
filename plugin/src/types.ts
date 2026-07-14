@@ -203,6 +203,16 @@ export interface PluginSettings {
    */
   llmToolArgs?: Record<string, string>;
   /**
+   * Selected LLM model identifier (e.g. "opencode/big-pickle").
+   * When set, passed as --model to the opencode CLI.
+   */
+  llmModel?: string;
+  /**
+   * Selected agent name (e.g. "auto", "architect").
+   * When set, passed as --agent to the opencode CLI.
+   */
+  llmAgent?: string;
+  /**
    * Shadow-vault marker (Phase 4). When set, the plugin's
    * `onLayoutReady` callback finds the matching profile and
    * automatically connects to it, then runs `VaultModelBuilder` to

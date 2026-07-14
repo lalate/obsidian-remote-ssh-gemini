@@ -238,6 +238,7 @@ type MobilePreviewPlugin = Plugin & {
     note: string;
   }) => string;
   clearMobilePreviewLogs: () => Promise<void>;
+  getChatModelAgents?: () => Promise<{ models?: Array<{ id: string; provider?: string; name?: string }>; agents?: Array<{ name: string; role?: string }> } | null>;
 };
 
 export class MobileSettingsTab extends PluginSettingTab {
@@ -412,7 +413,7 @@ export class MobileSettingsTab extends PluginSettingTab {
     });
 
     const llmPlugin = this.pluginRef as Plugin & {
-      settings: { llmToolName?: string; llmToolArgs?: Record<string, string> };
+      settings: { llmToolName?: string; llmToolArgs?: Record<string, string>; llmModel?: string; llmAgent?: string };
       saveSettings: () => Promise<void>;
     };
 
@@ -441,6 +442,36 @@ export class MobileSettingsTab extends PluginSettingTab {
             await llmPlugin.saveSettings();
           } catch (_) { /* invalid JSON during typing */ }
         }));
+
+    new Setting(containerEl)
+      .setName('LLM model')
+      .setDesc('Model identifier passed as --model. Leave empty for default.');
+
+    const modelDropdown = new Setting(containerEl)
+      .addDropdown(d => {
+        d.addOption('', 'Default (server-side)');
+        d.setValue(llmPlugin.settings.llmModel ?? '');
+        d.onChange(async v => {
+          llmPlugin.settings.llmModel = v || undefined;
+          await llmPlugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName('LLM agent')
+      .setDesc('Agent name passed as --agent. Leave empty for default.');
+
+    const agentDropdown = new Setting(containerEl)
+      .addDropdown(d => {
+        d.addOption('', 'Default (server-side)');
+        d.setValue(llmPlugin.settings.llmAgent ?? '');
+        d.onChange(async v => {
+          llmPlugin.settings.llmAgent = v || undefined;
+          await llmPlugin.saveSettings();
+        });
+      });
+
+    void this.populateMobileModelAgentDropdowns(modelDropdown, agentDropdown);
 
     new Setting(containerEl)
       .setName('Relay probe')
@@ -771,6 +802,45 @@ export class MobileSettingsTab extends PluginSettingTab {
     if (logs.length > 0) {
       const pre = containerEl.createEl('pre', { cls: 'remote-ssh-log-pre' });
       pre.textContent = logs.join('\n');
+    }
+  }
+
+  private async populateMobileModelAgentDropdowns(
+    modelSetting: import('obsidian').Setting,
+    agentSetting: import('obsidian').Setting,
+  ): Promise<void> {
+    if (!this.pluginRef.getChatModelAgents) return;
+    const result = await this.pluginRef.getChatModelAgents();
+    if (!result) return;
+
+    const modelDropdown = modelSetting.components.find(
+      (c): c is import('obsidian').DropdownComponent => c instanceof (require('obsidian') as typeof import('obsidian')).DropdownComponent,
+    );
+    const agentDropdown = agentSetting.components.find(
+      (c): c is import('obsidian').DropdownComponent => c instanceof (require('obsidian') as typeof import('obsidian')).DropdownComponent,
+    );
+
+    if (modelDropdown && result.models && result.models.length > 0) {
+      const current = (this.pluginRef as Plugin & { settings: { llmModel?: string } }).settings.llmModel;
+      modelDropdown.addOption('', 'Default (server-side)');
+      for (const m of result.models) {
+        const label = m.name || m.id;
+        modelDropdown.addOption(m.id, label);
+      }
+      if (current && result.models.some(m => m.id === current)) {
+        modelDropdown.setValue(current);
+      }
+    }
+
+    if (agentDropdown && result.agents && result.agents.length > 0) {
+      const current = (this.pluginRef as Plugin & { settings: { llmAgent?: string } }).settings.llmAgent;
+      agentDropdown.addOption('', 'Default (server-side)');
+      for (const a of result.agents) {
+        agentDropdown.addOption(a.name, a.name);
+      }
+      if (current && result.agents.some(a => a.name === current)) {
+        agentDropdown.setValue(current);
+      }
     }
   }
 }

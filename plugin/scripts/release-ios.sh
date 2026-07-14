@@ -84,19 +84,53 @@ git add "$PLUGIN/manifest.json" "$PLUGIN/versions.json" "$PLUGIN/main.js"
 git commit -m "chore: bump version to $new_ver"
 git push origin "$BRANCH"
 
-# ── 7. Create GitHub Release ─────────────────────────────────────────
+# ── 7. Build & upload Go daemon binaries ──────────────────────────────
+echo ""
+echo "── Building Go daemon binaries ──"
+SERVER="$REPO/server"
+DIST_DIR="$SERVER/dist"
+rm -rf "$DIST_DIR"
+make -C "$SERVER" cross 2>&1 | sed 's/^/  [make] /'
+
+# Generate daemon-manifest.json with sha256 sums
+echo "  generating daemon-manifest.json…"
+MANIFEST_FILE="$DIST_DIR/daemon-manifest.json"
+echo "{" > "$MANIFEST_FILE"
+first=true
+for f in "$DIST_DIR"/obsidian-remote-server-*; do
+  name="$(basename "$f")"
+  sha="$(sha256sum "$f" | cut -d' ' -f1)"
+  if [ "$first" = true ]; then first=false; else echo "," >> "$MANIFEST_FILE"; fi
+  printf '  "%s": "%s"' "$name" "$sha" >> "$MANIFEST_FILE"
+done
+echo "" >> "$MANIFEST_FILE"
+echo "}" >> "$MANIFEST_FILE"
+echo "✓ daemon-manifest.json generated"
+
+echo "✓ Go binaries built in $DIST_DIR"
+
+# ── 8. Create GitHub Release ─────────────────────────────────────────
 echo ""
 echo "── Creating GitHub Release $new_ver ──"
 git tag "$new_ver"
 git push origin "$new_ver"
 
-# Create release with plugin assets
-# BRAT fetches manifest.json, main.js, styles.css from release assets.
+# Collect all release assets
+RELEASE_ASSETS=(
+  "$PLUGIN/main.js"
+  "$PLUGIN/manifest.json"
+  "$STYLES"
+  "$MANIFEST_FILE"
+)
+for f in "$DIST_DIR"/obsidian-remote-server-*; do
+  RELEASE_ASSETS+=("$f")
+done
+
 gh release create "$new_ver" \
   --title "$new_ver" \
-  --notes "iOS release $new_ver — LLM provider system, chat cancel, JSON event parsing" \
+  --notes "iOS release $new_ver — server auto-update via WebSocket" \
   --target "$BRANCH" \
-  "$PLUGIN/main.js" "$PLUGIN/manifest.json" "$STYLES"
+  "${RELEASE_ASSETS[@]}"
 
 echo ""
 echo "✓ Released $new_ver"

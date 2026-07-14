@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -31,13 +32,90 @@ type ChatStarter struct {
 	mu        sync.Mutex
 	activeCmd *exec.Cmd
 	cancelFn  context.CancelFunc
+
+	// JSONL logging
+	logMu   *sync.Mutex
+	logPath string
 }
 
 // NewChatStarter creates a handler that processes chat files on the server.
 func NewChatStarter(vaultRoot string, registry *llm.ProviderRegistry) *ChatStarter {
 	return &ChatStarter{
-		vaultRoot: vaultRoot,
-		registry:  registry,
+		vaultRoot:  vaultRoot,
+		registry:   registry,
+		logMu:      &sync.Mutex{},
+		logPath:    filepath.Join(vaultRoot, ".obsidian-remote", "chat.log"),
+	}
+}
+
+func (r *ChatStarter) logChatRequest(absPath, tool string, args []string, sessionID, prompt string) {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+
+	entry := map[string]interface{}{
+		"type":        "request",
+		"time":        time.Now().UTC().Format(time.RFC3339),
+		"file":        absPath,
+		"tool":        tool,
+		"args":        args,
+		"session_id":  sessionID,
+		"prompt":      prompt,
+	}
+	r.writeLogEntry(entry)
+}
+
+func (r *ChatStarter) logChatResponse(absPath string, sessionID, response string, err error) {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+
+	entry := map[string]interface{}{
+		"type":       "response",
+		"time":       time.Now().UTC().Format(time.RFC3339),
+		"file":       absPath,
+		"session_id": sessionID,
+		"response":   response,
+	}
+	if err != nil {
+		entry["error"] = err.Error()
+	}
+	r.writeLogEntry(entry)
+}
+
+func (r *ChatStarter) writeLogEntry(entry map[string]interface{}) {
+	// Ensure log directory exists.
+	if err := os.MkdirAll(filepath.Dir(r.logPath), 0755); err != nil {
+		return
+	}
+
+	// Read existing entries (keep last 50).
+	var entries []map[string]interface{}
+	if data, err := os.ReadFile(r.logPath); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if line == "" {
+				continue
+			}
+			var e map[string]interface{}
+			if json.Unmarshal([]byte(line), &e) == nil {
+				entries = append(entries, e)
+			}
+		}
+	}
+
+	entries = append(entries, entry)
+	if len(entries) > 50 {
+		entries = entries[len(entries)-50:]
+	}
+
+	// Write back.
+	f, err := os.OpenFile(r.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	enc := json.NewEncoder(f)
+	for _, e := range entries {
+		_ = enc.Encode(e)
 	}
 }
 
@@ -89,8 +167,15 @@ func (r *ChatStarter) Cancel() rpc.Handler {
 }
 
 func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.AiSessionMeta) {
-	// Phase 1 — lock, read file, extract prompt + existing opencode session ID, unlock.
-	var opencodeSessionID string
+	// Look up provider first to get session field name.
+	provider := r.registry.Get(tool)
+	sessionFieldName := ""
+	if provider != nil {
+		sessionFieldName = provider.SessionFieldName()
+	}
+
+	// Phase 1 — lock, read file, extract prompt + existing provider session ID, unlock.
+	var existingSessionID string
 	prompt, err := func() (string, error) {
 		f, err := os.Open(absPath)
 		if err != nil {
@@ -107,16 +192,14 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 			return "", fmt.Errorf("read: %w", err)
 		}
 		content := buf.String()
-		// Extract the opencode session ID from frontmatter if it exists.
 		_, _, fm := parseFrontmatter(content)
-		if s, ok := fm["ai_opencode_session"]; ok && s != "" {
-			opencodeSessionID = s
+		if sessionFieldName != "" {
+			if s, ok := fm[sessionFieldName]; ok && s != "" {
+				existingSessionID = s
+			}
 		}
-		// When continuing an opencode session, send only the latest user
-		// message — the session already holds the conversation history.
-		// For a new session, send the full conversation body as context.
 		var prompt string
-		if opencodeSessionID != "" {
+		if existingSessionID != "" {
 			prompt = extractLastUserSection(content)
 		} else {
 			prompt = buildConversationPrompt(content)
@@ -131,10 +214,16 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		return
 	}
 
+	// Log request.
+	sessionID := ""
+	if meta != nil {
+		sessionID = meta.Session
+	}
+	r.logChatRequest(absPath, tool, args, sessionID, prompt)
+
 	// Phase 2 — run the LLM tool.
 	response := ""
 	var newSessionID string
-	provider := r.registry.Get(tool)
 	if provider != nil {
 		// Use the registered provider (opencode, ollama, etc.).
 		ctx, cancel := context.WithCancel(context.Background())
@@ -142,21 +231,46 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		r.cancelFn = cancel
 		r.mu.Unlock()
 
-		resp, execErr := provider.Execute(ctx, prompt, args, opencodeSessionID)
+		// Accumulated text from streaming chunks.
+		var accumulated string
+		var streamSessionID string
+
+		resp, execErr := provider.ExecuteStream(ctx, prompt, args, existingSessionID,
+			func(chunk, sid string, done bool) {
+				if sid != "" {
+					streamSessionID = sid
+				}
+				if chunk != "" {
+					accumulated += chunk
+					// Write incremental update to the chat file.
+					// The plugin's 1.5s polling picks up these changes in real time.
+					r.writeStreamingChunk(absPath, accumulated)
+				}
+			})
 
 		r.mu.Lock()
 		r.cancelFn = nil
 		r.activeCmd = nil
 		r.mu.Unlock()
 
+		var execErrPtr error
 		if execErr != nil {
 			response = fmt.Sprintf("Error: %v", execErr)
-		} else if resp.Error != "" {
+			execErrPtr = execErr
+		} else if resp != nil && resp.Error != "" {
 			response = fmt.Sprintf("Error: %s", resp.Error)
-		} else {
+			execErrPtr = fmt.Errorf("%s", resp.Error)
+		} else if resp != nil {
 			response = resp.Text
 		}
-		newSessionID = resp.SessionID
+		if resp != nil {
+			newSessionID = resp.SessionID
+		}
+		if streamSessionID != "" && newSessionID == "" {
+			newSessionID = streamSessionID
+		}
+
+		r.logChatResponse(absPath, newSessionID, response, execErrPtr)
 	} else {
 		// Fallback: raw exec.Command for unknown / custom tools.
 		fullArgs := append(args, prompt)
@@ -169,8 +283,10 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		r.activeCmd = cmd
 		r.mu.Unlock()
 
+		var runErrPtr error
 		if runErr := cmd.Run(); runErr != nil {
 			response = fmt.Sprintf("Error: %v\n%s", runErr, strings.TrimSpace(stderr.String()))
+			runErrPtr = runErr
 		} else {
 			response = strings.TrimSpace(stdout.String())
 		}
@@ -178,9 +294,11 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		r.mu.Lock()
 		r.activeCmd = nil
 		r.mu.Unlock()
+
+		r.logChatResponse(absPath, "", response, runErrPtr)
 	}
 
-	// Phase 3 — lock again, merge frontmatter (include opencode session), write assistant response, unlock.
+	// Phase 3 — lock again, merge frontmatter, write final assistant response, unlock.
 	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
 	if err != nil {
 		return
@@ -197,7 +315,6 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 	}
 	currentContent := buf.String()
 
-	// Embed the opencode session ID in the frontmatter updates.
 	updates := make(map[string]string)
 	if meta != nil {
 		if meta.Session != "" {
@@ -210,8 +327,8 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 			updates["ai_model"] = meta.Model
 		}
 	}
-	if newSessionID != "" {
-		updates["ai_opencode_session"] = newSessionID
+	if newSessionID != "" && sessionFieldName != "" {
+		updates[sessionFieldName] = newSessionID
 	}
 	updates["ai_updated"] = time.Now().UTC().Format(time.RFC3339)
 
@@ -229,6 +346,79 @@ func (r *ChatStarter) runChat(absPath, tool string, args []string, meta *proto.A
 		return
 	}
 	_ = f.Sync()
+}
+
+// writeStreamingChunk updates the assistant section of the chat file with the
+// accumulated streaming text. Locks the file, reads current content, updates
+// the assistant section in place (without adding ## User), and writes back.
+func (r *ChatStarter) writeStreamingChunk(absPath, accumulated string) {
+	f, err := os.OpenFile(absPath, os.O_RDWR, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(f); err != nil {
+		return
+	}
+	currentContent := buf.String()
+
+	newContent := updateAssistantContent(currentContent, accumulated)
+	if newContent == currentContent {
+		return
+	}
+	if err := f.Truncate(0); err != nil {
+		return
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		return
+	}
+	if _, err := f.WriteString(newContent); err != nil {
+		return
+	}
+	_ = f.Sync()
+}
+
+// updateAssistantContent replaces the content between the last ## Assistant
+// heading and the next section heading with accumulated, without modifying
+// frontmatter or adding ## User. Used during streaming to incrementally
+// update the assistant response.
+func updateAssistantContent(content, accumulated string) string {
+	_, body, meta := parseFrontmatter(content)
+	lines := strings.Split(body, "\n")
+	headingRe := regexp.MustCompile(`(?i)^##\s+(User|Assistant)\s*$`)
+
+	lastAsstIdx := -1
+	for i, line := range lines {
+		if m := headingRe.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "Assistant") {
+			lastAsstIdx = i
+		}
+	}
+	if lastAsstIdx < 0 {
+		return content
+	}
+
+	nextIdx := len(lines)
+	for i := lastAsstIdx + 1; i < len(lines); i++ {
+		if headingRe.MatchString(lines[i]) {
+			nextIdx = i
+			break
+		}
+	}
+
+	prefix := strings.Join(lines[:lastAsstIdx+1], "\n")
+	suffix := ""
+	if nextIdx < len(lines) {
+		suffix = "\n" + strings.Join(lines[nextIdx:], "\n")
+	}
+
+	newBody := prefix + "\n\n" + accumulated + "\n" + suffix
+	return mergeFrontmatter(newBody, meta)
 }
 
 // ─── Frontmatter helpers ─────────────────────────────────────────────────────
@@ -340,32 +530,38 @@ func mergeFrontmatter(text string, meta map[string]string) string {
 
 // ─── Chat content helpers ────────────────────────────────────────────────────
 
-// extractLastUserSection finds the last ## User heading and returns the text
+// extractLastUserSection finds the last NON-EMPTY ## User heading and returns the text
 // between it and the next section heading (## Assistant or ## User).
+// This skips trailing empty User sections that are added as placeholders for the next turn.
 func extractLastUserSection(content string) string {
 	headingRe := regexp.MustCompile(`(?im)^##\s+(User|Assistant)\s*$`)
 	lines := strings.Split(content, "\n")
 
-	lastUserIdx := -1
+	// Find all User headings, then pick the last one with non-empty content.
+	userIndices := []int{}
 	for i, line := range lines {
 		if m := headingRe.FindStringSubmatch(line); m != nil && strings.EqualFold(m[1], "User") {
-			lastUserIdx = i
-		}
-	}
-	if lastUserIdx == -1 {
-		return ""
-	}
-
-	nextSection := len(lines)
-	for i := lastUserIdx + 1; i < len(lines); i++ {
-		if headingRe.MatchString(lines[i]) {
-			nextSection = i
-			break
+			userIndices = append(userIndices, i)
 		}
 	}
 
-	promptLines := lines[lastUserIdx+1 : nextSection]
-	return strings.TrimSpace(strings.Join(promptLines, "\n"))
+	// Iterate backwards to find the last User section with actual content.
+	for idx := len(userIndices) - 1; idx >= 0; idx-- {
+		lastUserIdx := userIndices[idx]
+		nextSection := len(lines)
+		for i := lastUserIdx + 1; i < len(lines); i++ {
+			if headingRe.MatchString(lines[i]) {
+				nextSection = i
+				break
+			}
+		}
+		promptLines := lines[lastUserIdx+1 : nextSection]
+		prompt := strings.TrimSpace(strings.Join(promptLines, "\n"))
+		if prompt != "" {
+			return prompt
+		}
+	}
+	return ""
 }
 
 // buildConversationPrompt returns the full chat conversation body
@@ -524,11 +720,25 @@ func (r *ChatStatusHandler) Status() rpc.Handler {
 		// Discover the opencode serve port from the opencode provider.
 		openCodePort := r.discoverOpenCodePort()
 
+		// Fetch model/agent lists from all providers.
+		var models []proto.LlmModel
+		var agents []proto.LlmAgent
+		for _, p := range providers {
+			if m, err := p.ListModels(ctx); err == nil {
+				models = append(models, m...)
+			}
+			if a, err := p.ListAgents(ctx); err == nil {
+				agents = append(agents, a...)
+			}
+		}
+
 		return proto.ChatStatusResult{
 			Tools:       tools,
 			DefaultTool: defaultTool,
 			ServerPort:  openCodePort,
 			Healthy:     healthy,
+			Models:      models,
+			Agents:      agents,
 		}, nil
 	}
 }

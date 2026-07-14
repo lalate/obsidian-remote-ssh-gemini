@@ -173,7 +173,11 @@ export function parseChatFile(text: string): ParsedChat {
 
 export function extractLastUserSection(text: string): string | null {
   const parsed = parseChatFile(text);
-  return parsed.lastUserMessage?.content ?? null;
+  // Find the last user message with non-empty content (skip trailing empty placeholders).
+  const lastUserWithContent = [...parsed.messages].reverse().find(
+    (m) => m.role === 'user' && m.content.trim() !== ''
+  );
+  return lastUserWithContent?.content ?? null;
 }
 
 export function appendAssistantResponse(text: string, response: string): string {

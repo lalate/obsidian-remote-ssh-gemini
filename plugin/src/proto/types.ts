@@ -53,6 +53,7 @@ export interface Entry {
 export type MethodName =
   | 'auth'
   | 'server.info'
+  | 'server.update'
   | 'fs.stat'
   | 'fs.exists'
   | 'fs.list'
@@ -78,8 +79,9 @@ export type MethodName =
   | 'chat.status';
 
 export interface MethodMap {
-  'auth':            { params: AuthParams;            result: AuthResult };
-  'server.info':     { params: Record<string, never>; result: ServerInfo };
+  'auth':            { params: AuthParams;                     result: AuthResult };
+  'server.info':     { params: Record<string, never>;          result: ServerInfo };
+  'server.update':   { params: ServerUpdateParams;              result: ServerUpdateResult };
 
   'fs.stat':         { params: PathOnlyParams;        result: Stat | null };
   'fs.exists':       { params: PathOnlyParams;        result: ExistsResult };
@@ -295,6 +297,22 @@ export interface ChatToolStatus {
   error?: string;
 }
 
+export interface LlmModel {
+  /** Model identifier (e.g. "opencode/big-pickle"). */
+  id: string;
+  /** Provider name (e.g. "opencode"). */
+  provider?: string;
+  /** Human-readable name (e.g. "Big Pickle"). */
+  name?: string;
+}
+
+export interface LlmAgent {
+  /** Agent name (e.g. "auto", "architect"). */
+  name: string;
+  /** Agent role (e.g. "primary", "subagent"). */
+  role?: string;
+}
+
 export interface ChatStatusResult {
   /** Every configured LLM tool and its health. */
   tools: ChatToolStatus[];
@@ -304,6 +322,10 @@ export interface ChatStatusResult {
   serverPort?: number;
   /** True when at least one tool is available and running. */
   healthy: boolean;
+  /** Available LLM models (from opencode models). */
+  models?: LlmModel[];
+  /** Available agents (from opencode agent list). */
+  agents?: LlmAgent[];
 }
 
 // ─── server-push notifications ───────────────────────────────────────────────
@@ -405,6 +427,20 @@ export interface CliDoneParams {
 
 // ─── error codes ─────────────────────────────────────────────────────────────
 
+// ─── server.update ──────────────────────────────────────────────────────────
+
+export interface ServerUpdateParams {
+  /** Desired release tag to update to. Empty = fetch latest. */
+  version?: string;
+}
+
+export interface ServerUpdateResult {
+  /** Release tag that was downloaded. */
+  version: string;
+  /** True when the daemon has scheduled a restart. */
+  restarting: boolean;
+}
+
 export const ErrorCode = {
   // JSON-RPC 2.0 reserved range.
   ParseError:            -32700,
@@ -423,6 +459,8 @@ export const ErrorCode = {
   PathOutsideVault:      -32015,
   PreconditionFailed:    -32020,
   ProtocolVersionTooOld: -32021,
+  UpdateInProgress:      -32040,
+  UpdateFailed:          -32041,
 } as const;
 
 export type ErrorCodeValue = (typeof ErrorCode)[keyof typeof ErrorCode];

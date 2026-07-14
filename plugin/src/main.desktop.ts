@@ -427,6 +427,22 @@ export default class RemoteSshPlugin extends Plugin {
     return r.stdout;
   }
 
+  /**
+   * Fetch model/agent lists from the daemon via chat.status.
+   * Returns null when there's no RPC connection or the call fails.
+   */
+  async getChatModelAgents(): Promise<{ models?: import('./proto/types').LlmModel[]; agents?: import('./proto/types').LlmAgent[] } | null> {
+    if (!this.conn.rpcConnection) return null;
+    try {
+      const client = this.conn.buildFsClient();
+      if (!('chatStatus' in client)) return null;
+      const status = await (client as import('./adapter/RpcRemoteFsClient').RpcRemoteFsClient).chatStatus();
+      return { models: status.models, agents: status.agents };
+    } catch {
+      return null;
+    }
+  }
+
   /** Restart the daemon: stop existing + redeploy. */
   async restartDaemon(): Promise<void> {
     const profile = this.conn.activeProfile;

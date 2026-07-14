@@ -145,7 +145,7 @@ export class ChatUI {
     const vaultRoot = this.connectionManager.activeRemoteBasePath ?? profile.remotePath;
     this.controller = new ChatController(this.app, client as RemoteFsClient, () => vaultRoot);
     const settings = (this.plugin as { settings: PluginSettings }).settings;
-    this.controller.setToolConfig(settings.llmToolName ?? '', settings.llmToolArgs ?? {});
+    this.controller.setToolConfig(settings.llmToolName ?? '', settings.llmToolArgs ?? {}, settings.llmModel, settings.llmAgent);
     void this.controller.refreshToolConfig();
   }
 

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 )
 
 // OllamaProvider runs the ollama CLI to execute prompts. It expects the
@@ -24,6 +26,7 @@ func NewOllamaProvider() *OllamaProvider {
 
 func (p *OllamaProvider) Name() string    { return "Ollama" }
 func (p *OllamaProvider) ToolName() string { return "ollama" }
+func (p *OllamaProvider) SessionFieldName() string { return "" }
 
 func (p *OllamaProvider) Command() string {
 	if p.binary == "" {
@@ -73,6 +76,20 @@ func (p *OllamaProvider) Execute(ctx context.Context, prompt string, args []stri
 	return &LlmResponse{Text: text}, nil
 }
 
+// ExecuteStream runs ollama and calls cb with the full response as a single
+// chunk. Ollama does not support incremental streaming via the CLI.
+func (p *OllamaProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback) (*LlmResponse, error) {
+	resp, err := p.Execute(ctx, prompt, args, sessionID)
+	if err != nil {
+		return resp, err
+	}
+	if resp.Text != "" {
+		cb(resp.Text, "", false)
+	}
+	cb("", "", true)
+	return resp, nil
+}
+
 // Healthy checks whether the ollama binary exists and the server responds.
 func (p *OllamaProvider) Healthy(_ context.Context) LlmHealth {
 	binary := p.Command()
@@ -111,4 +128,47 @@ func ollamaServerRunning() bool {
 	}
 	resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// ListModels calls `ollama list` and returns available models.
+func (p *OllamaProvider) ListModels(_ context.Context) ([]proto.LlmModel, error) {
+	binary := p.Command()
+	if binary == "" {
+		return nil, fmt.Errorf("ollama binary not found")
+	}
+	cmd := exec.Command(binary, "list")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ollama list: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var models []proto.LlmModel
+	lines := strings.Split(stdout.String(), "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if i == 0 && strings.HasPrefix(line, "NAME") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+		name := parts[0]
+		models = append(models, proto.LlmModel{
+			ID:       name,
+			Provider: "ollama",
+			Name:     name,
+		})
+	}
+	return models, nil
+}
+
+// ListAgents returns nil — ollama does not support agent listing.
+func (p *OllamaProvider) ListAgents(_ context.Context) ([]proto.LlmAgent, error) {
+	return nil, nil
 }

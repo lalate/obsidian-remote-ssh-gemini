@@ -18,6 +18,10 @@ export class ChatController {
   /** Tool name from settings (override) — empty means use server-discovered default. */
   private _settingsToolName = '';
   private _settingsToolArgs: Record<string, string> = {};
+  /** Selected model identifier (e.g. "opencode/big-pickle"). */
+  private _settingsModel = '';
+  /** Selected agent name (e.g. "auto", "architect"). */
+  private _settingsAgent = '';
   /** Tool discovered from server via chat.status. */
   private _discoveredToolCommand = '';
   private _hasServerConfig = false;
@@ -33,9 +37,11 @@ export class ChatController {
     private getVaultRoot: () => string,
   ) {}
 
-  setToolConfig(toolName: string, toolArgs: Record<string, string> = {}): void {
+  setToolConfig(toolName: string, toolArgs: Record<string, string> = {}, model?: string, agent?: string): void {
     this._settingsToolName = toolName;
     this._settingsToolArgs = toolArgs;
+    this._settingsModel = model ?? '';
+    this._settingsAgent = agent ?? '';
   }
 
   /**
@@ -107,7 +113,11 @@ export class ChatController {
 
     assertRpcClient(this.client);
     const tool = this.resolveCommand();
-    const argsList: string[] = Object.values(this._settingsToolArgs).filter(Boolean);
+    const argsList: string[] = [];
+    // Prepend --model / --agent from settings so they come before tool args
+    if (this._settingsModel) argsList.push('--model', this._settingsModel);
+    if (this._settingsAgent) argsList.push('--agent', this._settingsAgent);
+    argsList.push(...Object.values(this._settingsToolArgs).filter(Boolean));
     let contentForWrite = saveContent;
 
     try {

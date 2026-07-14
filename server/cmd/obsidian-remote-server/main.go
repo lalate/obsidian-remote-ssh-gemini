@@ -152,6 +152,16 @@ func run(args []string) (int, error) {
 	disp := srv.Dispatcher()
 	disp.Handle("auth", handlers.Auth(token))
 	disp.Handle("server.info", handlers.ServerInfo(disp, Version, absRoot))
+	updateCfg := handlers.UpdateConfig{
+		Version:    Version,
+		Repo:       "sotashimozono/obsidian-remote-ssh",
+		VaultRoot:  absRoot,
+		SocketPath: *socketPath,
+		TokenPath:  *tokenPath,
+		WsAddr:     *wsAddr,
+		Verbose:    *verbose,
+	}
+	disp.Handle("server.update", handlers.RequireAuth(handlers.ServerUpdate(updateCfg)))
 	extRunner := handlers.NewExtensionRunner(capManager, logStore, absRoot)
 	disp.Handle("extension.schema", handlers.RequireAuth(extRunner.Schema()))
 	disp.Handle("extension.invoke", handlers.RequireAuth(extRunner.Invoke()))

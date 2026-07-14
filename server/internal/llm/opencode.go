@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/sotashimozono/obsidian-remote-ssh/server/internal/proto"
 )
 
 // OpenCodeProvider runs the opencode binary with --format json and parses the
@@ -31,6 +34,7 @@ func NewOpenCodeProvider() *OpenCodeProvider {
 
 func (p *OpenCodeProvider) Name() string     { return "OpenCode" }
 func (p *OpenCodeProvider) ToolName() string  { return "opencode" }
+func (p *OpenCodeProvider) SessionFieldName() string { return "ai_opencode_session" }
 
 func (p *OpenCodeProvider) Command() string {
 	if p.binary == "" {
@@ -80,26 +84,33 @@ func (p *OpenCodeProvider) serveHTTPAddr() string {
 	return ""
 }
 
-// Execute runs `opencode run --attach <http-addr> --format json --pure` with
-// optional `--session` for continuing a prior conversation, and parses the
-// JSON event stream for the response text and session ID.
-func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error) {
+// buildArgs builds the common opencode CLI arguments.
+func (p *OpenCodeProvider) buildArgs(sessionID string, args []string, prompt string) (string, []string, error) {
 	binary := p.Command()
 	if binary == "" {
-		return &LlmResponse{Error: "opencode binary not found"}, nil
+		return "", nil, fmt.Errorf("opencode binary not found")
 	}
-
 	addr := p.serveHTTPAddr()
 	if addr == "" {
-		return &LlmResponse{Error: "opencode serve not running"}, nil
+		return "", nil, fmt.Errorf("opencode serve not running")
 	}
-
 	fullArgs := []string{"run", "--attach", addr, "--format", "json", "--pure"}
 	if sessionID != "" {
 		fullArgs = append(fullArgs, "--session", sessionID)
 	}
 	fullArgs = append(fullArgs, args...)
-	fullArgs = append(fullArgs, prompt)
+	fullArgs = append(fullArgs, "--", prompt)
+	return binary, fullArgs, nil
+}
+
+// Execute runs `opencode run --attach <http-addr> --format json --pure` with
+// optional `--session` for continuing a prior conversation, and parses the
+// JSON event stream for the response text and session ID.
+func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []string, sessionID string) (*LlmResponse, error) {
+	binary, fullArgs, err := p.buildArgs(sessionID, args, prompt)
+	if err != nil {
+		return &LlmResponse{Error: err.Error()}, nil
+	}
 
 	cmd := exec.CommandContext(ctx, binary, fullArgs...)
 	var stdout, stderr bytes.Buffer
@@ -120,6 +131,57 @@ func (p *OpenCodeProvider) Execute(ctx context.Context, prompt string, args []st
 	}
 	if resp.Err != "" {
 		return &LlmResponse{Error: resp.Err}, nil
+	}
+
+	return &LlmResponse{
+		Text:      resp.Text,
+		CostCents: resp.CostCents,
+		SessionID: resp.SessionID,
+	}, nil
+}
+
+// ExecuteStream runs opencode and calls cb incrementally as text chunks
+// arrive from the JSON event stream. Uses StdoutPipe for real-time reading.
+func (p *OpenCodeProvider) ExecuteStream(ctx context.Context, prompt string, args []string, sessionID string, cb StreamCallback) (*LlmResponse, error) {
+	binary, fullArgs, err := p.buildArgs(sessionID, args, prompt)
+	if err != nil {
+		return &LlmResponse{Error: err.Error()}, nil
+	}
+
+	cmd := exec.CommandContext(ctx, binary, fullArgs...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return &LlmResponse{Error: fmt.Sprintf("stdout pipe: %v", err)}, nil
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		errText := strings.TrimSpace(stderr.String())
+		if errText == "" {
+			errText = err.Error()
+		}
+		return &LlmResponse{Error: errText}, nil
+	}
+
+	// Read JSON stream incrementally as opencode writes it.
+	resp, parseErr := processOpenCodeStream(stdout, cb)
+
+	// Wait for process to finish.
+	waitErr := cmd.Wait()
+
+	if parseErr != nil {
+		return &LlmResponse{Error: parseErr.Error()}, nil
+	}
+	if resp.Err != "" {
+		return &LlmResponse{Error: resp.Err}, nil
+	}
+	if waitErr != nil {
+		errText := strings.TrimSpace(stderr.String())
+		if errText == "" {
+			errText = waitErr.Error()
+		}
+		return &LlmResponse{Error: errText}, nil
 	}
 
 	return &LlmResponse{
@@ -164,4 +226,93 @@ func (p *OpenCodeProvider) Healthy(_ context.Context) LlmHealth {
 		Error:      errMsg,
 		ServerPort: port,
 	}
+}
+
+// openCodeModelRaw mirrors the JSON shape of `opencode models --verbose`.
+type openCodeModelRaw struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+	Name       string `json:"name"`
+}
+
+// ListModels calls `opencode models --verbose` and returns available models.
+func (p *OpenCodeProvider) ListModels(_ context.Context) ([]proto.LlmModel, error) {
+	binary := p.Command()
+	if binary == "" {
+		return nil, fmt.Errorf("opencode binary not found")
+	}
+	cmd := exec.Command(binary, "models", "--verbose")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("opencode models: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var models []proto.LlmModel
+	dec := json.NewDecoder(&stdout)
+	for dec.More() {
+		var raw openCodeModelRaw
+		if err := dec.Decode(&raw); err != nil {
+			break
+		}
+		provider := raw.ProviderID
+		if provider == "" {
+			provider = "opencode"
+		}
+		models = append(models, proto.LlmModel{
+			ID:       raw.ID,
+			Provider: provider,
+			Name:     raw.Name,
+		})
+	}
+	if models == nil {
+		// Try reading line-by-line for non-JSON output.
+		lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			models = append(models, proto.LlmModel{
+				ID:       line,
+				Provider: "opencode",
+			})
+		}
+	}
+	return models, nil
+}
+
+// ListAgents calls `opencode agent list` and returns available agents.
+func (p *OpenCodeProvider) ListAgents(_ context.Context) ([]proto.LlmAgent, error) {
+	binary := p.Command()
+	if binary == "" {
+		return nil, fmt.Errorf("opencode binary not found")
+	}
+	cmd := exec.Command(binary, "agent", "list")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("opencode agent list: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+
+	var agents []proto.LlmAgent
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name := line
+		role := ""
+		if idx := strings.Index(line, " ("); idx > 0 && strings.HasSuffix(line, ")") {
+			name = line[:idx]
+			role = line[idx+2 : len(line)-1]
+		}
+		agents = append(agents, proto.LlmAgent{
+			Name: name,
+			Role: role,
+		})
+	}
+	return agents, nil
 }

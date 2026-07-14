@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// ─── opencode JSON event types ───────────────────────────────────────────────
-
 // openCodeEvent is the top-level discriminator for opencode's JSON event stream
 // (--format json). Each line is a JSON object with at least a "type" field.
 type openCodeEvent struct {
@@ -19,7 +17,6 @@ type openCodeEvent struct {
 	Step      *openCodeStep `json:"step,omitempty"`
 	Err       *openCodeErr  `json:"error,omitempty"`
 
-	// Raw holds the original line (used for unknown event types).
 	Raw json.RawMessage `json:"-"`
 }
 
@@ -57,11 +54,20 @@ type openCodeResp struct {
 // parseOpenCodeStream reads a newline-delimited JSON stream from r and
 // accumulates text / error / cost events into an openCodeResp.
 func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
+	return processOpenCodeStream(r, nil)
+}
+
+// processOpenCodeStream reads a newline-delimited JSON stream from r and
+// fires cb for each text event as it arrives. The final accumulated
+// openCodeResp is returned as with parseOpenCodeStream.
+// When cb is nil this behaves identically to parseOpenCodeStream.
+func processOpenCodeStream(r io.Reader, cb StreamCallback) (*openCodeResp, error) {
 	resp := &openCodeResp{}
 	sc := bufio.NewScanner(r)
-	sc.Buffer(nil, 256*1024) // 256 KiB max line
+	sc.Buffer(nil, 256*1024)
 
 	lineNo := 0
+	firstText := true
 	for sc.Scan() {
 		lineNo++
 		line := strings.TrimSpace(sc.Text())
@@ -71,17 +77,21 @@ func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
 
 		var ev openCodeEvent
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
-			// Non-JSON lines (e.g. ASCII-art banners) are silently skipped.
 			continue
 		}
 
 		switch ev.Type {
 		case "text":
 			if ev.Text != nil && ev.Text.Type == "text" && ev.Text.Text != "" {
-				if resp.Text != "" {
-					resp.Text += "\n"
+				sep := ""
+				if !firstText {
+					sep = "\n"
 				}
-				resp.Text += ev.Text.Text
+				firstText = false
+				resp.Text += sep + ev.Text.Text
+				if cb != nil {
+					cb(sep+ev.Text.Text, resp.SessionID, false)
+				}
 			}
 
 		case "step_finish":
@@ -89,16 +99,17 @@ func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
 				if ev.Step.Cost.String() != "" && ev.Step.Cost.String() != "0" {
 					costFloat := 0.0
 					if err := json.Unmarshal([]byte(ev.Step.Cost.String()), &costFloat); err == nil {
-						// Convert dollar cost to cents (round up).
 						resp.CostCents = int(costFloat*100 + 0.5)
 					}
 				}
+			}
+			if cb != nil {
+				cb("", resp.SessionID, true)
 			}
 
 		case "error":
 			if ev.Err != nil {
 				msg := ev.Err.Name
-				// Attempt to extract a human-readable message from the data.
 				if len(ev.Err.Data) > 0 {
 					var dataMap map[string]interface{}
 					if err := json.Unmarshal(ev.Err.Data, &dataMap); err == nil {
@@ -115,16 +126,15 @@ func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
 			}
 
 		case "step_start":
-			// First step_start carries the session ID; capture it.
 			if resp.SessionID == "" && ev.SessionID != "" {
 				resp.SessionID = ev.SessionID
+				if cb != nil {
+					cb("", ev.SessionID, false)
+				}
 			}
 
 		case "tool_use", "tool_result":
-			// Ignored — these carry no response text.
-
 		default:
-			// Unknown event types are silently skipped.
 		}
 	}
 
@@ -132,7 +142,6 @@ func parseOpenCodeStream(r io.Reader) (*openCodeResp, error) {
 		return resp, fmt.Errorf("read opencode stream: %w", err)
 	}
 	if resp.Err != "" && resp.Text == "" {
-		// If there's an error but no text, return it as an error response.
 		return resp, fmt.Errorf("opencode error: %s", resp.Err)
 	}
 	return resp, nil
