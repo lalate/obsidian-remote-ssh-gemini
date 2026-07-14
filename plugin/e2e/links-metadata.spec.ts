@@ -5,6 +5,7 @@ import {
   findShadowVaultPath,
   waitForShadowVaultLoaded,
   runCommandViaPalette,
+  dismissBlockingModals,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -85,16 +86,30 @@ import { logPathFor } from './helpers/log-oracle';
  *
  * ── WHY EVERY GESTURE CARRIES AN EXPLICIT TIMEOUT ────────────────────────────
  *
- * `playwright.config.ts` sets no `actionTimeout`, so Playwright's default of `0`
- * (= wait forever) applies: a bare `locator.click()` on an element that never
- * becomes actionable does not FAIL, it BLOCKS until the 180 s test timeout, and
- * the report then says only "Test timeout exceeded" — no locator, no DOM, no
- * vault model. `page.evaluate` has the same property (a wedged renderer never
- * answers, and an `expect.poll` cannot time out while its own probe is stuck).
- * That is how tests 4 and 6 each burned three minutes and told the maintainer
- * nothing. Every click, wait and `evaluate` below is bounded well under the test
- * timeout and dumps the DOM + vault model on failure. The BOUNDS are what
- * changed; not one assertion is weaker.
+ * `playwright.config.ts` now sets `actionTimeout: 30_000`, so a click on an
+ * element that never becomes actionable FAILS with Playwright's own locator
+ * diagnostic (which resolved element, what covered it) instead of blocking until
+ * the test timeout. That diagnostic is the single most useful artefact a red run
+ * here can produce, so the gestures below keep their own, TIGHTER bounds only
+ * where a faster verdict is worth more than the extra retry window — and they
+ * always let Playwright's message propagate rather than replacing it.
+ *
+ * `page.evaluate` still has NO timeout of its own: a wedged renderer never
+ * answers, and an `expect.poll` cannot time out while its own probe is stuck
+ * inside one. That is what `withDeadline` below is for, and it is used ONLY on
+ * evaluates, never to wrap a click.
+ *
+ * ── AN OPEN MODAL SWALLOWS EVERY CLICK ───────────────────────────────────────
+ *
+ * Dismissing the trust dialog makes Obsidian auto-open its Settings dialog on
+ * the Community-plugins tab (see `dismissBlockingModals`). That `.modal-container`
+ * covers the whole window and intercepts pointer events, so the File Explorer
+ * and the rendered link are un-clickable while it is up — the model-level tests
+ * (1, 2, 3) pass and only the gesture tests (4, 6, 8) fail, which is a very
+ * misleading signature. `dismissBlockingModals` is therefore called after the
+ * shadow vault is up and again before every click sequence. It is a HARNESS fix
+ * (Playwright cannot click a covered element); it weakens no assertion, and it
+ * logs whatever it closed.
  *
  * HARD-FAILS, never skips.
  */
@@ -122,10 +137,12 @@ const DEEP2 = `${SUB2}/Deep2.md`;
 const META_TIMEOUT_MS = 20_000;
 
 /**
- * Budget for ONE UI gesture (a click; waiting for a row to paint). Explicit
- * because the config leaves `actionTimeout` at Playwright's default of 0 —
- * "wait forever" — which turns any un-actionable element into a silent
- * three-minute hang instead of a failure with a locator in it.
+ * Budget for ONE UI gesture (a click; waiting for a row to paint). Tighter than
+ * the config's `actionTimeout: 30_000` on purpose: several gestures stack up
+ * inside one test, and 15 s is already far past the observed settle time for a
+ * row that is going to become actionable at all. Playwright's own failure text
+ * (including "…subtree intercepts pointer events" and the offending element) is
+ * always propagated into the thrown error, never replaced by it.
  */
 const ACTION_TIMEOUT_MS = 15_000;
 
@@ -191,6 +208,13 @@ test.beforeAll(async () => {
   // Every assertion below is about what that populate produced, so we must not
   // race it.
   await waitForShadowVaultLoaded(obsidian.page, logPathFor(shadowVaultPath), 30_000);
+
+  // `launchObsidian` dismissed the trust dialog, and Obsidian answered that by
+  // auto-opening its Settings dialog on the Community-plugins tab. It is a
+  // full-window `.modal-container.mod-dim` and it intercepts pointer events, so
+  // nothing in the File Explorer can be clicked until it is gone. Anything it
+  // closes gets logged.
+  await dismissBlockingModals(obsidian.page);
 });
 
 test.afterAll(async () => {
@@ -273,13 +297,16 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
    *
    * Each step is bounded and each failure dumps the reading-view state: does a
    * preview pane exist, how many `a.internal-link` are inside it and what do they
-   * point at, what mode is the leaf in, what is `getActiveFile()`. The previous
-   * version's bare `.click()` calls inherited `actionTimeout: 0` and simply hung
-   * for the full 180 s when the anchor never became clickable — a timeout with no
-   * evidence in it. The ASSERTION is untouched: clicking a link MUST open its
+   * point at, what mode is the leaf in, what is `getActiveFile()`. Playwright's
+   * own click diagnostic is folded into that message rather than discarded — it
+   * is what identified the real cause of this test's last red: the anchor was
+   * "visible, enabled and stable" and the click still could not land, because
+   * Obsidian's auto-opened Settings dialog was covering the window. Hence the
+   * modal sweep first. The ASSERTION is untouched: clicking a link MUST open its
    * target.
    */
   test('4 — clicking a wiki link opens the target note', async () => {
+    await dismissBlockingModals(obsidian.page);
     await openNote(obsidian.page, A);
     await ensureReadingView(obsidian.page, A);
 
@@ -296,10 +323,12 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
       );
     }
 
-    // Bounded on purpose: an anchor that is present but never actionable (covered
-    // by Obsidian's hover page-preview popover, zero-sized under Xvfb, …) makes an
-    // unbounded click wait forever. 15 s of Playwright's actionability retries,
-    // then the truth.
+    // 15 s of Playwright's actionability retries — tighter than the config's 30 s
+    // `actionTimeout` because several gestures stack inside this test. An anchor
+    // that is present but never actionable (covered by an Obsidian modal, by the
+    // hover page-preview popover, zero-sized under Xvfb, …) fails here, and
+    // Playwright's message — which names the element doing the covering — is
+    // quoted verbatim into the error below rather than replaced by it.
     const clickErr = await link
       .click({ timeout: ACTION_TIMEOUT_MS })
       .then(() => null)
@@ -413,6 +442,9 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
    * three-minute test timeout that says nothing at all.
    */
   test('6 — expanding the folder in File Explorer makes the subfolder link resolve', async () => {
+    // A modal left up by an earlier test would make the folder title
+    // un-clickable and turn 6a into a false red about LazyFolderLoader.
+    await dismissBlockingModals(obsidian.page);
     await expandFolder(obsidian.page, SUB, EXPAND_TIMEOUT_MS);
 
     // 6a — the lazy load itself landed.
@@ -519,6 +551,9 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
   test('8 — Quick Switcher can reach a note in an unexpanded subfolder', async () => {
     const before = await probeLinks(obsidian.page, C, DEEP2);
 
+    // BEFORE the palette is opened, never after: the palette is itself a
+    // `.modal-container` and this would close it.
+    await dismissBlockingModals(obsidian.page);
     await runCommandViaPalette(obsidian.page, 'Open quick switcher');
 
     const input = obsidian.page
@@ -556,13 +591,20 @@ test.describe('wiki links, backlinks + metadata cache over a remote vault', () =
 /**
  * Fail `work` at `ms` instead of letting it run to the test timeout.
  *
- * Needed because two things in this stack have NO timeout of their own:
- * `page.evaluate` (a wedged renderer simply never answers — and an `expect.poll`
- * cannot time out while its own probe is stuck inside one), and, since
- * `playwright.config.ts` leaves `actionTimeout` at its default of `0`, anything
- * that waits for actionability. Both previously produced a bare "Test timeout of
- * 180000ms exceeded" with nothing in it. A late rejection from `work` is absorbed
- * so it cannot resurface as an unhandled rejection after the race is over.
+ * Scoped deliberately to `page.evaluate`, which has NO timeout of its own: a
+ * wedged renderer simply never answers, and an `expect.poll` cannot time out
+ * while its own probe is stuck inside one — the hang wins and the report says
+ * only "Test timeout of 180000ms exceeded".
+ *
+ * It is NOT used around clicks. `playwright.config.ts` now sets
+ * `actionTimeout: 30_000`, so an un-actionable element already fails on its own,
+ * and Playwright's message ("locator resolved to <div …>; <div class=
+ * "modal-container mod-dim"> subtree intercepts pointer events") is strictly
+ * better evidence than anything a deadline wrapper could synthesise. Racing a
+ * click against a deadline can only throw that away.
+ *
+ * A late rejection from `work` is absorbed so it cannot resurface as an
+ * unhandled rejection after the race is over.
  */
 async function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   void work.catch(() => { /* the race below already reports it */ });
@@ -685,11 +727,18 @@ async function activeFilePath(page: Page): Promise<string | null> {
  * Open a note by clicking its File Explorer row — the user's own gesture — and
  * wait until the workspace agrees that note is active.
  *
- * The wait and the click both carry explicit timeouts: under `actionTimeout: 0`,
- * a row that is attached but never becomes actionable (headless Obsidian's File
- * Explorer paint is lazy/virtualised under Xvfb) makes `click()` block forever.
+ * Sweeps modals first: an open `.modal-container` (Obsidian auto-opens Settings
+ * after the trust dialog is dismissed) covers the File Explorer and makes the
+ * row un-clickable no matter how healthy the vault model is.
+ *
+ * The wait and the click carry explicit 15 s bounds — tighter than the config's
+ * 30 s `actionTimeout` because several gestures stack inside one test — and
+ * Playwright's own failure text is quoted verbatim into the error, since that is
+ * where "…intercepts pointer events" and the covering element show up.
  */
 async function openNote(page: Page, notePath: string): Promise<void> {
+  await dismissBlockingModals(page);
+
   const nav = page.locator(`.nav-file-title[data-path$="${notePath}"]`).first();
   const visible = await nav
     .waitFor({ state: 'visible', timeout: ACTION_TIMEOUT_MS })
@@ -740,6 +789,8 @@ async function ensureReadingView(page: Page, notePath: string): Promise<void> {
   const preview = page.locator('.markdown-preview-view').first();
   const already = await preview.isVisible({ timeout: 2_000 }).catch(() => false);
   if (!already) {
+    // Before the palette, not after — the palette is a `.modal-container` too.
+    await dismissBlockingModals(page);
     await runCommandViaPalette(page, 'Toggle reading view');
   }
 
@@ -760,20 +811,24 @@ async function ensureReadingView(page: Page, notePath: string): Promise<void> {
  * actually IN the vault model.
  *
  * Deliberately NOT `helpers/obsidian.ts:expandFolderInExplorer`: that helper
- * waits for the folder title to be merely `attached` and then issues a bare
- * `title.click()`, which — under the config's default `actionTimeout: 0` — waits
- * forever on a row that is attached but not actionable. That is precisely the
- * three-minute hang this test used to die of, and a hang reports nothing. Same
- * PRODUCT gesture (a real click on `.nav-folder-title[data-path=…]`, which is what
- * the delegated listener at `src/main.ts:919-928` hooks), bounded, and loud on
- * failure. The shared helper is used by other specs and is not this spec's to
- * change.
+ * waits for the folder title to be merely `attached`, which under Xvfb's
+ * virtualised File Explorer is satisfied by a row that never becomes actionable
+ * — a 30 s `actionTimeout` burn with a weaker message than the one below. Same
+ * PRODUCT gesture (a real click on `.nav-folder-title[data-path=…]`, which is
+ * what the delegated listener at `src/main.ts:919-928` hooks), tighter bound,
+ * and loud on failure. The shared helper is used by other specs and is not this
+ * spec's to change.
+ *
+ * Sweeps modals first, for the same reason `openNote` does: a covered folder
+ * title cannot be clicked, and the resulting red would libel LazyFolderLoader.
  *
  * Waits on `vault.fileMap` rather than on rendered `.nav-file-title` nodes: the
  * model is what the load actually produces, and the File Explorer's paint races
  * under Xvfb.
  */
 async function expandFolder(page: Page, folderPath: string, timeoutMs: number): Promise<void> {
+  await dismissBlockingModals(page);
+
   const title = page.locator(`.nav-folder-title[data-path="${folderPath}"]`).first();
   const visible = await title
     .waitFor({ state: 'visible', timeout: ACTION_TIMEOUT_MS })

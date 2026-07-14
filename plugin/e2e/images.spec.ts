@@ -6,6 +6,7 @@ import {
   waitForShadowVaultLoaded,
   expandFolderInExplorer,
   runCommandViaPalette,
+  dismissBlockingModals,
   type ObsidianHandle,
 } from './helpers/obsidian';
 import { scaffoldTestVault, type ScaffoldResult } from './helpers/vault-scaffold';
@@ -105,13 +106,10 @@ import { logPathFor } from './helpers/log-oracle';
  *      we control. Whatever this test does IS the finding, and it tells the
  *      maintainer whether the fix for (5) is "walk deeper on connect" or
  *      "invalidate metadata after a lazy insert".
- *      Every step of it is under an explicit `withDeadline`, because the config
- *      sets no `actionTimeout` (so Playwright's default is 0 = WAIT FOREVER) and
- *      `expandFolderInExplorer` clicks a `.nav-folder-title` it has only waited
- *      for as *attached* — under Xvfb's virtualised File Explorer that click can
- *      block indefinitely, which is exactly how this test ate the full 180 s test
- *      timeout and reported nothing. An unknown verdict is only useful if it gets
- *      REPORTED, so each step now fails fast with a `fileMap`/`<img>` dump.
+ *      Its expand step keeps a `withDeadline` BACKSTOP (see the note on the
+ *      constants below), but the click inside it is now bounded by the config's
+ *      `actionTimeout: 30_000` and fails with Playwright's own locator
+ *      diagnostic. An unknown verdict is only useful if it gets REPORTED.
  *   7. SVG via the full-binary path ....... PASS (svg is not in
  *      THUMBNAIL_EXTENSIONS → no `thumb=`, so it takes `serveFullBinary` and
  *      gets its MIME from `guessMimeType`).
@@ -149,18 +147,26 @@ const BRIDGE_TIMEOUT_MS = 60_000;
 const RENDER_TIMEOUT_MS = 30_000;
 
 /**
- * Hard ceilings on the two UI steps that can WEDGE rather than fail.
+ * BACKSTOP for `expandFolderInExplorer` — not a bound on the click.
  *
- * `playwright.config.ts` sets no `actionTimeout`, so Playwright's default of
- * `0` — wait forever — applies to every `click()`. `expandFolderInExplorer`
- * waits for its `.nav-folder-title` to be *attached* and then clicks it; under
- * Xvfb the File Explorer is virtualised, so an attached-but-never-actionable
- * node makes that click hang until the TEST timeout kills the whole run with no
- * diagnostic at all. These deadlines convert that into a fast, explained red.
- * They are bounds on WAITING, not on any assertion.
+ * `playwright.config.ts` now sets `actionTimeout: 30_000`, so the click inside
+ * that helper can no longer wait forever: it fails with Playwright's own locator
+ * diagnostic ("<div …> from <div class='modal-container mod-dim'> subtree
+ * intercepts pointer events"), which is far better evidence than any deadline
+ * message, and it must be allowed to propagate. What is still unbounded is the
+ * helper's `vault.fileMap` POLL and its `page.evaluate` probes — a wedged
+ * renderer never answers those. This deadline covers that, and is deliberately
+ * set ABOVE the sum of the helper's internal bounds (10 s attach + 30 s click +
+ * 30 s poll) so it can only ever fire when something genuinely hung, never
+ * pre-empting Playwright's better message.
+ *
+ * The reading-view sequence no longer has a deadline at all: every step in it is
+ * a bounded Playwright wait or click that already fails with a locator in the
+ * message, and racing those against a 60 s wrapper only ever DISCARDED that
+ * message (the wrapper's own 60 s could expire before two 30 s clicks had
+ * finished retrying).
  */
-const EXPAND_DEADLINE_MS = 45_000;
-const READING_VIEW_DEADLINE_MS = 60_000;
+const EXPAND_DEADLINE_MS = 90_000;
 
 /** The 8 bytes every PNG starts with (`\x89PNG\r\n\x1a\n`). */
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -218,6 +224,14 @@ test.beforeAll(async () => {
   // FileSystemAdapter returns an `app://local/...` URL for a file that does
   // not exist locally), so we must not touch it before this returns.
   await waitForShadowVaultLoaded(obsidian.page, logPathFor(shadowVaultPath), 30_000);
+
+  // `launchObsidian` dismissed the trust dialog; Obsidian answered by auto-opening
+  // its Settings dialog on the Community-plugins tab. That `.modal-container.mod-dim`
+  // covers the whole window and intercepts pointer events, so no File Explorer row
+  // can be clicked while it is up — which is why the bridge-level tests (pure
+  // `page.evaluate` + Node `fetch`) passed while every renderer-level test failed.
+  // Anything this closes is logged.
+  await dismissBlockingModals(obsidian.page);
 });
 
 test.afterAll(async () => {
@@ -463,12 +477,17 @@ test.describe('remote images & binaries: getResourcePath → ResourceBridge → 
     // fix must also invalidate metadata after a lazy load. Either way the run
     // reports something the code does not currently tell us.
     //
-    // Budget: the steps below are each individually deadlined (45s + 30s + 60s
-    // + 60s + 30s worst case = 225s), and every deadline emits a diagnostic. The
-    // per-test timeout is raised above that sum on purpose: a step that blows its
-    // own bound must be the thing that fails, so the report survives. Under the
-    // inherited 180s the harness killed the test first and we learned nothing.
+    // Budget: the steps below are each individually bounded (the expand's 90s
+    // backstop, then Playwright's own 30s action/expect timeouts), and each emits
+    // a diagnostic. The per-test timeout is raised above their sum on purpose: a
+    // step that blows its own bound must be the thing that fails, so the report
+    // survives. Under the inherited 180s the harness killed the test first and we
+    // learned nothing.
     test.setTimeout(300_000);
+
+    // The folder title is un-clickable under an open modal, and that red would
+    // libel LazyFolderLoader rather than naming the overlay.
+    await dismissBlockingModals(obsidian.page);
 
     await withDeadline(
       obsidian.page,
@@ -713,15 +732,19 @@ async function bridgeFetch(
 }
 
 /**
- * Run `work()` under a hard deadline, and on expiry raise an EXPLAINED failure
- * instead of letting the test timeout swallow it.
+ * Run `work()` under a hard BACKSTOP deadline, and on expiry raise an EXPLAINED
+ * failure instead of letting the test timeout swallow it.
  *
- * Needed because Playwright's `actionTimeout` defaults to 0 (wait forever) and
- * this config does not override it: a `click()` on an attached-but-unactionable
- * node — routine in Xvfb's virtualised File Explorer — never settles, so the
- * whole test dies at the 180s harness timeout with no stack, no message and no
- * state. Whatever the deadline catches, the maintainer gets the vault model and
- * the DOM alongside it.
+ * Reserved for waits that have no timeout of their own — `page.evaluate` probes
+ * and the `vault.fileMap` polling loop inside `expandFolderInExplorer`. A wedged
+ * renderer never answers those, and the test would die at the harness timeout
+ * with no stack, no message and no state.
+ *
+ * It is NOT used to bound clicks. `playwright.config.ts` sets
+ * `actionTimeout: 30_000`, so an un-actionable element fails on its own with a
+ * locator diagnostic naming the element that covered it — evidence this wrapper
+ * could only discard by winning the race first. Deadlines passed in here must
+ * therefore sit safely ABOVE the sum of the bounded steps they enclose.
  *
  * `work()` is left running (with its rejection swallowed) rather than cancelled:
  * there is nothing to cancel a pending Playwright action with, and an
@@ -747,9 +770,12 @@ async function withDeadline<T>(
     if (outcome === expired) {
       throw new Error(
         `${label} did not settle within ${ms}ms and was still waiting — it would ` +
-        'otherwise have hung until the test timeout with no diagnostic. Playwright ' +
-        "has no actionTimeout in this config, so a click on a node that never " +
-        'becomes actionable waits forever.\n' +
+        'otherwise have hung until the test timeout with no diagnostic. This bound ' +
+        "sits ABOVE every click's own actionTimeout (30s, set in " +
+        'playwright.config.ts), so an un-actionable element would have failed with ' +
+        "Playwright's locator diagnostic before reaching here: what expired instead " +
+        'is an unbounded wait — a `page.evaluate` the renderer never answered, or ' +
+        'the vault.fileMap poll never landing.\n' +
         (await explorerDiagnostic(page)),
       );
     }
@@ -844,36 +870,42 @@ async function inVaultModel(page: Page, vaultPath: string): Promise<boolean> {
  * straight back to editing. So the command only fires when the preview pane is
  * not already up.
  *
- * The whole sequence sits under a `withDeadline`: each inner wait is bounded,
- * but the `click()`s are not (no `actionTimeout` in the config), so this is the
- * other place a test could wedge instead of failing.
+ * NO `withDeadline` HERE, on purpose. Every step below is a bounded Playwright
+ * wait or click (`actionTimeout: 30_000` from the config), so none of them can
+ * wedge — and each fails with a locator diagnostic that a deadline wrapper can
+ * only destroy. That diagnostic is precisely what diagnosed this function's last
+ * red: "element is visible, enabled and stable … <div class='modal-container
+ * mod-dim'> subtree intercepts pointer events". A 60 s wrapper around two 30 s
+ * clicks would have expired first and reported nothing but "did not settle".
+ *
+ * The modal sweep is the fix for that red, and it comes first: while Obsidian's
+ * auto-opened Settings dialog is up, the File Explorer row is un-clickable no
+ * matter how healthy ResourceBridge is.
  */
 async function openInReadingView(page: Page, notePath: string): Promise<void> {
-  await withDeadline(
-    page,
-    `openInReadingView("${notePath}")`,
-    READING_VIEW_DEADLINE_MS,
-    async () => {
-      const nav = page.locator(`.nav-file-title[data-path="${notePath}"]`);
-      await expect(
-        nav,
-        `${notePath} is not in the File Explorer — the connect walk never ` +
-        'materialised it, so there is nothing to open',
-      ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
-      await nav.click();
+  await dismissBlockingModals(page);
 
-      const preview = page.locator('.markdown-preview-view').first();
-      const alreadyReading = await preview
-        .isVisible({ timeout: 2_000 })
-        .catch(() => false);
-      if (!alreadyReading) {
-        await runCommandViaPalette(page, 'Toggle reading view');
-      }
+  const nav = page.locator(`.nav-file-title[data-path="${notePath}"]`);
+  await expect(
+    nav,
+    `${notePath} is not in the File Explorer — the connect walk never ` +
+    'materialised it, so there is nothing to open',
+  ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
+  await nav.click();
 
-      await expect(
-        preview,
-        `${notePath} never entered reading view — no .markdown-preview-view appeared`,
-      ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
-    },
-  );
+  const preview = page.locator('.markdown-preview-view').first();
+  const alreadyReading = await preview
+    .isVisible({ timeout: 2_000 })
+    .catch(() => false);
+  if (!alreadyReading) {
+    // Before the palette opens, never after: the palette is a `.modal-container`
+    // itself and a sweep would close it.
+    await dismissBlockingModals(page);
+    await runCommandViaPalette(page, 'Toggle reading view');
+  }
+
+  await expect(
+    preview,
+    `${notePath} never entered reading view — no .markdown-preview-view appeared`,
+  ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
 }
