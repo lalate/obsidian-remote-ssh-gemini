@@ -109,6 +109,11 @@ jobs:
         env:
           OBSIDIAN_PATH: ~/obsidian/squashfs-root/obsidian
           DISPLAY: ':99'
+          # demo.spec.ts is `testIgnore`d by default so the recorder never
+          # runs inside the behavioural E2E suite. This is the one place that
+          # opts it back in. Without this the walkthrough would silently match
+          # ZERO tests and the GIF would never regenerate.
+          E2E_DEMO: '1'
         run: npx playwright test --config e2e/playwright.config.ts demo.spec.ts
 
       - name: Stitch screencast frames into a GIF (two-pass palettegen)
