@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,30 @@ func TestResolve_RejectsWindowsReservedNames(t *testing.T) {
 		if !errors.Is(err, ErrOutsideVault) {
 			t.Errorf("Resolve(%q): want ErrOutsideVault on Windows, got %v", in, err)
 		}
+	}
+}
+
+func TestResolve_RejectsNullByte(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "srv", "vault")
+	inputs := []string{
+		"file\x00.md",
+		"dir\x00name/file.md",
+	}
+	for _, in := range inputs {
+		_, err := Resolve(root, in)
+		if !errors.Is(err, ErrOutsideVault) {
+			t.Errorf("Resolve(%q): want ErrOutsideVault, got %v", in, err)
+		}
+	}
+}
+
+func TestResolve_RejectsExcessiveLength(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "srv", "vault")
+	// 4096バイト超のパス
+	long := strings.Repeat("a", 4097) + ".md"
+	_, err := Resolve(root, long)
+	if !errors.Is(err, ErrOutsideVault) {
+		t.Errorf("Resolve(long path): want ErrOutsideVault, got %v", err)
 	}
 }
 

@@ -1108,10 +1108,14 @@ export class SftpDataAdapter {
   }
 
   private joinRemote(vaultRelative: string): string {
-    if (!vaultRelative || vaultRelative === '/') return this.remoteBasePath;
-    if (this.remoteBasePath === '') return vaultRelative;
-    if (this.remoteBasePath === '/') return '/' + vaultRelative;
-    return `${this.remoteBasePath}/${vaultRelative}`;
+    // 二重スラッシュ・末尾スラッシュを正規化
+    const normalized = vaultRelative.replace(/\/+/g, '/').replace(/\/$/, '');
+    if (!normalized || normalized === '/') return this.remoteBasePath;
+    if (this.remoteBasePath === '') return normalized;
+    if (this.remoteBasePath === '/') return '/' + normalized;
+    // remoteBasePathの末尾スラッシュも吸収
+    const base = this.remoteBasePath.replace(/\/+$/, '');
+    return `${base}/${normalized}`;
   }
 }
 

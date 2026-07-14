@@ -8,7 +8,10 @@ package vaultfs
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 )
+
+const maxPathLength = 4096 // ext4互換の安全な上限
 
 // ErrOutsideVault is returned by Resolve when the input escapes the
 // vault root through an absolute path, `..` component, or Windows
@@ -39,8 +42,16 @@ func Resolve(vaultRoot, relative string) (string, error) {
 	if relative == "" || relative == "/" {
 		return vaultRoot, nil
 	}
+	// Nullバイト検証 — ファイルシステムによってはパスに含められない
+	if strings.Contains(relative, "\x00") {
+		return "", ErrOutsideVault
+	}
 	if !filepath.IsLocal(filepath.FromSlash(relative)) {
 		return "", ErrOutsideVault
 	}
-	return filepath.Join(vaultRoot, filepath.FromSlash(relative)), nil
+	abs := filepath.Join(vaultRoot, filepath.FromSlash(relative))
+	if len(abs) > maxPathLength {
+		return "", ErrOutsideVault
+	}
+	return abs, nil
 }
