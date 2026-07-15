@@ -365,8 +365,8 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		}
 
 		// Stream to the active session if one exists.
-		// On send failure the client is gone; kill the process so the
-		// slot is released via the deferred releaseSlot.
+		// Output is already persisted; when the client is gone, let the
+		// process keep running so a future resumeInvoke can reattach.
 		if session != nil {
 			if outputMode == "single" {
 				for _, it := range payload {
@@ -376,9 +376,7 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						Data:         it.Data,
 						Seq:          it.Seq,
 					}); err != nil {
-						_ = cmd.Process.Kill()
-						batch = batch[:0]
-						return false
+						session = nil
 					}
 				}
 			} else {
@@ -386,9 +384,7 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 					InvocationID: invocationID,
 					Items:        payload,
 				}); err != nil {
-					_ = cmd.Process.Kill()
-					batch = batch[:0]
-					return false
+					session = nil
 				}
 			}
 		}
