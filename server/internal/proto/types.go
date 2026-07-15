@@ -273,13 +273,23 @@ type ExtensionInvokeParams struct {
 	Args       map[string]string `json:"args,omitempty"`
 	WorkingDir string            `json:"workingDir,omitempty"`
 	Persist    *bool             `json:"persist,omitempty"`
-	ResumeFrom int64             `json:"resumeFrom,omitempty"`
 }
 
 // ExtensionInvokeResult identifies the accepted execution stream.
 type ExtensionInvokeResult struct {
 	InvocationID string `json:"invocationId"`
 	Accepted     bool   `json:"accepted"`
+}
+
+// ExtensionKillParams requests termination of an active invocation.
+type ExtensionKillParams struct {
+	InvocationID string `json:"invocationId"`
+}
+
+// ExtensionKillResult reports whether the target invocation was terminated.
+type ExtensionKillResult struct {
+	InvocationID string `json:"invocationId"`
+	Killed       bool   `json:"killed"`
 }
 
 // ─── server-push notifications ──────────────────────────────────────────────

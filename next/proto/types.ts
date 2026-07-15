@@ -62,6 +62,8 @@ export type MethodName =
   | 'server.info'
   | 'extension.schema'
   | 'extension.invoke'
+  | 'extension.kill'
+  | 'cli.kill'
   | 'fs.stat'
   | 'fs.exists'
   | 'fs.list'
@@ -112,12 +114,20 @@ export interface ExtensionInvokeParams {
   args?: Record<string, string>;
   workingDir?: string;
   persist?: boolean;
-  resumeFrom?: number;
 }
 
 export interface ExtensionInvokeResult {
   invocationId: string;
   accepted: boolean;
+}
+
+export interface ExtensionKillParams {
+  invocationId: string;
+}
+
+export interface ExtensionKillResult {
+  invocationId: string;
+  killed: boolean;
 }
 
 export interface CliOutputParams {

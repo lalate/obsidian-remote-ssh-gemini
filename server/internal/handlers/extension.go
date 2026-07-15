@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -25,6 +27,22 @@ type extensionRunner struct {
 	vaultDir string
 	seq      atomic.Int64
 	slots    chan struct{}
+
+	mu     sync.Mutex
+	active map[string]activeInvocation
+}
+
+// activeInvocation tracks a running extension process.
+//
+// The daemon uses a single-principal model — one token minted at startup
+// that every session authenticates with. *Session is a transport handle,
+// not an identity, so there is no per-session authorization boundary.
+// session is the (rebindable) stream target for live output; when nil,
+// output is persisted to the log for replay by a future reattach.
+type activeInvocation struct {
+	session    *server.Session
+	stop       func() error
+	outputMode string
 }
 
 const maxConcurrentExtensionInvocations = 4
@@ -35,6 +53,7 @@ func NewExtensionRunner(mgr *extensions.Manager, logs *extensions.LogStore, vaul
 		logs:     logs,
 		vaultDir: vaultDir,
 		slots:    make(chan struct{}, maxConcurrentExtensionInvocations),
+		active:   map[string]activeInvocation{},
 	}
 }
 
@@ -117,10 +136,78 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if p.Persist != nil {
 			persist = *p.Persist
 		}
-		go r.streamProcess(session, invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
+		r.registerInvocation(invocationID, session, cap.OutputMode, func() error {
+			if cmd.Process == nil {
+				return nil
+			}
+			return cmd.Process.Kill()
+		})
+		go r.streamProcess(invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
 
 		return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
 	}
+}
+
+func (r *extensionRunner) Kill() rpc.Handler {
+	return r.killForMethod("extension.kill")
+}
+
+func (r *extensionRunner) KillCompat() rpc.Handler {
+	return r.killForMethod("cli.kill")
+}
+
+func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
+	return func(ctx context.Context, raw json.RawMessage) (interface{}, *rpc.Error) {
+		var p proto.ExtensionKillParams
+		if e := decodeParams(methodName, raw, &p); e != nil {
+			return nil, e
+		}
+		if strings.TrimSpace(p.InvocationID) == "" {
+			return nil, rpc.ErrInvalidParams(methodName + ": invocationId is required")
+		}
+
+		inv, ok := r.lookupInvocation(p.InvocationID)
+		if !ok {
+			return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: false}, nil
+		}
+
+		err := inv.stop()
+		if err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return nil, rpc.ErrInternal(methodName + ": " + err.Error())
+		}
+		// Don't unregister here — streamProcess's deferred unregisterInvocation
+		// handles cleanup after sending cli.done.
+		return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: true}, nil
+	}
+}
+
+func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, outputMode string, stop func() error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active[invocationID] = activeInvocation{session: session, outputMode: outputMode, stop: stop}
+}
+
+func (r *extensionRunner) lookupInvocation(invocationID string) (activeInvocation, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	return inv, ok
+}
+
+func (r *extensionRunner) unregisterInvocation(invocationID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.active, invocationID)
+}
+
+func (r *extensionRunner) currentInvocationSession(invocationID string) *server.Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok {
+		return nil
+	}
+	return inv.session
 }
 
 func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]string) ([]string, error) {
@@ -164,8 +251,9 @@ func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]str
 	return out, nil
 }
 
-func (r *extensionRunner) streamProcess(session *server.Session, invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
+func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdout io.ReadCloser, stderr io.ReadCloser, persist bool, outputMode string, releaseSlot func()) {
 	defer releaseSlot()
+	defer r.unregisterInvocation(invocationID)
 	itemsCh := make(chan proto.CliOutputBatchItem, 256)
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -185,32 +273,43 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 		if len(batch) == 0 {
 			return true
 		}
+		session := r.currentInvocationSession(invocationID)
 		payload := append([]proto.CliOutputBatchItem(nil), batch...)
-		if outputMode == "single" {
-			for _, it := range payload {
-				if err := session.SendNotification("cli.output", proto.CliOutputParams{
-					InvocationID: invocationID,
-					Stream:       it.Stream,
-					Data:         it.Data,
-					Seq:          it.Seq,
-				}); err != nil {
-					_ = cmd.Process.Kill()
-					return false
-				}
-			}
-		} else {
-			if err := session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
-				InvocationID: invocationID,
-				Items:        payload,
-			}); err != nil {
-				_ = cmd.Process.Kill()
-				return false
-			}
-		}
+
+		// Persist to log first so a reattaching session can replay.
 		if persistEnabled {
 			ok, err := r.logs.AppendBatch(invocationID, payload)
 			if err != nil || !ok {
 				persistEnabled = false
+			}
+		}
+
+		// Stream to the active session if one exists.
+		// On send failure the client is gone; kill the process so the
+		// slot is released via the deferred releaseSlot.
+		if session != nil {
+			if outputMode == "single" {
+				for _, it := range payload {
+					if err := session.SendNotification("cli.output", proto.CliOutputParams{
+						InvocationID: invocationID,
+						Stream:       it.Stream,
+						Data:         it.Data,
+						Seq:          it.Seq,
+					}); err != nil {
+						_ = cmd.Process.Kill()
+						batch = batch[:0]
+						return false
+					}
+				}
+			} else {
+				if err := session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
+					InvocationID: invocationID,
+					Items:        payload,
+				}); err != nil {
+					_ = cmd.Process.Kill()
+					batch = batch[:0]
+					return false
+				}
 			}
 		}
 		batch = batch[:0]
@@ -235,11 +334,14 @@ func (r *extensionRunner) streamProcess(session *server.Session, invocationID st
 						sig = err.Error()
 					}
 				}
-				_ = session.SendNotification("cli.done", proto.CliDoneParams{
-					InvocationID: invocationID,
-					ExitCode:     exitCode,
-					Signal:       sig,
-				})
+				session := r.currentInvocationSession(invocationID)
+				if session != nil {
+					_ = session.SendNotification("cli.done", proto.CliDoneParams{
+						InvocationID: invocationID,
+						ExitCode:     exitCode,
+						Signal:       sig,
+					})
+				}
 				return
 			}
 			batch = append(batch, it)
