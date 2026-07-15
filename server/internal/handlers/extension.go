@@ -173,19 +173,23 @@ func (r *extensionRunner) resumeInvoke(ctx context.Context, p proto.ExtensionInv
 		return nil, rpc.ErrInvalidParams("extension.invoke: unknown invocationId for resume")
 	}
 
-	// Fix #2: Replay-then-bind ordering.
-	// Replay persisted output BEFORE binding session to prevent live
-	// stream batches from interleaving with historical replay.
-	inv, isRunning := r.rebindInvocation(invocationID, session)
+	// Determine output mode from active invocation (if still running).
+	inv, isRunning := r.lookupInvocation(invocationID)
 	outputMode := "batch"
 	if isRunning {
 		outputMode = inv.outputMode
 	}
 
+	// Fix #2: Replay-then-bind ordering.
+	// Read persisted output BEFORE binding session to prevent live
+	// stream batches from interleaving with historical replay.
 	items, done, err := r.logs.ReplayFrom(invocationID, p.ResumeFrom)
 	if err != nil {
 		return nil, rpc.ErrInternal("extension.invoke: replay: " + err.Error())
 	}
+
+	// Bind session for live output AFTER replay is captured.
+	r.rebindInvocation(invocationID, session)
 	if len(items) > 0 {
 		if err := sendReplay(session, outputMode, invocationID, items); err != nil {
 			return nil, rpc.ErrInternal("extension.invoke: replay notify: " + err.Error())
