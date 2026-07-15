@@ -69,6 +69,9 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 		if e := decodeParams("extension.invoke", raw, &p); e != nil {
 			return nil, e
 		}
+		if strings.TrimSpace(p.InvocationID) != "" {
+			return r.resumeInvoke(ctx, p)
+		}
 		if strings.TrimSpace(p.Tool) == "" {
 			return nil, rpc.ErrInvalidParams("extension.invoke: tool is required")
 		}
@@ -156,6 +159,51 @@ func (r *extensionRunner) KillCompat() rpc.Handler {
 	return r.killForMethod("cli.kill")
 }
 
+func (r *extensionRunner) resumeInvoke(ctx context.Context, p proto.ExtensionInvokeParams) (interface{}, *rpc.Error) {
+	if p.ResumeFrom < 0 {
+		return nil, rpc.ErrInvalidParams("extension.invoke: resumeFrom must be >= 0")
+	}
+
+	invocationID := strings.TrimSpace(p.InvocationID)
+	session := server.SessionFromContext(ctx)
+
+	// Fix #1: Check persisted log, not active map.
+	// A completed invocation has no active entry but the log file exists.
+	if r.logs == nil || !r.logs.HasLog(invocationID) {
+		return nil, rpc.ErrInvalidParams("extension.invoke: unknown invocationId for resume")
+	}
+
+	// Fix #2: Replay-then-bind ordering.
+	// Replay persisted output BEFORE binding session to prevent live
+	// stream batches from interleaving with historical replay.
+	inv, isRunning := r.rebindInvocation(invocationID, session)
+	outputMode := "batch"
+	if isRunning {
+		outputMode = inv.outputMode
+	}
+
+	items, done, err := r.logs.ReplayFrom(invocationID, p.ResumeFrom)
+	if err != nil {
+		return nil, rpc.ErrInternal("extension.invoke: replay: " + err.Error())
+	}
+	if len(items) > 0 {
+		if err := sendReplay(session, outputMode, invocationID, items); err != nil {
+			return nil, rpc.ErrInternal("extension.invoke: replay notify: " + err.Error())
+		}
+	}
+	if done != nil {
+		if err := session.SendNotification("cli.done", proto.CliDoneParams{
+			InvocationID: invocationID,
+			ExitCode:     done.ExitCode,
+			Signal:       done.Signal,
+		}); err != nil {
+			return nil, rpc.ErrInternal("extension.invoke: replay done: " + err.Error())
+		}
+	}
+
+	return proto.ExtensionInvokeResult{InvocationID: invocationID, Accepted: true}, nil
+}
+
 func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 	return func(ctx context.Context, raw json.RawMessage) (interface{}, *rpc.Error) {
 		var p proto.ExtensionKillParams
@@ -208,6 +256,38 @@ func (r *extensionRunner) currentInvocationSession(invocationID string) *server.
 		return nil
 	}
 	return inv.session
+}
+
+func (r *extensionRunner) rebindInvocation(invocationID string, session *server.Session) (activeInvocation, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok {
+		return activeInvocation{}, false
+	}
+	inv.session = session
+	r.active[invocationID] = inv
+	return inv, true
+}
+
+func sendReplay(session *server.Session, outputMode, invocationID string, items []proto.CliOutputBatchItem) error {
+	if outputMode == "single" {
+		for _, it := range items {
+			if err := session.SendNotification("cli.output", proto.CliOutputParams{
+				InvocationID: invocationID,
+				Stream:       it.Stream,
+				Data:         it.Data,
+				Seq:          it.Seq,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return session.SendNotification("cli.output.batch", proto.CliOutputBatchParams{
+		InvocationID: invocationID,
+		Items:        items,
+	})
 }
 
 func validateAndBuildArgs(cap proto.ExtensionCapability, provided map[string]string) ([]string, error) {
@@ -285,8 +365,8 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		}
 
 		// Stream to the active session if one exists.
-		// On send failure the client is gone; kill the process so the
-		// slot is released via the deferred releaseSlot.
+		// Output is already persisted; when the client is gone, let the
+		// process keep running so a future resumeInvoke can reattach.
 		if session != nil {
 			if outputMode == "single" {
 				for _, it := range payload {
@@ -296,9 +376,7 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						Data:         it.Data,
 						Seq:          it.Seq,
 					}); err != nil {
-						_ = cmd.Process.Kill()
-						batch = batch[:0]
-						return false
+						session = nil
 					}
 				}
 			} else {
@@ -306,9 +384,7 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 					InvocationID: invocationID,
 					Items:        payload,
 				}); err != nil {
-					_ = cmd.Process.Kill()
-					batch = batch[:0]
-					return false
+					session = nil
 				}
 			}
 		}
@@ -333,6 +409,10 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						exitCode = 1
 						sig = err.Error()
 					}
+				}
+				// Fix #3: Persist cli.done so reattaching clients learn exit status.
+				if r.logs != nil && persistEnabled {
+					_ = r.logs.AppendDone(invocationID, exitCode, sig)
 				}
 				session := r.currentInvocationSession(invocationID)
 				if session != nil {

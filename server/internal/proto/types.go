@@ -269,10 +269,12 @@ type ExtensionSchemaResult struct {
 
 // ExtensionInvokeParams is the generic command invocation contract.
 type ExtensionInvokeParams struct {
-	Tool       string            `json:"tool"`
-	Args       map[string]string `json:"args,omitempty"`
-	WorkingDir string            `json:"workingDir,omitempty"`
-	Persist    *bool             `json:"persist,omitempty"`
+	InvocationID string            `json:"invocationId,omitempty"`
+	Tool         string            `json:"tool"`
+	Args         map[string]string `json:"args,omitempty"`
+	WorkingDir   string            `json:"workingDir,omitempty"`
+	Persist      *bool             `json:"persist,omitempty"`
+	ResumeFrom   int64             `json:"resumeFrom,omitempty"`
 }
 
 // ExtensionInvokeResult identifies the accepted execution stream.
