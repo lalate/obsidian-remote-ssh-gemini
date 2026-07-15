@@ -110,6 +110,24 @@ export async function launchObsidian(
   await ensurePluginLoaded(page, 'remote-ssh');
   await waitForPluginLoaded(page, 'remote-ssh', 30_000);
 
+  // `dismissTrustDialog` (inside ensurePluginLoaded) clicks "Trust author and
+  // enable plugins", and Obsidian's own reaction is to OPEN ITS SETTINGS
+  // DIALOG on the Community-plugins tab. That is a `.modal-container.mod-dim`
+  // full-window overlay, and Playwright cannot click through it: every later
+  // File-Explorer / editor click dies with "...intercepts pointer events".
+  //
+  // The suite has been running under that overlay in every window since the
+  // trust-dismiss path was added. It went unnoticed because model-level probes
+  // (page.evaluate over vault/metadataCache) and Node-side fetches are immune —
+  // so only click-driven tests were affected, and those just hung. `demo.spec`
+  // is the one place that ever knew (it presses Esc, with a comment saying
+  // exactly this); every other spec simply ate it.
+  //
+  // Close it here, once, for every spec. It logs whatever it closed, so a modal
+  // that IS meaningful (a host-key prompt, PendingPluginsModal) surfaces in the
+  // CI log instead of being silently swallowed.
+  await dismissBlockingModals(page);
+
   const cleanup = async () => {
     try { await browser.close(); } catch { /* best effort */ }
     if (!proc.killed) {
@@ -425,6 +443,118 @@ async function dismissTrustDialog(page: Page): Promise<boolean> {
 }
 
 /**
+ * Close any Obsidian modal that is covering the workspace, and report how many
+ * were closed.
+ *
+ * WHY THIS EXISTS (it is a HARNESS concern, not a product assertion)
+ * -----------------------------------------------------------------
+ * `launchObsidian` → `ensurePluginLoaded` → `dismissTrustDialog` clicks
+ * "Trust author and enable plugins". Obsidian's own response to that gesture is
+ * to OPEN ITS SETTINGS DIALOG on the Community-plugins tab — `demo.spec.ts:131`
+ * has known this for as long as it has existed ("Esc closes the Settings panel
+ * auto-opened by the trust-dismiss path") and was the only spec that ever acted
+ * on it. That dialog is a `.modal-container.mod-dim`: a full-viewport overlay
+ * that INTERCEPTS POINTER EVENTS for the whole window. Every subsequent
+ * `click()` on a File Explorer row or an editor link is then un-actionable, and
+ * Playwright reports it as
+ *
+ *     <div data-setting-id="plugins" class="vertical-tab-nav-item"> from
+ *     <div class="modal-container mod-dim"> subtree intercepts pointer events
+ *
+ * — i.e. the element the test wanted is visible, enabled and stable, and the
+ * click still cannot land. Model-level probes (`page.evaluate` over `vault` /
+ * `metadataCache`) are unaffected, which is exactly why a spec can pass all of
+ * its index assertions and fail only the ones that touch the UI.
+ *
+ * A covered element is not a product defect. Dismissing the overlay restores a
+ * precondition the tests always assumed; it does not relax anything they assert.
+ *
+ * WHAT IT DOES NOT DO
+ * -------------------
+ * It does not silently swallow product surfaces. Every modal it closes is
+ * `console.warn`'d with its title, its active settings tab and its classes, so
+ * a modal nobody expected (a `PendingPluginsModal`, a host-key prompt, a write
+ * conflict) shows up in the CI log against the spec that hit it rather than
+ * vanishing. If Escape does not close a modal, that is logged too and the loop
+ * gives up rather than spinning — the click that follows then fails with
+ * Playwright's own intercept diagnostic, which is the honest outcome.
+ *
+ * Do NOT call this while a palette / Quick Switcher is deliberately open —
+ * those are `.modal-container`s too and Escape will close them. Call it BEFORE
+ * an interaction sequence, never inside one.
+ *
+ * @returns how many modals were actually closed (0 when the workspace was clear).
+ */
+export async function dismissBlockingModals(
+  page: Page,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let closed = 0;
+
+  // Bounded: a handful of stacked modals is already pathological, and an
+  // Escape-proof modal must fail LOUDLY rather than spin until the deadline.
+  for (let attempt = 0; attempt < 5 && Date.now() < deadline; attempt++) {
+    const open = await describeOpenModals(page);
+    if (open.length === 0) break;
+
+    console.warn(
+      `[e2e] dismissBlockingModals: ${open.length} Obsidian modal(s) are covering ` +
+      'the workspace and would intercept every click. Closing with Escape. ' +
+      `Modal(s): ${JSON.stringify(open)}`,
+    );
+    await page.keyboard.press('Escape').catch(() => { /* best effort */ });
+
+    // Obsidian tears modals down asynchronously; poll for the count to drop
+    // rather than sleeping a fixed amount.
+    const settleBy = Math.min(Date.now() + 3_000, deadline);
+    let remaining = open.length;
+    while (Date.now() < settleBy) {
+      remaining = (await describeOpenModals(page)).length;
+      if (remaining < open.length) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    if (remaining >= open.length) {
+      console.warn(
+        '[e2e] dismissBlockingModals: Escape did NOT close ' +
+        `${JSON.stringify(open)} — it is not Escape-dismissable. Leaving it up.`,
+      );
+      break;
+    }
+    closed += open.length - remaining;
+  }
+
+  return closed;
+}
+
+/**
+ * One identifying line per open `.modal-container`, for the warn above. The
+ * title, the active settings tab (`data-setting-id` — the field that pins
+ * Obsidian's own auto-opened Settings dialog as the culprit) and the classes
+ * are enough to tell that dialog apart from a genuine product modal.
+ */
+async function describeOpenModals(page: Page): Promise<string[]> {
+  return page
+    .evaluate(() =>
+      Array.from(document.querySelectorAll('.modal-container')).map((c) => {
+        const title = c.querySelector('.modal-title')?.textContent?.trim() ?? '';
+        const activeTab = c
+          .querySelector('.vertical-tab-nav-item.is-active')
+          ?.getAttribute('data-setting-id') ?? '';
+        const modal = c.querySelector('.modal');
+        return JSON.stringify({
+          title: title || '(untitled)',
+          settingTab: activeTab || null,
+          containerClass: c.className,
+          modalClass: modal?.className ?? null,
+        });
+      }),
+    )
+    .catch(() => []);
+}
+
+/**
  * Force Obsidian out of Restricted Mode and load the plugin. First
  * dismiss the trust dialog if it's blocking the UI (clicking
  * "Trust author and enable plugins" is what Obsidian itself does to
@@ -590,6 +720,102 @@ export async function runCommandViaPalette(
   const firstSuggestion = page.locator('.prompt .suggestion-item').first();
   await firstSuggestion.waitFor({ state: 'visible', timeout: 10_000 });
   await firstSuggestion.click();
+}
+
+/**
+ * Expand a folder in the File Explorer and wait until its children are
+ * actually IN the vault model.
+ *
+ * The remote tree is loaded lazily, one level per expand: connect only
+ * materialises the root's immediate children, and every folder below
+ * that is an initially-childless `TFolder` until it is opened
+ * (`LazyFolderLoader`). The product's hook for that is a delegated
+ * capture-phase click listener that reads
+ * `target.closest('.nav-folder-title')` and its `data-path`
+ * (`src/main.ts:923-924`) — so clicking exactly that element is not a UI
+ * convenience here, it IS the trigger. Dispatching to any other node (or
+ * calling an internal API) would test something the user cannot do.
+ *
+ * Waits on `vault.fileMap` rather than on rendered `.nav-file-title`
+ * nodes, for the same reason `waitForShadowVaultLoaded` does: headless
+ * Obsidian's File Explorer paint is lazy/virtualised under Xvfb and
+ * races, while the model is what the load actually produces.
+ */
+export async function expandFolderInExplorer(
+  page: Page,
+  folderPath: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const title = page.locator(`.nav-folder-title[data-path="${folderPath}"]`).first();
+  await title
+    .waitFor({ state: 'attached', timeout: Math.min(timeoutMs, 10_000) })
+    .catch(() => { /* absent title IS the finding — reported below */ });
+
+  if (await title.count() === 0) {
+    throw new Error(
+      `expandFolderInExplorer: no .nav-folder-title[data-path="${folderPath}"] in the ` +
+      'File Explorer — the folder was never materialised by the connect populate, ' +
+      `so there is nothing to expand.\n${await dumpFolderState(page, folderPath)}`,
+    );
+  }
+
+  await title.click();
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await countChildrenInFileMap(page, folderPath) >= 1) return;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  throw new Error(
+    `expandFolderInExplorer: "${folderPath}" still had no children in vault.fileMap ` +
+    `within ${timeoutMs}ms of clicking its .nav-folder-title — the lazy folder ` +
+    'load never landed.\n' +
+    (await dumpFolderState(page, folderPath)),
+  );
+}
+
+/** How many `fileMap` keys sit under `folderPath/`. */
+async function countChildrenInFileMap(page: Page, folderPath: string): Promise<number> {
+  return page
+    .evaluate((prefix) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      const keys = Object.keys(app?.vault?.fileMap ?? {});
+      return keys.filter((k) => k.startsWith(`${prefix}/`)).length;
+    }, folderPath)
+    .catch(() => 0);
+}
+
+/**
+ * What IS in `fileMap` around `folderPath`, for the timeout message. A
+ * bare "0 children" is ambiguous between "the folder isn't in the model
+ * at all" (populate bug) and "it's there but the expand didn't load it"
+ * (lazy-load bug); listing the folder itself, everything under its
+ * prefix, and the `data-path`s the explorer is actually rendering
+ * separates the two in one CI round.
+ */
+async function dumpFolderState(page: Page, folderPath: string): Promise<string> {
+  const state = await page
+    .evaluate((prefix) => {
+      const app = (window as unknown as {
+        app?: { vault?: { fileMap?: Record<string, unknown> } };
+      }).app;
+      const keys = Object.keys(app?.vault?.fileMap ?? {});
+      return {
+        fileMapKeys: keys.length,
+        folderItself: keys.includes(prefix),
+        under: keys.filter((k) => k.startsWith(`${prefix}/`)).slice(0, 20),
+        sample: keys.slice(0, 20),
+        navFolderTitles: Array.from(document.querySelectorAll('.nav-folder-title'))
+          .map((el) => el.getAttribute('data-path'))
+          .slice(0, 20),
+      };
+    }, folderPath)
+    .catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+
+  return `vault.fileMap around "${folderPath}": ${JSON.stringify(state)}`;
 }
 
 /**

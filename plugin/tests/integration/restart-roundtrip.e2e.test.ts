@@ -38,9 +38,11 @@ import type { SshProfile } from '../../src/types';
  *   - `core-plugins.json`  — which built-in plugins are enabled
  *   - `hotkeys.json`       — keybinding overrides
  *
- * Each file is `PathMapper.isPrivate(...)` = **false** today, i.e.
- * it's intentionally shared across machines; the gap is that the
- * sharing is only one-way (push, no pull).
+ * Each file is now `PathMapper.isPrivate(...)` = **true** (per-device):
+ * the round-trip persists THIS device's OWN copy across a restart. The
+ * seed-write and pull-read go through the same PathMapper, so this still
+ * exercises the push/pull persistence the #342 fix added — it just lands
+ * on the per-client subtree instead of the old shared identity path.
  *
  * Runs only when the test keypair is staged (`npm run sshd:start`).
  */

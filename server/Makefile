@@ -5,6 +5,17 @@ CMD       := ./cmd/obsidian-remote-server
 BIN_DIR   := bin
 DIST_DIR  := dist
 
+# Fully static binaries: CGO off so the daemon links no libc and runs on
+# ANY Linux glibc version. Without this, the host-native build in `cross`
+# (linux/amd64 on a modern ubuntu-latest runner, glibc 2.35+) is the only
+# target Go builds with CGO auto-ENABLED — it links dynamically against the
+# runner's glibc and then dies on older hosts with
+# `libc.so.6: version GLIBC_2.34 not found`. The daemon never writes its
+# token, RPC times out, and the client falls back to SFTP. The cross
+# (non-host) targets already default to CGO off; exporting it here makes all
+# targets consistent and static. Mirrors plugin/scripts/build-server.mjs.
+export CGO_ENABLED := 0
+
 .PHONY: build clean cross test fmt
 
 build:

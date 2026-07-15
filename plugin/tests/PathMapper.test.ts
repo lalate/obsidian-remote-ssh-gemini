@@ -49,6 +49,16 @@ describe('PathMapper.isPrivate', () => {
     expect(m.isPrivate('.obsidian/types.json')).toBe(true);
   });
 
+  it('treats per-device settings (app/appearance/core-plugins/hotkeys) as private', () => {
+    // Moved from shared → per-client so two devices (or one device
+    // across reconnects) never collide on a single shared copy — the
+    // perpetual write-conflict this fixes.
+    expect(m.isPrivate('.obsidian/app.json')).toBe(true);
+    expect(m.isPrivate('.obsidian/appearance.json')).toBe(true);
+    expect(m.isPrivate('.obsidian/core-plugins.json')).toBe(true);
+    expect(m.isPrivate('.obsidian/hotkeys.json')).toBe(true);
+  });
+
   it('matches inside a private directory pattern', () => {
     expect(m.isPrivate('.obsidian/cache/index')).toBe(true);
     expect(m.isPrivate('.obsidian/cache/sub/x.bin')).toBe(true);
@@ -61,12 +71,70 @@ describe('PathMapper.isPrivate', () => {
 
   it('rejects regular vault content', () => {
     expect(m.isPrivate('Notes/foo.md')).toBe(false);
-    expect(m.isPrivate('.obsidian/hotkeys.json')).toBe(false);
-    expect(m.isPrivate('.obsidian/plugins/myplugin/data.json')).toBe(false);
+    // community-plugins.json stays shared (round-tripped with a forced
+    // remote-ssh union), so it is NOT redirected per-client.
+    expect(m.isPrivate('.obsidian/community-plugins.json')).toBe(false);
   });
 
   it('tolerates a leading slash on the input', () => {
     expect(m.isPrivate('/.obsidian/workspace.json')).toBe(true);
+  });
+});
+
+// #342 / #429 — a plugin's SETTINGS go per-device: `Plugin.saveData()` fires on
+// every settings change, so a shared `plugins/<id>/data.json` is the same
+// perpetual write-conflict the four core config files were redirected to
+// escape. Its CODE must stay SHARED, or a plugin installed on one machine
+// stops loading on the others (that round-trip is PLUGIN_BINARY_FILES).
+describe('PathMapper — plugin settings vs plugin code (#342 / #429)', () => {
+  const m = new PathMapper(ID);
+
+  it('privatises a plugin data.json', () => {
+    expect(m.isPrivate('.obsidian/plugins/claudian/data.json')).toBe(true);
+    expect(m.isPrivate('.obsidian/plugins/tasknotes/data.json')).toBe(true);
+  });
+
+  it('leaves the plugin code SHARED', () => {
+    expect(m.isPrivate('.obsidian/plugins/claudian/main.js')).toBe(false);
+    expect(m.isPrivate('.obsidian/plugins/claudian/manifest.json')).toBe(false);
+    expect(m.isPrivate('.obsidian/plugins/claudian/styles.css')).toBe(false);
+  });
+
+  it('does not over-match: `*` spans exactly one segment', () => {
+    expect(m.isPrivate('.obsidian/plugins')).toBe(false);
+    expect(m.isPrivate('.obsidian/plugins/claudian')).toBe(false);
+    expect(m.isPrivate('.obsidian/plugins/a/b/data.json')).toBe(false);
+    expect(m.isPrivate('.obsidian/data.json')).toBe(false);
+    expect(m.isPrivate('Notes/data.json')).toBe(false);
+  });
+
+  it('redirects data.json per-client, keeping code at the identity path', () => {
+    expect(m.toRemote('.obsidian/plugins/claudian/data.json'))
+      .toBe('.obsidian/user/host-a/plugins/claudian/data.json');
+    expect(m.toRemote('.obsidian/plugins/claudian/main.js'))
+      .toBe('.obsidian/plugins/claudian/main.js');
+  });
+
+  it('round-trips through toVault', () => {
+    const remote = m.toRemote('.obsidian/plugins/claudian/data.json');
+    expect(m.toVault(remote)).toBe('.obsidian/plugins/claudian/data.json');
+  });
+
+  it('listing a plugin dir merges in this client private subtree', () => {
+    const plan = m.resolveListing('.obsidian/plugins/claudian');
+    expect(plan.primary).toBe('.obsidian/plugins/claudian');
+    expect(plan.mergeFromUser).toBe(true);
+    expect(plan.userSubtree).toBe('.obsidian/user/host-a/plugins/claudian');
+    // The `user` sibling only exists at the configDir level, so nothing to
+    // hide at this depth.
+    expect(plan.hideUserDirName).toBeUndefined();
+  });
+
+  it('still hides the user subdir when listing the configDir itself', () => {
+    const plan = m.resolveListing('.obsidian');
+    expect(plan.mergeFromUser).toBe(true);
+    expect(plan.userSubtree).toBe('.obsidian/user/host-a');
+    expect(plan.hideUserDirName).toBe('user');
   });
 });
 
@@ -97,11 +165,13 @@ describe('PathMapper.toRemote / toVault', () => {
       .toBe('.obsidian/user/host-a/workspace.json');
     expect(m.toRemote('.obsidian/cache/foo.bin'))
       .toBe('.obsidian/user/host-a/cache/foo.bin');
+    expect(m.toRemote('.obsidian/app.json'))
+      .toBe('.obsidian/user/host-a/app.json');
   });
 
   it('passes non-private paths through unchanged', () => {
     expect(m.toRemote('Notes/foo.md')).toBe('Notes/foo.md');
-    expect(m.toRemote('.obsidian/hotkeys.json')).toBe('.obsidian/hotkeys.json');
+    expect(m.toRemote('.obsidian/community-plugins.json')).toBe('.obsidian/community-plugins.json');
     expect(m.toRemote('.obsidian')).toBe('.obsidian');
   });
 
@@ -121,6 +191,17 @@ describe('PathMapper.toRemote / toVault', () => {
     const other = new PathMapper('SomeBox');
     expect(other.toRemote('.obsidian/workspace.json'))
       .toBe('.obsidian/user/SomeBox/workspace.json');
+  });
+
+  it('isolates per-device settings by client id (no cross-machine clobber)', () => {
+    // The whole point of making app.json per-device: two machines writing
+    // "the same" config file land on DIFFERENT remote paths, so neither can
+    // trip the other's write-precondition (the perpetual conflict fixed here).
+    const a = new PathMapper('host-a');
+    const b = new PathMapper('host-b');
+    expect(a.toRemote('.obsidian/app.json')).toBe('.obsidian/user/host-a/app.json');
+    expect(b.toRemote('.obsidian/app.json')).toBe('.obsidian/user/host-b/app.json');
+    expect(a.toRemote('.obsidian/app.json')).not.toBe(b.toRemote('.obsidian/app.json'));
   });
 });
 

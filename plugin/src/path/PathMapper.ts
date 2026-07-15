@@ -24,11 +24,37 @@ function defaultObsidianConfigDir(): string {
  * (corrupted layout files, conflicting graph views) are loud failures.
  *
  * Patterns are matched as either an exact configDir-relative filename
- * or a directory prefix (so `cache` covers everything inside).
+ * or a directory prefix (so `cache` covers everything inside). A `*`
+ * segment matches exactly one path segment (see `matchesPrivatePattern`),
+ * which is what lets us privatise `plugins/<id>/data.json` without
+ * dragging the plugin's *code* along with it.
  */
 export const DEFAULT_PRIVATE_PATTERN_BASENAMES: readonly string[] = [
   'workspace.json',
   'workspace-mobile.json',
+  // Per-device Obsidian settings. Each machine keeps its OWN
+  // app/appearance/hotkeys/enabled-core-plugins under its per-client
+  // subtree instead of fighting over one shared copy on the remote.
+  // The shared copy was a perpetual write-conflict source: two sessions
+  // (or the same device across reconnects) both wrote `<configDir>/app.json`
+  // at the identity path, so every settings save tripped PreconditionFailed
+  // against the other's mtime. Redirecting them makes a shared path — and
+  // thus the conflict — impossible by construction.
+  'app.json',
+  'appearance.json',
+  'core-plugins.json',
+  'hotkeys.json',
+  // Third-party plugin SETTINGS (#342 / #429) — per-device for exactly the
+  // same reason as the four above. `Plugin.saveData()` fires on every
+  // settings change, so a shared `<configDir>/plugins/<id>/data.json` would
+  // reintroduce the perpetual write-conflict the redirect above just killed.
+  //
+  // Deliberately `plugins/*/data.json` and NOT `plugins`: the plugin's CODE
+  // (manifest.json / main.js / styles.css) must stay SHARED at the identity
+  // path so a plugin installed on one machine still loads on every other —
+  // that round-trip is `ShadowVaultBootstrap.PLUGIN_BINARY_FILES`. Only the
+  // settings go per-device.
+  'plugins/*/data.json',
   'cache',
   'cache.zlib',
   'types.json',
@@ -36,6 +62,32 @@ export const DEFAULT_PRIVATE_PATTERN_BASENAMES: readonly string[] = [
   'graph.json',
   'canvas.json',
 ];
+
+/**
+ * Match a configDir-rooted private pattern against a normalized
+ * vault-relative path.
+ *
+ * Semantics: exact match, or directory-prefix match (`cache` covers
+ * `cache/anything`). A `*` pattern segment matches exactly one path
+ * segment — never across `/` — so `plugins/*` + `data.json` catches
+ * `plugins/claudian/data.json` but leaves `plugins/claudian/main.js`
+ * shared.
+ */
+function matchesPrivatePattern(pattern: string, normalized: string): boolean {
+  if (!pattern.includes('*')) {
+    return normalized === pattern || normalized.startsWith(pattern + '/');
+  }
+  const pat = pattern.split('/');
+  const seg = normalized.split('/');
+  // Shorter than the pattern → neither the file itself nor inside it.
+  if (seg.length < pat.length) return false;
+  for (let i = 0; i < pat.length; i++) {
+    if (pat[i] === '*') continue; // any single segment
+    if (pat[i] !== seg[i]) return false;
+  }
+  // Equal depth = the file itself; deeper = inside it (directory-prefix).
+  return true;
+}
 
 /**
  * Back-compat re-export: the basenames joined onto the default
@@ -158,7 +210,7 @@ export class PathMapper {
   /** True when the vault-relative path should live in this client's private subtree. */
   isPrivate(vaultPath: string): boolean {
     const normalized = stripLeadingSlash(vaultPath);
-    return this.privatePatterns.some(p => normalized === p || normalized.startsWith(p + '/'));
+    return this.privatePatterns.some(p => matchesPrivatePattern(p, normalized));
   }
 
   /**
@@ -172,7 +224,12 @@ export class PathMapper {
   isCrossingPoint(vaultPath: string): boolean {
     const normalized = stripLeadingSlash(vaultPath);
     if (this.isPrivate(normalized)) return false;
-    return this.privatePatterns.some(p => parentDirOf(p) === normalized);
+    // Exact-depth match (not dir-prefix): the crossing point is the pattern's
+    // immediate parent. For `plugins/*/data.json` that is `plugins/<id>` — so
+    // listing a plugin's own dir merges in this client's private `data.json`,
+    // while listing `plugins/` itself does not (every plugin dir already
+    // exists at the shared identity path, because the CODE is shared).
+    return this.privatePatterns.some(p => matchesPatternExact(parentDirOf(p), normalized));
   }
 
   // ─── translation ─────────────────────────────────────────────────────────
@@ -233,13 +290,21 @@ export class PathMapper {
       return { primary: this.toRemote(vaultPath), mergeFromUser: false };
     }
     if (this.isCrossingPoint(normalized)) {
+      // The private subtree mirrors the configDir-relative path, so the
+      // crossing point's counterpart is `privateRoot/<same relative path>`.
+      // For the configDir itself that relative path is empty → privateRoot.
+      // For `<configDir>/plugins/<id>` it is `privateRoot/plugins/<id>`.
+      const rest = normalized.startsWith(this.configDirSlash)
+        ? normalized.slice(this.configDirSlash.length)
+        : '';
       return {
         primary: vaultPath,
         mergeFromUser: true,
-        userSubtree: this.privateRoot,
-        // Hide the user-subdir entry from the primary listing so
-        // other clients' subtrees never surface.
-        hideUserDirName: PRIVATE_USER_SUBDIR,
+        userSubtree: rest ? `${this.privateRoot}/${rest}` : this.privateRoot,
+        // Only the configDir itself has the `user` sibling to hide, so other
+        // clients' subtrees never surface. Deeper crossing points (a plugin's
+        // own dir) have no such sibling.
+        hideUserDirName: normalized === this.configDir ? PRIVATE_USER_SUBDIR : undefined,
       };
     }
     return { primary: vaultPath, mergeFromUser: false };
@@ -247,6 +312,23 @@ export class PathMapper {
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Segment-wise EXACT match (same depth, `*` matching any one segment).
+ * Unlike `matchesPrivatePattern` this never matches a deeper path, so it
+ * is safe for crossing-point detection where a dir-prefix match would
+ * wrongly flag every ancestor.
+ */
+function matchesPatternExact(pattern: string, normalized: string): boolean {
+  const pat = pattern.split('/');
+  const seg = normalized.split('/');
+  if (pat.length !== seg.length) return false;
+  for (let i = 0; i < pat.length; i++) {
+    if (pat[i] === '*') continue;
+    if (pat[i] !== seg[i]) return false;
+  }
+  return true;
+}
 
 function stripLeadingSlash(p: string): string {
   return p.startsWith('/') ? p.slice(1) : p;

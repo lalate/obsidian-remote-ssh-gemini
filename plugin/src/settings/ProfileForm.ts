@@ -103,6 +103,18 @@ export class ProfileForm extends Modal {
       .addText(t => t.setValue(this.profile.privateKeyPath ?? '')
         .onChange(v => { this.profile.privateKeyPath = v || undefined; }));
 
+    new Setting(contentEl)
+      .setName('Proxy command')
+      .setDesc(
+        'Optional. OpenSSH ProxyCommand to reach the host through a ' +
+        'subprocess, e.g. `cloudflared access ssh --hostname %h`. ' +
+        '`%h`/`%p`/`%r` expand at connect time. Leave blank for a direct ' +
+        'connection; ignored when a jump host is set. (Desktop only.)',
+      )
+      .addText(t => t
+        .setValue(this.profile.proxyCommand ?? '')
+        .onChange(v => { this.profile.proxyCommand = v.trim() || undefined; }));
+
     contentEl.createEl('h3', { text: 'Remote vault' });
 
     const pathSetting = new Setting(contentEl)
@@ -215,6 +227,17 @@ export class ProfileForm extends Modal {
       };
     } else {
       this.profile.jumpHost = undefined;
+    }
+    // ProxyCommand → subprocess transport (#430). ProxyJump and
+    // ProxyCommand are mutually exclusive in OpenSSH; mirror the
+    // SftpClient precedence (jumpHost wins) by only adopting the
+    // ProxyCommand when no ProxyJump is present.
+    this.profile.proxyCommand = (e.proxyCommand && !e.proxyJump) ? e.proxyCommand : undefined;
+    // IdentityAgent → agent socket (#430), e.g. 1Password's agent.sock.
+    // Don't override an explicit IdentityFile (key) auth choice.
+    if (e.identityAgent) {
+      this.profile.agentSocket = e.identityAgent;
+      if (!e.identityFile) this.profile.authMethod = 'agent';
     }
   }
 
