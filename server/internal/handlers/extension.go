@@ -175,7 +175,8 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return nil, rpc.ErrInternal(methodName + ": " + err.Error())
 		}
-		r.unregisterInvocation(p.InvocationID)
+		// Don't unregister here — streamProcess's deferred unregisterInvocation
+		// handles cleanup after sending cli.done.
 		return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: true}, nil
 	}
 }
@@ -284,9 +285,8 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		}
 
 		// Stream to the active session if one exists.
-		// When session is nil (dropped with no reattach) or send fails,
-		// the process keeps running — output is already persisted above
-		// and can be replayed via resumeInvoke + ReplayFrom.
+		// On send failure the client is gone; kill the process so the
+		// slot is released via the deferred releaseSlot.
 		if session != nil {
 			if outputMode == "single" {
 				for _, it := range payload {
@@ -296,7 +296,9 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						Data:         it.Data,
 						Seq:          it.Seq,
 					}); err != nil {
-						session = nil
+						_ = cmd.Process.Kill()
+						batch = batch[:0]
+						return false
 					}
 				}
 			} else {
@@ -304,7 +306,9 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 					InvocationID: invocationID,
 					Items:        payload,
 				}); err != nil {
-					session = nil
+					_ = cmd.Process.Kill()
+					batch = batch[:0]
+					return false
 				}
 			}
 		}

@@ -110,12 +110,10 @@ export interface ExtensionSchemaResult {
 }
 
 export interface ExtensionInvokeParams {
-  invocationId?: string;
   tool: string;
   args?: Record<string, string>;
   workingDir?: string;
   persist?: boolean;
-  resumeFrom?: number;
 }
 
 export interface ExtensionInvokeResult {
