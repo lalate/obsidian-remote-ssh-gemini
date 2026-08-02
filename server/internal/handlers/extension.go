@@ -360,18 +360,23 @@ func (r *extensionRunner) reapOldestOrphan() bool {
 			oldestStart = inv.startedAt
 		}
 	}
+	// Selection, orphan re-check, doneReason mark, and stop capture all
+	// happen under one lock so a concurrent resumeInvoke rebind cannot
+	// slip between selection and kill and turn a live invocation into
+	// a reap victim. Only the kill itself runs after the lock.
+	var stop func() error
+	if oldestID != "" {
+		if inv, ok := r.active[oldestID]; ok && inv.session == nil && inv.doneReason == "" {
+			inv.doneReason = "reaped"
+			r.active[oldestID] = inv
+			stop = inv.stop
+		}
+	}
 	r.mu.Unlock()
-	if oldestID == "" {
+	if stop == nil {
 		return false
 	}
-	inv, ok := r.lookupInvocation(oldestID)
-	if !ok {
-		return false
-	}
-	r.markDoneReason(oldestID, "reaped")
-	if inv.stop != nil {
-		_ = inv.stop()
-	}
+	_ = stop()
 	return true
 }
 
