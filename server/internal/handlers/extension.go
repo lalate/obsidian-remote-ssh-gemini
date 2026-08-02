@@ -30,6 +30,14 @@ type extensionRunner struct {
 
 	mu     sync.Mutex
 	active map[string]activeInvocation
+
+	// orphanTimeout bounds how long an invocation may run with no
+	// attached session before streamProcess kills the process. Output
+	// is persisted to the log the whole time, so a reattaching client
+	// can still replay everything after the reap; the timeout only
+	// guarantees that dropped clients cannot wedge the finite
+	// invocation slot pool. Field (not const) so tests can shorten it.
+	orphanTimeout time.Duration
 }
 
 // activeInvocation tracks a running extension process.
@@ -47,13 +55,20 @@ type activeInvocation struct {
 
 const maxConcurrentExtensionInvocations = 4
 
+// orphanInvocationTimeout is how long a process with no attached session
+// may keep running before the daemon kills it. Output stays in the log
+// for replay, so the reap only bounds how long a dropped client can
+// occupy one of the maxConcurrentExtensionInvocations slots.
+const orphanInvocationTimeout = 30 * time.Second
+
 func NewExtensionRunner(mgr *extensions.Manager, logs *extensions.LogStore, vaultDir string) *extensionRunner {
 	return &extensionRunner{
-		mgr:      mgr,
-		logs:     logs,
-		vaultDir: vaultDir,
-		slots:    make(chan struct{}, maxConcurrentExtensionInvocations),
-		active:   map[string]activeInvocation{},
+		mgr:           mgr,
+		logs:          logs,
+		vaultDir:      vaultDir,
+		slots:         make(chan struct{}, maxConcurrentExtensionInvocations),
+		active:        map[string]activeInvocation{},
+		orphanTimeout: orphanInvocationTimeout,
 	}
 }
 
@@ -274,6 +289,21 @@ func (r *extensionRunner) rebindInvocation(invocationID string, session *server.
 	return inv, true
 }
 
+// clearInvocationSessionIf nils the registered session only when it still
+// points at session. A concurrent resumeInvoke may have rebound a fresh
+// session by the time a stale send fails; clearing unconditionally would
+// detach the new client.
+func (r *extensionRunner) clearInvocationSessionIf(invocationID string, session *server.Session) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok || inv.session != session {
+		return
+	}
+	inv.session = nil
+	r.active[invocationID] = inv
+}
+
 func sendReplay(session *server.Session, outputMode, invocationID string, items []proto.CliOutputBatchItem) error {
 	if outputMode == "single" {
 		for _, it := range items {
@@ -368,9 +398,10 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 			}
 		}
 
-		// Stream to the active session if one exists.
-		// Output is already persisted; when the client is gone, let the
-		// process keep running so a future resumeInvoke can reattach.
+		// Stream to the active session if one exists. On send failure the
+		// client is gone: clear the registered session so the orphan reaper
+		// (below) can observe "no session" and reclaim the slot after
+		// orphanTimeout. Output is already persisted for a future resume.
 		if session != nil {
 			if outputMode == "single" {
 				for _, it := range payload {
@@ -380,7 +411,9 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						Data:         it.Data,
 						Seq:          it.Seq,
 					}); err != nil {
+						r.clearInvocationSessionIf(invocationID, session)
 						session = nil
+						break
 					}
 				}
 			} else {
@@ -388,6 +421,7 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 					InvocationID: invocationID,
 					Items:        payload,
 				}); err != nil {
+					r.clearInvocationSessionIf(invocationID, session)
 					session = nil
 				}
 			}
@@ -395,6 +429,11 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		batch = batch[:0]
 		return true
 	}
+
+	// lastSessionSeen is reset whenever a session is present; when it
+	// stays absent for orphanTimeout, the process is orphaned and killed.
+	lastSessionSeen := time.Now()
+	reaped := false
 
 	for {
 		select {
@@ -439,6 +478,20 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 			if !flush() {
 				_ = cmd.Wait()
 				return
+			}
+			// Orphan reaper: a process whose client dropped is kept alive
+			// for orphanTimeout so a resumeInvoke can reattach. If nobody
+			// does, kill it so its slot is reclaimed instead of wedging
+			// the maxConcurrentExtensionInvocations pool. Killing closes
+			// the pipes, so the itemsCh-closed path above persists
+			// cli.done and unregisters via the deferred calls.
+			if !reaped {
+				if sess := r.currentInvocationSession(invocationID); sess != nil {
+					lastSessionSeen = time.Now()
+				} else if time.Since(lastSessionSeen) > r.orphanTimeout {
+					reaped = true
+					_ = cmd.Process.Kill()
+				}
 			}
 		}
 	}
