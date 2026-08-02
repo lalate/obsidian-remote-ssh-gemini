@@ -30,14 +30,6 @@ type extensionRunner struct {
 
 	mu     sync.Mutex
 	active map[string]activeInvocation
-
-	// orphanTimeout bounds how long an invocation may run with no
-	// attached session before streamProcess kills the process. Output
-	// is persisted to the log the whole time, so a reattaching client
-	// can still replay everything after the reap; the timeout only
-	// guarantees that dropped clients cannot wedge the finite
-	// invocation slot pool. Field (not const) so tests can shorten it.
-	orphanTimeout time.Duration
 }
 
 // activeInvocation tracks a running extension process.
@@ -47,28 +39,28 @@ type extensionRunner struct {
 // not an identity, so there is no per-session authorization boundary.
 // session is the (rebindable) stream target for live output; when nil,
 // output is persisted to the log for replay by a future reattach.
+// startedAt is the registration time, used to pick the oldest orphan
+// when the invocation pool is full and a slot must be reclaimed.
+// doneReason is set when the daemon itself terminated the process
+// (lazy reap or an explicit extension.kill); it stays empty on a
+// natural exit or crash so reattaching clients can tell them apart.
 type activeInvocation struct {
 	session    *server.Session
 	stop       func() error
 	outputMode string
+	startedAt  time.Time
+	doneReason string
 }
 
 const maxConcurrentExtensionInvocations = 4
 
-// orphanInvocationTimeout is how long a process with no attached session
-// may keep running before the daemon kills it. Output stays in the log
-// for replay, so the reap only bounds how long a dropped client can
-// occupy one of the maxConcurrentExtensionInvocations slots.
-const orphanInvocationTimeout = 30 * time.Second
-
 func NewExtensionRunner(mgr *extensions.Manager, logs *extensions.LogStore, vaultDir string) *extensionRunner {
 	return &extensionRunner{
-		mgr:           mgr,
-		logs:          logs,
-		vaultDir:      vaultDir,
-		slots:         make(chan struct{}, maxConcurrentExtensionInvocations),
-		active:        map[string]activeInvocation{},
-		orphanTimeout: orphanInvocationTimeout,
+		mgr:      mgr,
+		logs:     logs,
+		vaultDir: vaultDir,
+		slots:    make(chan struct{}, maxConcurrentExtensionInvocations),
+		active:   map[string]activeInvocation{},
 	}
 }
 
@@ -103,10 +95,26 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 			return nil, rpc.ErrInvalidParams("extension.invoke: " + err.Error())
 		}
 
-		select {
-		case r.slots <- struct{}{}:
-		case <-ctx.Done():
-			return nil, rpc.ErrInternal("extension.invoke: context canceled")
+		acquired := false
+		for !acquired {
+			select {
+			case r.slots <- struct{}{}:
+				acquired = true
+			case <-ctx.Done():
+				return nil, rpc.ErrInternal("extension.invoke: context canceled")
+			default:
+				// Pool full. Reap the oldest orphaned invocation (a
+				// dropped client whose process still runs) to free a
+				// slot, then block until a slot frees or the caller
+				// cancels. Nothing dies while the pool is not full.
+				r.reapOldestOrphan()
+				select {
+				case r.slots <- struct{}{}:
+					acquired = true
+				case <-ctx.Done():
+					return nil, rpc.ErrInternal("extension.invoke: context canceled")
+				}
+			}
 		}
 		released := false
 		releaseSlot := func() {
@@ -143,6 +151,7 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 			return nil, rpc.ErrInternal("extension.invoke: stderr pipe: " + err.Error())
 		}
 
+		setProcessGroup(cmd)
 		if err := cmd.Start(); err != nil {
 			releaseSlot()
 			return nil, rpc.ErrInternal("extension.invoke: start: " + err.Error())
@@ -155,10 +164,7 @@ func (r *extensionRunner) Invoke() rpc.Handler {
 			persist = *p.Persist
 		}
 		r.registerInvocation(invocationID, session, cap.OutputMode, func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return cmd.Process.Kill()
+			return killProcessGroup(cmd)
 		})
 		go r.streamProcess(invocationID, cmd, stdout, stderr, persist, cap.OutputMode, releaseSlot)
 
@@ -215,6 +221,7 @@ func (r *extensionRunner) resumeInvoke(ctx context.Context, p proto.ExtensionInv
 			InvocationID: invocationID,
 			ExitCode:     done.ExitCode,
 			Signal:       done.Signal,
+			Reason:       done.Reason,
 		}); err != nil {
 			return nil, rpc.ErrInternal("extension.invoke: replay done: " + err.Error())
 		}
@@ -238,6 +245,7 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 			return proto.ExtensionKillResult{InvocationID: p.InvocationID, Killed: false}, nil
 		}
 
+		r.markDoneReason(p.InvocationID, "killed")
 		err := inv.stop()
 		if err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return nil, rpc.ErrInternal(methodName + ": " + err.Error())
@@ -251,7 +259,19 @@ func (r *extensionRunner) killForMethod(methodName string) rpc.Handler {
 func (r *extensionRunner) registerInvocation(invocationID string, session *server.Session, outputMode string, stop func() error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.active[invocationID] = activeInvocation{session: session, outputMode: outputMode, stop: stop}
+	r.active[invocationID] = activeInvocation{session: session, outputMode: outputMode, stop: stop, startedAt: time.Now()}
+	r.attachOnClose(invocationID, session)
+}
+
+// attachOnClose detaches the invocation from session when the
+// connection dies, so the process becomes an orphan that a future
+// resumeInvoke can rebind or the lazy reaper can reclaim. Must be
+// called with r.mu held.
+func (r *extensionRunner) attachOnClose(invocationID string, session *server.Session) {
+	if session == nil {
+		return
+	}
+	session.OnClose(func() { r.clearInvocationSessionIf(invocationID, session) })
 }
 
 func (r *extensionRunner) lookupInvocation(invocationID string) (activeInvocation, bool) {
@@ -286,6 +306,7 @@ func (r *extensionRunner) rebindInvocation(invocationID string, session *server.
 	}
 	inv.session = session
 	r.active[invocationID] = inv
+	r.attachOnClose(invocationID, session)
 	return inv, true
 }
 
@@ -302,6 +323,56 @@ func (r *extensionRunner) clearInvocationSessionIf(invocationID string, session 
 	}
 	inv.session = nil
 	r.active[invocationID] = inv
+}
+
+// markDoneReason records why the daemon terminated the invocation.
+// First write wins: a race between the lazy reaper and an explicit
+// extension.kill must not flip-flop the reason sent in cli.done.
+func (r *extensionRunner) markDoneReason(invocationID, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inv, ok := r.active[invocationID]
+	if !ok || inv.doneReason != "" {
+		return
+	}
+	inv.doneReason = reason
+	r.active[invocationID] = inv
+}
+
+// reapOldestOrphan kills the oldest invocation with no attached session
+// that has not already been marked for reaping, freeing its slot for a
+// new invoke. The kill is asynchronous: the slot actually frees when
+// streamProcess sees the pipes hit EOF and runs releaseSlot. Skipping
+// reaped entries keeps a concurrent second reaper from re-killing the
+// same process while it awaits EOF teardown. Returns false when no
+// reapable orphan exists, so the caller can block on a slot instead of
+// spinning.
+func (r *extensionRunner) reapOldestOrphan() bool {
+	r.mu.Lock()
+	var oldestID string
+	var oldestStart time.Time
+	for id, inv := range r.active {
+		if inv.session != nil || inv.doneReason == "reaped" {
+			continue
+		}
+		if oldestID == "" || inv.startedAt.Before(oldestStart) {
+			oldestID = id
+			oldestStart = inv.startedAt
+		}
+	}
+	r.mu.Unlock()
+	if oldestID == "" {
+		return false
+	}
+	inv, ok := r.lookupInvocation(oldestID)
+	if !ok {
+		return false
+	}
+	r.markDoneReason(oldestID, "reaped")
+	if inv.stop != nil {
+		_ = inv.stop()
+	}
+	return true
 }
 
 func sendReplay(session *server.Session, outputMode, invocationID string, items []proto.CliOutputBatchItem) error {
@@ -399,9 +470,10 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		}
 
 		// Stream to the active session if one exists. On send failure the
-		// client is gone: clear the registered session so the orphan reaper
-		// (below) can observe "no session" and reclaim the slot after
-		// orphanTimeout. Output is already persisted for a future resume.
+		// client is gone: clear the registered session so the invocation
+		// becomes an orphan that a future resumeInvoke can rebind or the
+		// lazy reaper (reapOldestOrphan) can reclaim when the pool fills.
+		// Output is already persisted for a future resume.
 		if session != nil {
 			if outputMode == "single" {
 				for _, it := range payload {
@@ -430,11 +502,6 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 		return true
 	}
 
-	// lastSessionSeen is reset whenever a session is present; when it
-	// stays absent for orphanTimeout, the process is orphaned and killed.
-	lastSessionSeen := time.Now()
-	reaped := false
-
 	for {
 		select {
 		case it, ok := <-itemsCh:
@@ -453,9 +520,13 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						sig = err.Error()
 					}
 				}
+				reason := ""
+				if inv, ok := r.lookupInvocation(invocationID); ok {
+					reason = inv.doneReason
+				}
 				// Fix #3: Persist cli.done so reattaching clients learn exit status.
 				if r.logs != nil && persistEnabled {
-					_ = r.logs.AppendDone(invocationID, exitCode, sig)
+					_ = r.logs.AppendDone(invocationID, exitCode, sig, reason)
 				}
 				session := r.currentInvocationSession(invocationID)
 				if session != nil {
@@ -463,35 +534,22 @@ func (r *extensionRunner) streamProcess(invocationID string, cmd *exec.Cmd, stdo
 						InvocationID: invocationID,
 						ExitCode:     exitCode,
 						Signal:       sig,
+						Reason:       reason,
 					})
 				}
 				return
 			}
 			batch = append(batch, it)
 			if len(batch) >= 50 {
-					if !flush() {
-						_ = cmd.Wait()
-						return
-					}
+				if !flush() {
+					_ = cmd.Wait()
+					return
+				}
 			}
 		case <-ticker.C:
 			if !flush() {
 				_ = cmd.Wait()
 				return
-			}
-			// Orphan reaper: a process whose client dropped is kept alive
-			// for orphanTimeout so a resumeInvoke can reattach. If nobody
-			// does, kill it so its slot is reclaimed instead of wedging
-			// the maxConcurrentExtensionInvocations pool. Killing closes
-			// the pipes, so the itemsCh-closed path above persists
-			// cli.done and unregisters via the deferred calls.
-			if !reaped {
-				if sess := r.currentInvocationSession(invocationID); sess != nil {
-					lastSessionSeen = time.Now()
-				} else if time.Since(lastSessionSeen) > r.orphanTimeout {
-					reaped = true
-					_ = cmd.Process.Kill()
-				}
 			}
 		}
 	}
@@ -511,4 +569,3 @@ func (r *extensionRunner) scanStream(wg *sync.WaitGroup, src io.Reader, stream s
 		out <- proto.CliOutputBatchItem{Stream: "stderr", Data: "[stream error] " + err.Error() + "\n", Seq: seq}
 	}
 }
-

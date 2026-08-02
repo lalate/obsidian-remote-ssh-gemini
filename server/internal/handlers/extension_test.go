@@ -3,8 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -131,7 +129,7 @@ func TestExtensionInvoke_ResumeFromCompletedInvocation(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("AppendBatch: ok=%v err=%v", ok, err)
 	}
-	if err := store.AppendDone(inv, 0, ""); err != nil {
+	if err := store.AppendDone(inv, 0, "", ""); err != nil {
 		t.Fatalf("AppendDone: %v", err)
 	}
 
@@ -255,7 +253,7 @@ func TestExtensionInvoke_ResumeFromWithDoneAtEnd(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("AppendBatch: ok=%v err=%v", ok, err)
 	}
-	if err := store.AppendDone(inv, 0, ""); err != nil {
+	if err := store.AppendDone(inv, 0, "", ""); err != nil {
 		t.Fatalf("AppendDone: %v", err)
 	}
 
@@ -288,89 +286,89 @@ func TestExtensionInvoke_ResumeFromWithDoneAtEnd(t *testing.T) {
 	}
 }
 
-func TestStreamProcess_ReapsOrphanedInvocation(t *testing.T) {
+func TestReapOldestOrphan_PicksOldestOrphanOnly(t *testing.T) {
 	r := NewExtensionRunner(nil, nil, "")
-	r.orphanTimeout = 50 * time.Millisecond
-
-	// exec (not a child sleep) so that killing the process closes the
-	// pipes immediately — a leftover child would keep the write end open
-	// and the scanStream goroutine would never see EOF.
-	cmd := exec.Command("sh", "-c", "echo hello; exec sleep 30")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("StdoutPipe: %v", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatalf("StderrPipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer cmd.Process.Kill()
-
-	// Client whose notifier always fails: simulate a dropped connection.
-	sess := server.NewSession()
-	sess.SetNotifier(func(_ string, _ interface{}, _ *proto.Meta) error {
-		return errors.New("client gone")
-	})
-	inv := "inv-orphan"
-	r.registerInvocation(inv, sess, "batch", func() error { return cmd.Process.Kill() })
-
-	released := make(chan struct{})
-	go r.streamProcess(inv, cmd, stdout, stderr, false, "batch", func() { close(released) })
-
-	select {
-	case <-released:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("orphaned invocation was not reaped within 5s")
+	var killed []string
+	record := func(id string) func() error {
+		return func() error {
+			killed = append(killed, id)
+			return nil
+		}
 	}
 
-	if _, ok := r.lookupInvocation(inv); ok {
-		t.Fatalf("invocation %q should be unregistered after reap", inv)
+	r.registerInvocation("inv-old", nil, "batch", record("inv-old"))
+	time.Sleep(time.Millisecond) // separate startedAt ticks
+	r.registerInvocation("inv-new", nil, "batch", record("inv-new"))
+
+	live := server.NewSession()
+	r.registerInvocation("inv-live", live, "batch", record("inv-live"))
+
+	if !r.reapOldestOrphan() {
+		t.Fatalf("reapOldestOrphan = false, want true for an orphan")
+	}
+	if len(killed) != 1 || killed[0] != "inv-old" {
+		t.Fatalf("killed = %v, want [inv-old] (oldest orphan, live untouched)", killed)
+	}
+	if inv, ok := r.lookupInvocation("inv-old"); !ok || inv.doneReason != "reaped" {
+		t.Fatalf("inv-old doneReason = %q, want reaped", inv.doneReason)
+	}
+	if inv, ok := r.lookupInvocation("inv-live"); !ok || inv.doneReason != "" {
+		t.Fatalf("inv-live doneReason = %q, want empty", inv.doneReason)
+	}
+
+	if !r.reapOldestOrphan() {
+		t.Fatalf("reapOldestOrphan = false, want true for remaining orphan")
+	}
+	if len(killed) != 2 || killed[1] != "inv-new" {
+		t.Fatalf("killed = %v, want second kill inv-new", killed)
+	}
+
+	if r.reapOldestOrphan() {
+		t.Fatalf("reapOldestOrphan = true, want false when only live sessions remain")
 	}
 }
 
-func TestStreamProcess_KeepsProcessAliveWithLiveSession(t *testing.T) {
+func TestSessionOnClose_DetachesInvocation(t *testing.T) {
 	r := NewExtensionRunner(nil, nil, "")
-	r.orphanTimeout = 50 * time.Millisecond
-
-	cmd := exec.Command("sh", "-c", "echo hello; exec sleep 30")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("StdoutPipe: %v", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatalf("StderrPipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer cmd.Process.Kill()
-
 	sess := server.NewSession()
-	sess.SetNotifier(func(_ string, _ interface{}, _ *proto.Meta) error { return nil })
-	inv := "inv-live"
-	r.registerInvocation(inv, sess, "batch", func() error { return cmd.Process.Kill() })
+	r.registerInvocation("inv-close", sess, "batch", func() error { return nil })
 
-	released := make(chan struct{})
-	go r.streamProcess(inv, cmd, stdout, stderr, false, "batch", func() { close(released) })
-
-	// Well past orphanTimeout (50ms): a live session must not be reaped.
-	time.Sleep(300 * time.Millisecond)
-	select {
-	case <-released:
-		t.Fatalf("live invocation was reaped")
-	default:
+	if got := r.currentInvocationSession("inv-close"); got != sess {
+		t.Fatalf("session = %v, want registered session", got)
 	}
 
-	// Cleanup: kill and expect the natural teardown path.
-	_ = cmd.Process.Kill()
-	select {
-	case <-released:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("streamProcess did not exit after kill")
+	sess.Close()
+
+	if got := r.currentInvocationSession("inv-close"); got != nil {
+		t.Fatalf("session = %v, want nil after Close", got)
+	}
+}
+
+func TestSessionOnClose_StaleCallbackDoesNotDetachReboundSession(t *testing.T) {
+	r := NewExtensionRunner(nil, nil, "")
+	oldSess := server.NewSession()
+	newSess := server.NewSession()
+	r.registerInvocation("inv-rebind", oldSess, "batch", func() error { return nil })
+	r.rebindInvocation("inv-rebind", newSess)
+
+	// The old connection dies after a resume rebinds the invocation: the
+	// stale OnClose callback must not detach the fresh session.
+	oldSess.Close()
+
+	if got := r.currentInvocationSession("inv-rebind"); got != newSess {
+		t.Fatalf("session = %v, want rebound session preserved", got)
+	}
+}
+
+func TestMarkDoneReason_FirstWriteWins(t *testing.T) {
+	r := NewExtensionRunner(nil, nil, "")
+	r.registerInvocation("inv-reason", nil, "batch", func() error { return nil })
+
+	r.markDoneReason("inv-reason", "reaped")
+	r.markDoneReason("inv-reason", "killed")
+
+	if inv, ok := r.lookupInvocation("inv-reason"); !ok || inv.doneReason != "reaped" {
+		t.Fatalf("doneReason = %q, want reaped (first write wins)", inv.doneReason)
 	}
 }
 
