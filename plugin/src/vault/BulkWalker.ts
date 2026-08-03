@@ -69,6 +69,13 @@ export interface BulkWalkResult {
   pages: number;
   /** When `fallback-list` because of a fast-path error, the error message; else null. */
   fastPathError: string | null;
+  /**
+   * Count of entries dropped by the hidden-file (dot-prefix) filter before
+   * `entries` was returned. Lets the caller tell a genuinely empty remote
+   * apart from "everything walked was hidden" (e.g. all content nested under
+   * a dot-dir) instead of firing a misleading "0 files — check remotePath".
+   */
+  hiddenCount: number;
 }
 
 /**
@@ -111,13 +118,22 @@ export class BulkWalker {
    */
   private static readonly MAX_PAGES = 1_000;
 
-  async walk(rootPath: string = ''): Promise<BulkWalkResult> {
+  /**
+   * Walk `rootPath`. With `recursive` true (default) the whole subtree is
+   * returned; with `recursive` false only `rootPath`'s IMMEDIATE children are
+   * returned — the primitive the lazy per-folder loader uses to deepen one
+   * level on demand instead of pulling a huge deep tree at connect.
+   */
+  async walk(rootPath: string = '', recursive: boolean = true): Promise<BulkWalkResult> {
     const start = Date.now();
     if (this.canUseFastPath()) {
       try {
-        const result = await this.fastPath(rootPath);
+        const result = await this.fastPath(rootPath, recursive);
+        const visible = this.visibleEntries(result.entries);
         return {
           ...result,
+          entries: visible,
+          hiddenCount: result.entries.length - visible.length,
           walkMs: Date.now() - start,
           // `truncated` here means we stopped at the page guard on a
           // pathological tree — surface it so populate can Notice the
@@ -127,21 +143,61 @@ export class BulkWalker {
       } catch (e) {
         const message = errorMessage(e);
         logger.warn(`BulkWalker: fs.walk failed (${message}); falling back to per-folder list`);
-        const fallback = await this.fallbackPath(rootPath);
+        const fallback = await this.fallbackPath(rootPath, recursive);
+        const visible = this.visibleEntries(fallback.entries);
         return {
           ...fallback,
+          entries: visible,
+          hiddenCount: fallback.entries.length - visible.length,
           walkMs: Date.now() - start,
           fastPathError: message,
         };
       }
     }
 
-    const fallback = await this.fallbackPath(rootPath);
+    const fallback = await this.fallbackPath(rootPath, recursive);
+    const visible = this.visibleEntries(fallback.entries);
     return {
       ...fallback,
+      entries: visible,
+      hiddenCount: fallback.entries.length - visible.length,
       walkMs: Date.now() - start,
       fastPathError: null,
     };
+  }
+
+  /**
+   * True when the daemon's paginated `fs.walk` is available, i.e. a full
+   * recursive `walk('', true)` costs one RPC per 50 000-entry page rather than
+   * one `adapter.list` round-trip per directory.
+   *
+   * Callers that must CHOOSE a traversal strategy up-front need this, because
+   * `walk()` only reports which path it took (`BulkWalkResult.source`) after the
+   * expensive part is already done. `BackgroundIndexer` uses it to pick between
+   * one recursive walk and a yielding folder-at-a-time BFS.
+   */
+  hasFastPath(): boolean {
+    return this.canUseFastPath();
+  }
+
+  /**
+   * Drop dot-prefixed entries so hidden files/dirs never reach the File
+   * Explorer — matching Obsidian's own default of hiding dot-names. An entry
+   * is hidden when ANY of its path segments starts with `.`, so a dot-DIR
+   * (`.julia`, `.git`, …) hides its whole subtree. The vault config dir
+   * (`.obsidian`) is deliberately included: Obsidian loads config directly
+   * off the local shadow disk, NOT from this walked model, so dropping it
+   * costs nothing AND keeps every client's per-device `<configDir>/user/<id>/`
+   * subtree out of the tree (a foreign client's state must never surface as
+   * editable files). Applies to the full walk AND every lazy per-folder
+   * deepen (both route through here).
+   */
+  private visibleEntries(entries: RemoteEntry[]): RemoteEntry[] {
+    return entries.filter((e) => !BulkWalker.isHiddenPath(e.path));
+  }
+
+  private static isHiddenPath(vaultPath: string): boolean {
+    return vaultPath.split('/').some((seg) => seg.startsWith('.'));
   }
 
   // ─── internals ──────────────────────────────────────────────────────────
@@ -152,7 +208,7 @@ export class BulkWalker {
     return conn.info.capabilities.includes(BulkWalker.FAST_PATH_CAPABILITY);
   }
 
-  private async fastPath(rootPath: string): Promise<{
+  private async fastPath(rootPath: string, recursive: boolean): Promise<{
     entries: RemoteEntry[];
     source: 'rpc-walk';
     truncated: boolean;
@@ -167,7 +223,7 @@ export class BulkWalker {
     let offset = 0;
     let pages = 0;
     for (;;) {
-      const params: WalkParams = { path: rootPath, recursive: true };
+      const params: WalkParams = { path: rootPath, recursive };
       if (this.deps.maxEntries != null) params.maxEntries = this.deps.maxEntries;
       if (offset > 0) params.offset = offset;
       if (this.deps.ignoreDirs?.length) params.ignore = this.deps.ignoreDirs;
@@ -206,7 +262,7 @@ export class BulkWalker {
     }
   }
 
-  private async fallbackPath(rootPath: string): Promise<{
+  private async fallbackPath(rootPath: string, recursive: boolean): Promise<{
     entries: RemoteEntry[];
     source: 'fallback-list';
     truncated: false;
@@ -226,7 +282,7 @@ export class BulkWalker {
       for (const sub of listing.folders) {
         if (!sub) continue;
         entries.push({ path: sub, isDirectory: true, ctime: 0, mtime: 0, size: 0 });
-        queue.push(sub);
+        if (recursive) queue.push(sub);   // one level only when non-recursive
       }
       for (const file of listing.files) {
         if (!file) continue;

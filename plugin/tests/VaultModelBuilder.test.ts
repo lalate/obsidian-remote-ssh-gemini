@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { VaultModelBuilder, type RemoteEntry, type ObsidianClassDeps } from '../src/vault/VaultModelBuilder';
+import { logger } from '../src/util/logger';
 
 /**
  * Minimal stubs that mirror the structural shape of TFile / TFolder
@@ -71,6 +72,55 @@ function makeFakeVault() {
   };
   return { vault, root, fileMap, triggers };
 }
+
+describe('VaultModelBuilder.buildChunked', () => {
+  it('builds every entry across multiple chunks (folders-before-files), no errors', async () => {
+    const { vault, fileMap } = makeFakeVault();
+    // One folder + 1200 files under it → spans several chunks at chunkSize 100.
+    const entries: RemoteEntry[] = [{ path: 'work', isDirectory: true, ctime: 0, mtime: 0, size: 0 }];
+    for (let i = 0; i < 1200; i++) {
+      entries.push({ path: `work/n${i}.md`, isDirectory: false, ctime: 0, mtime: 0, size: 0 });
+    }
+    // Reverse the input to prove ordering is fixed internally, not by the caller.
+    const shuffled = [...entries].reverse();
+
+    const result = await new VaultModelBuilder(vault as never, deps).buildChunked(shuffled, 100);
+
+    expect(result.foldersAdded).toBe(1);
+    expect(result.filesAdded).toBe(1200);
+    expect(result.errors).toEqual([]);
+    expect(Object.keys(fileMap)).toHaveLength(1201);
+    expect(fileMap['work']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['work/n0.md']).toBeInstanceOf(FakeTFile);
+    expect(fileMap['work/n1199.md']).toBeInstanceOf(FakeTFile);
+  });
+
+  it('is idempotent: entries already in the vault are skipped, not re-added', async () => {
+    const { vault } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+    const entries: RemoteEntry[] = [
+      { path: 'a',     isDirectory: true,  ctime: 0, mtime: 0, size: 0 },
+      { path: 'a/x.md', isDirectory: false, ctime: 0, mtime: 0, size: 0 },
+    ];
+    await builder.buildChunked(entries, 1);
+    const second = await builder.buildChunked(entries, 1);
+    expect(second).toEqual({ filesAdded: 0, foldersAdded: 0, skipped: 2, errors: [] });
+  });
+
+  it('produces the same model + result as the synchronous build()', async () => {
+    const entries: RemoteEntry[] = [
+      { path: 'd',      isDirectory: true,  ctime: 0, mtime: 0, size: 0 },
+      { path: 'd/a.md', isDirectory: false, ctime: 1, mtime: 2, size: 3 },
+      { path: 'top.md', isDirectory: false, ctime: 0, mtime: 0, size: 0 },
+    ];
+    const a = makeFakeVault();
+    const sync = await new VaultModelBuilder(a.vault as never, deps).build(entries);
+    const b = makeFakeVault();
+    const chunked = await new VaultModelBuilder(b.vault as never, deps).buildChunked(entries, 1);
+    expect(chunked).toEqual(sync);
+    expect(Object.keys(b.fileMap).sort()).toEqual(Object.keys(a.fileMap).sort());
+  });
+});
 
 describe('VaultModelBuilder.build', () => {
   it('returns zero counts for empty entry list', async () => {
@@ -613,5 +663,93 @@ describe('VaultModelBuilder.reflect* (#341 writer self-reflect)', () => {
 
     expect(() => builder.reflectRemove('never-seen.md')).not.toThrow();
     expect(triggers).toEqual([]);
+  });
+});
+
+// ─── #423: move into a folder the writer model hasn't caught up to ──────────
+//
+// Field repro (issue #423): a user creates a folder and drags several
+// top-level notes into it. The destination folder exists on the remote
+// but the writer's vault model is momentarily stale, so `renameOne`'s
+// strict `resolveParent` returns null and the reflect bails with
+// "writer vault model is stale". The notes then vanish from File
+// Explorer (detached from the old path, never attached to the new one)
+// until a full reopen re-populates the model.
+//
+// `reflectRename` is the writer-reflect entry point and MUST tolerate a
+// stale destination subtree — exactly as `reflectWrite` already does via
+// `insertOne({ ensureParents: true })`. The low-level `renameOne` keeps
+// its strict contract for the bulk-build sanity check; only the
+// writer-reflect path synthesises. These cases fail today.
+describe('VaultModelBuilder.reflectRename — stale destination subtree (#423)', () => {
+  it('synthesises the destination folder and moves the file when the target folder is not modelled', () => {
+    const { vault, fileMap, triggers } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+
+    builder.reflectWrite('note.md');           // source exists at top level
+    triggers.length = 0;
+
+    // "Folder" exists on the remote but the writer model hasn't caught
+    // up yet — the #423 drag-into-a-fresh-folder race.
+    builder.reflectRename('note.md', 'Folder/note.md');
+
+    expect(fileMap['note.md']).toBeUndefined();
+    expect(fileMap['Folder']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['Folder/note.md']).toBeDefined();
+    expect((fileMap['Folder/note.md'] as FakeTFile).path).toBe('Folder/note.md');
+    const renameEvt = triggers.find((t) => t.event === 'rename');
+    expect(renameEvt, 'a rename trigger must fire so File Explorer relocates the item').toBeDefined();
+    expect(renameEvt?.args[1]).toBe('note.md');
+  });
+
+  it('moves several top-level notes into the same fresh folder (exact #423 field-log shape)', () => {
+    const { vault, fileMap } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+    builder.reflectMkdir('Zettelkasten');
+    builder.reflectWrite('Zettelkasten/a.md');
+    builder.reflectWrite('Zettelkasten/b.md');
+    builder.reflectWrite('Zettelkasten/c.md');
+
+    // "Baza" is created, then the three notes are dragged into it.
+    builder.reflectRename('Zettelkasten/a.md', 'Zettelkasten/Baza/a.md');
+    builder.reflectRename('Zettelkasten/b.md', 'Zettelkasten/Baza/b.md');
+    builder.reflectRename('Zettelkasten/c.md', 'Zettelkasten/Baza/c.md');
+
+    expect(fileMap['Zettelkasten/Baza']).toBeInstanceOf(FakeTFolder);
+    for (const f of ['a', 'b', 'c']) {
+      expect(fileMap[`Zettelkasten/Baza/${f}.md`], `${f}.md should land in Baza`).toBeDefined();
+      expect(fileMap[`Zettelkasten/${f}.md`], `${f}.md should leave its old location`).toBeUndefined();
+    }
+  });
+
+  it('renames into a deeply nested fresh subtree by synthesising the whole chain', () => {
+    const { vault, fileMap } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+    builder.reflectWrite('note.md');
+
+    builder.reflectRename('note.md', 'a/b/c/note.md');
+
+    expect(fileMap['a']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['a/b']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['a/b/c']).toBeInstanceOf(FakeTFolder);
+    expect(fileMap['a/b/c/note.md']).toBeDefined();
+    expect(fileMap['note.md']).toBeUndefined();
+  });
+
+  it('does not log "writer vault model is stale" when Obsidian already moved the file (benign echo)', () => {
+    const { vault, fileMap } = makeFakeVault();
+    const builder = new VaultModelBuilder(vault as never, deps);
+    builder.reflectMkdir('Folder');
+    builder.reflectWrite('Folder/note.md');    // file already at the destination
+
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    // Source key already gone — Obsidian's own rename ran first.
+    builder.reflectRename('note.md', 'Folder/note.md');
+    // Capture before restoring: mockRestore() also clears mock.calls.
+    const staleWarnings = warn.mock.calls.filter((c) => String(c[0]).includes('writer vault model is stale'));
+    warn.mockRestore();
+
+    expect(fileMap['Folder/note.md']).toBeDefined();
+    expect(staleWarnings, 'a no-op move must not be reported as a stale-model divergence').toHaveLength(0);
   });
 });

@@ -19,7 +19,7 @@ jobs:
       run:
         working-directory: plugin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -51,7 +51,7 @@ jobs:
       run:
         working-directory: plugin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -79,7 +79,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           # Explicit slug avoids fork/PR ambiguity — Codecov's auto-
           # detection can mis-route uploads from PRs opened from forks.
@@ -118,7 +118,7 @@ jobs:
       run:
         working-directory: plugin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node-version }}
@@ -144,7 +144,7 @@ jobs:
       run:
         working-directory: plugin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -215,7 +215,7 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           # Bumped 1.22 → 1.25 to follow `server/go.mod`'s `go 1.25.0`
@@ -250,7 +250,7 @@ jobs:
     name: Deploy docker image build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       - name: Build deploy/docker image
         uses: docker/build-push-action@v7

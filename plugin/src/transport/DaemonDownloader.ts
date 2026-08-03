@@ -32,8 +32,12 @@ export interface DaemonDownloaderDeps {
   cacheDir: string;
   /** Persist downloaded bytes to disk and mark executable (chmod +x). */
   writeExecutable: (absPath: string, bytes: Uint8Array) => Promise<void>;
-  /** True if a cached file already exists. */
-  cacheHit: (absPath: string) => boolean;
+  /**
+   * Read a cached binary's bytes, or null if absent / unreadable. Used for
+   * sha-based cache validation: a cached file whose bytes still match the
+   * release manifest's expected sha is reused; anything else is re-downloaded.
+   */
+  readCached: (absPath: string) => Promise<Uint8Array | null>;
   /** `owner/repo` for the release URL. */
   repo: string;
   /**
@@ -113,8 +117,6 @@ export async function ensureDaemonBinary(
 ): Promise<string> {
   const filename = binaryFilename(target);
   const dest = path.join(deps.cacheDir, filename);
-  if (deps.cacheHit(dest)) return dest;
-
   const base = `https://github.com/${deps.repo}/releases/download/${deps.version}`;
 
   const manifestRaw = await deps.fetchText(`${base}/${MANIFEST_NAME}`);
@@ -140,6 +142,19 @@ export async function ensureDaemonBinary(
     throw new DaemonVerificationError(
       `${MANIFEST_NAME} has no entry for ${filename} (release ${deps.version})`,
     );
+  }
+
+  // Reuse the cached binary IFF its bytes already match the expected sha —
+  // i.e. the daemon didn't change across this bump. A cached binary from a
+  // prior plugin version (or the pre-static-build era) has the same filename
+  // but different bytes, so it fails this check and is re-downloaded. This is
+  // what makes a plugin upgrade refresh a *changed* daemon instead of
+  // re-deploying the stale one, while skipping the download for an unchanged
+  // one. (`writeExecutable` overwrites atomically, so the stale file is
+  // replaced in place — no separate delete.)
+  const cached = await deps.readCached(dest);
+  if (cached && sha256Hex(cached).toLowerCase() === expected.toLowerCase()) {
+    return dest;
   }
 
   const bytes = await deps.fetchBinary(`${base}/${filename}`);

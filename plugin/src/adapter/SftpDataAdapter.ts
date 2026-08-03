@@ -21,6 +21,8 @@ function isThumbnailEligible(vaultPath: string): boolean {
   if (dot < 0) return false;
   return THUMBNAIL_EXTENSIONS.has(vaultPath.slice(dot + 1).toLowerCase());
 }
+import * as fs from 'fs';
+import * as nodePath from 'path';
 import type { RemoteFsClient } from './RemoteFsClient';
 import type { WriterReflector } from './WriterReflector';
 import type { LocalOpRegistry } from './LocalOpRegistry';
@@ -119,9 +121,11 @@ export class SftpDataAdapter {
      * `getBasePath()` method return this value, so plugins that read
      * `adapter.basePath` (Templater's `tp.file.path`, Kanban's clipboard
      * paste, Importer, Copilot — see `docs/en/user-guide/plugin-compatibility.md`)
-     * receive a path on the shadow vault. Reads against that path
-     * succeed against files mirrored locally by the file watcher;
-     * writes land in the shadow dir and propagate to the remote.
+     * receive the shadow-vault root (so they don't crash on
+     * `undefined`). But the vault tree is virtual — served from the
+     * remote, not mirrored to disk — so raw Node `fs` here only touches
+     * the local shadow copy: reads miss remote notes, writes don't
+     * reach the remote. Only the vault API round-trips (#429).
      *
      * Defaults to `''` for tests that never exercise these members. The
      * production wiring in `main.ts` always passes the real shadow
@@ -142,11 +146,11 @@ export class SftpDataAdapter {
   ) {}
 
   /**
-   * Mirror of `FileSystemAdapter.basePath`. Returns the absolute path
-   * of the shadow vault's local root. Plugins that join paths against
-   * this value and call Node `fs` directly read mirrored content and
-   * write into the shadow dir, where the file watcher propagates to
-   * the remote.
+   * Mirror of `FileSystemAdapter.basePath`: the shadow-vault local
+   * root. The vault tree is virtual (not mirrored to disk), so raw
+   * `fs` against this path only touches the local shadow copy — writes
+   * don't reach the remote (#429); only the vault API round-trips.
+   * #170 returns a defined path so plugins don't crash.
    */
   get basePath(): string {
     return this.shadowBasePath;
@@ -812,7 +816,24 @@ export class SftpDataAdapter {
 
     if (cached) {
       const s = await this.client.stat(remote);
-      if (s.mtime === cached.mtime) {
+      // Revalidate on mtime AND size. mtime alone is not enough: SFTP reports
+      // it at 1-second resolution (`SftpClient`: `mtime: stats.mtime * 1000`),
+      // so two edits inside the same wall-clock second collapse onto the same
+      // value — and we would serve a cached copy of a file that no longer
+      // exists on the server, then let the user save it back over the real one.
+      // `stat` already hands us the size (it is used just below to size the
+      // transfer), so comparing it costs nothing and catches every same-second
+      // edit that changed the length.
+      //
+      // Not a theoretical race: `reflect.spec.ts` sleeps 1.1 s between remote
+      // edits to keep itself green — this bug wearing a workaround. Pinned by
+      // `e2e/cache-pressure.spec.ts`.
+      //
+      // A same-second edit that preserves the byte length is still invisible
+      // here; closing that needs a content hash or a server-side change
+      // counter. This removes the common case, cheaply.
+      const sizeMatches = s.size === undefined || s.size === cached.data.byteLength;
+      if (s.mtime === cached.mtime && sizeMatches) {
         this.readCache.get(remote); // bump LRU on hit
         return cached.data;
       }
@@ -867,6 +888,87 @@ export class SftpDataAdapter {
    * than whatever the cache holds now (which is the synthetic
    * mtime from the offline cache update).
    */
+  /**
+   * Mirror a successful `<configDir>/**` write onto the LOCAL shadow disk
+   * (#342 / #429 — "plugin settings are not kept after restarting the vault").
+   *
+   * Why this is load-bearing, and why a pull-on-connect cannot replace it:
+   * Obsidian loads community plugins during startup, and each plugin's
+   * `onload()` calls `Plugin.loadData()` — which reads
+   * `<configDir>/plugins/<id>/data.json` — BEFORE remote-ssh has connected
+   * over SSH and patched the adapter. That read therefore always hits the
+   * real `FileSystemAdapter`, i.e. the local shadow disk. We cannot get in
+   * front of it: the SSH connect is async and happens at layout-ready.
+   *
+   * So the local disk must ALREADY be correct at startup. Previously nothing
+   * ever wrote it: `saveData()` went through the patched adapter straight to
+   * the remote and the local copy stayed empty, so every restart booted the
+   * plugin on DEFAULTS — which the plugin then saved back, destroying the
+   * real settings on the remote too.
+   *
+   * Write-through fixes that at the source: local disk is a warm cache of the
+   * remote, so whichever way the shadow window is launched (Connect from the
+   * source window, or reopening the vault directly) the startup read sees the
+   * settings this device last saved. The remote per-device copy stays the
+   * source of truth and the cross-session backup.
+   *
+   * Scope is deliberately `<configDir>/**` only — the vault's NOTE tree stays
+   * virtual (served from the remote, never mirrored to disk); mirroring it
+   * would defeat the whole shadow-vault design. Best-effort: a failure here
+   * must never fail the write that already landed on the remote.
+   */
+  private writeThroughConfig(normalizedPath: string, data: Buffer): void {
+    if (!this.shadowBasePath || !this.pathMapper) return;
+    const rel = normalizedPath.startsWith('/') ? normalizedPath.slice(1) : normalizedPath;
+    if (!rel.startsWith(`${this.pathMapper.configDir}/`)) return;
+
+    // Containment must be checked on the RESOLVED path, not the raw string:
+    // the prefix test above is a plain `startsWith`, so `.obsidian/x/../../../
+    // evil` would sail past it and `join` would then resolve the `..` right
+    // out of the shadow root. `resolve` also collapses win32 backslashes,
+    // which would otherwise be a second way to smuggle a separator through.
+    // The vault path reaches us from Obsidian / other plugins — not trusted.
+    const root = nodePath.resolve(this.shadowBasePath);
+    const abs = nodePath.resolve(root, rel);
+    if (abs !== root && !abs.startsWith(root + nodePath.sep)) {
+      logger.warn(`writeThroughConfig: refusing to mirror outside the shadow root: "${rel}"`);
+      return;
+    }
+
+    try {
+      // NEVER write through a symlink. `ShadowVaultBootstrap.installPlugin`
+      // symlinks remote-ssh's OWN main.js / manifest.json / styles.css in the
+      // shadow vault back to the SOURCE vault's real files, and
+      // `fs.writeFileSync` follows symlinks — mirroring one would overwrite
+      // the source vault's plugin install and brick it. That is exactly the
+      // bug class #455 just fixed; do not reintroduce it here.
+      //
+      // Skipping costs nothing: the remote write already succeeded, and for
+      // plugin CODE the local copy is owned by the pull/push binary
+      // round-trip (`PLUGIN_BINARY_FILES`), not by this cache.
+      if (fs.lstatSync(abs, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        logger.warn(`writeThroughConfig: "${rel}" is a symlink — not mirrored (would clobber its target)`);
+        return;
+      }
+      // Same hazard one level up: a symlinked ANCESTOR (e.g. a stale
+      // whole-dir plugin symlink from an older build) would redirect the
+      // write out of the shadow root even though `abs` looked contained.
+      const dir = nodePath.dirname(abs);
+      const realDir = fs.existsSync(dir) ? fs.realpathSync(dir) : null;
+      if (realDir && realDir !== root && !realDir.startsWith(root + nodePath.sep)) {
+        logger.warn(`writeThroughConfig: "${rel}" resolves outside the shadow root via a symlinked parent — not mirrored`);
+        return;
+      }
+
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(abs, data);
+    } catch (e) {
+      // The remote write already succeeded — the session is correct either
+      // way; only the next restart's warm start is degraded.
+      logger.warn(`writeThroughConfig: "${rel}" not mirrored locally (${errorMessage(e)})`);
+    }
+  }
+
   private async writeBuffer(
     normalizedPath: string,
     data: Buffer,
@@ -897,6 +999,10 @@ export class SftpDataAdapter {
     } finally {
       this.transferTracker?.end(txId);
     }
+
+    // The remote now holds `writtenData`. Mirror it onto the local shadow
+    // disk too, so the next Obsidian start reads the real settings (#342/#429).
+    this.writeThroughConfig(normalizedPath, writtenData);
 
     let mtime = 0;
     try {
